@@ -9,7 +9,67 @@ use crate::store::AppState;
 /// MCP 相关业务逻辑（v3.7.0 统一结构）
 pub struct McpService;
 
+/// 「重新同步到各应用」里单个应用的结果
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAppSyncOutcome {
+    pub app: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 impl McpService {
+    pub fn resync_app(state: &AppState, app: &AppType) -> McpAppSyncOutcome {
+        match Self::sync_enabled_for_app(state, app) {
+            Ok(()) => McpAppSyncOutcome {
+                app: app.as_str().to_string(),
+                ok: true,
+                error: None,
+            },
+            Err(err) => {
+                log::warn!("重新同步 MCP 到 {app:?} 失败: {err}");
+                McpAppSyncOutcome {
+                    app: app.as_str().to_string(),
+                    ok: false,
+                    error: Some(err.to_string()),
+                }
+            }
+        }
+    }
+
+    pub fn resync_targets(apps: Option<&[String]>) -> Result<Vec<AppType>, AppError> {
+        let managed = Self::live_sync_apps();
+        let Some(apps) = apps.filter(|apps| !apps.is_empty()) else {
+            return Ok(managed);
+        };
+        let mut targets = Vec::new();
+        for raw in apps {
+            let app = <AppType as std::str::FromStr>::from_str(raw)?;
+            if !managed.contains(&app) {
+                return Err(AppError::Message(format!(
+                    "{} 不支持由 CC Switch 管理 MCP",
+                    app.as_str()
+                )));
+            }
+            if !targets.contains(&app) {
+                targets.push(app);
+            }
+        }
+        Ok(targets)
+    }
+
+    pub fn live_sync_apps() -> Vec<AppType> {
+        AppType::all()
+            .filter(|app| {
+                !matches!(
+                    app,
+                    AppType::OpenClaw | AppType::Hermes | AppType::ClaudeDesktop | AppType::Pi
+                )
+            })
+            .collect()
+    }
+
     /// 获取所有 MCP 服务器（统一结构）
     pub fn get_all_servers(state: &AppState) -> Result<IndexMap<String, McpServer>, AppError> {
         state.db.get_all_mcp_servers()
@@ -250,17 +310,41 @@ impl McpService {
             return Ok(());
         }
 
+        // 逐条容错：一条写不进去（规范不是对象、这个应用不认的类型）不该让排在
+        // 它后面的服务器全都停在旧状态。全部跑完后聚合上报，调用方照旧能看到
+        // 失败。错误相同的条目归并成一项：live 文件本身损坏时每一条都报同一句。
+        let mut failures: IndexMap<String, Vec<&str>> = IndexMap::new();
         for server in servers.values() {
-            if server.apps.is_enabled_for(app) {
-                Self::sync_server_to_app(state, server, app)?;
+            let result = if server.apps.is_enabled_for(app) {
+                Self::sync_server_to_app(state, server, app)
             } else if !matches!(app, AppType::Mcode) {
-                Self::remove_server_from_app(state, &server.id, app)?;
+                Self::remove_server_from_app(state, &server.id, app)
+            } else {
+                // MCode's false flag also covers pre-existing, unmanaged servers.
+                // Only explicit disable/delete operations may remove those entries.
+                Ok(())
+            };
+            if let Err(err) = result {
+                log::warn!("同步 MCP 服务器 '{}' 到 {app:?} 失败: {err}", server.id);
+                failures
+                    .entry(err.to_string())
+                    .or_default()
+                    .push(&server.id);
             }
-            // MCode's false flag also covers pre-existing, unmanaged servers.
-            // Only explicit disable/delete operations may remove those entries.
         }
 
-        Ok(())
+        if failures.is_empty() {
+            return Ok(());
+        }
+        let detail = failures
+            .iter()
+            .map(|(error, ids)| format!("{}: {error}", ids.join(", ")))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(AppError::Message(format!(
+            "部分 MCP 服务器同步到 {} 失败: {detail}",
+            app.as_str()
+        )))
     }
 
     fn persist_imported_servers(
@@ -599,5 +683,61 @@ mod tests {
         let disabled: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(disabled["mcpServers"].get("context7").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn projecting_an_app_continues_past_a_server_that_cannot_be_written() {
+        let _home = TestHome::new();
+        let mcp_path = crate::config::get_claude_mcp_path();
+        std::fs::write(
+            &mcp_path,
+            serde_json::json!({"mcpServers": {"c-off": {"type": "stdio", "command": "old"}}})
+                .to_string(),
+        )
+        .expect("seed ~/.claude.json");
+
+        let state = AppState::new(Arc::new(
+            crate::database::Database::memory().expect("database"),
+        ));
+        // 直接入库，绕过面板校验：规范不是对象的行可能来自云同步或旧数据。
+        for (id, server, claude) in [
+            ("a-broken", serde_json::json!("not an object"), true),
+            (
+                "b-good",
+                serde_json::json!({"type": "stdio", "command": "echo"}),
+                true,
+            ),
+            (
+                "c-off",
+                serde_json::json!({"type": "stdio", "command": "old"}),
+                false,
+            ),
+        ] {
+            let server: McpServer = serde_json::from_value(serde_json::json!({
+                "id": id, "name": id, "server": server, "apps": {"claude": claude}
+            }))
+            .expect("build server");
+            state.db.save_mcp_server(&server).expect("save server");
+        }
+
+        let err = McpService::sync_enabled_for_app(&state, &AppType::Claude)
+            .expect_err("the broken server must still be reported");
+        assert!(
+            err.to_string().contains("a-broken"),
+            "error should name the failed server: {err}"
+        );
+
+        let text = std::fs::read_to_string(&mcp_path).expect("read ~/.claude.json");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("parse ~/.claude.json");
+        assert!(
+            v.pointer("/mcpServers/b-good").is_some(),
+            "servers after the failed one must still be written"
+        );
+        assert!(
+            v.pointer("/mcpServers/c-off").is_none(),
+            "disabled servers after the failed one must still be removed"
+        );
+        assert!(v.pointer("/mcpServers/a-broken").is_none());
     }
 }

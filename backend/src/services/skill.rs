@@ -174,6 +174,73 @@ pub struct SkillUpdateInfo {
     pub remote_hash: String,
 }
 
+/// 某个仓库没有读到（发现、检查更新时逐仓库报告，不再静默吞掉）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRepoFailure {
+    pub owner: String,
+    pub name: String,
+    pub branch: String,
+    /// 原始错误；下载类错误是 `format_skill_error` 的结构化 JSON
+    pub error: String,
+}
+
+/// 发现结果：读到的 Skill + 没读到的仓库
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillDiscoveryResult {
+    pub skills: Vec<DiscoverableSkill>,
+    pub failures: Vec<SkillRepoFailure>,
+}
+
+/// 检查更新结果：可更新的 Skill + 没读到的仓库
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillUpdateCheckResult {
+    pub updates: Vec<SkillUpdateInfo>,
+    pub failures: Vec<SkillRepoFailure>,
+}
+
+/// ZIP 里因为目录名已被占用而跳过的 Skill（#3749）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZipSkippedSkill {
+    /// ZIP 里这个 Skill 要用的目录名
+    pub directory: String,
+    /// 占用这个目录名的已安装 Skill
+    pub existing_id: String,
+    pub existing_name: String,
+}
+
+/// 从 ZIP 安装的结果
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZipInstallResult {
+    pub installed: Vec<InstalledSkill>,
+    pub skipped: Vec<ZipSkippedSkill>,
+}
+
+/// 重新同步时某个 Skill 没同步成功
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSyncFailure {
+    pub directory: String,
+    pub error: String,
+}
+
+/// 「立即重新同步」里单个应用的结果
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillAppSyncOutcome {
+    pub app: String,
+    pub ok: bool,
+    /// 整个应用没同步（如读不了应用目录）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// 应用同步了，但其中这些 Skill 失败
+    pub failed_skills: Vec<SkillSyncFailure>,
+}
+
 /// Skill 存储迁移结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -425,7 +492,10 @@ fn parse_agents_lock() -> HashMap<String, LockRepoInfo> {
 
 // ========== SkillService ==========
 
-pub struct SkillService;
+pub struct SkillService {
+    #[cfg(test)]
+    repo_fixture: Option<PathBuf>,
+}
 
 impl Default for SkillService {
     fn default() -> Self {
@@ -434,8 +504,215 @@ impl Default for SkillService {
 }
 
 impl SkillService {
+    pub async fn discover_available_report(
+        &self,
+        repos: Vec<SkillRepo>,
+    ) -> Result<SkillDiscoveryResult> {
+        let mut skills = Vec::new();
+        let mut failures = Vec::new();
+
+        // 仅使用启用的仓库
+        let enabled_repos: Vec<SkillRepo> = repos.into_iter().filter(|repo| repo.enabled).collect();
+
+        let fetch_tasks = enabled_repos
+            .iter()
+            .map(|repo| self.fetch_repo_skills(repo));
+
+        let results: Vec<Result<Vec<DiscoverableSkill>>> =
+            futures::future::join_all(fetch_tasks).await;
+
+        for (repo, result) in enabled_repos.into_iter().zip(results) {
+            match result {
+                Ok(repo_skills) => skills.extend(repo_skills),
+                Err(e) => {
+                    log::warn!("获取仓库 {}/{} 技能失败: {}", repo.owner, repo.name, e);
+                    failures.push(Self::repo_failure(&repo, e.to_string()));
+                }
+            }
+        }
+
+        // 去重并排序
+        Self::deduplicate_discoverable_skills(&mut skills);
+        skills.sort_by_key(|skill| skill.name.to_lowercase());
+
+        Ok(SkillDiscoveryResult { skills, failures })
+    }
+
+    pub fn resync_all_apps(db: &Arc<Database>) -> Vec<SkillAppSyncOutcome> {
+        let _state_guard = skill_state_read_guard();
+        AppType::all()
+            .filter(Self::is_sync_managed_app)
+            .map(|app| {
+                let (error, failed_skills) = match Self::sync_to_app_unlocked(db, &app) {
+                    Ok(failed) => (None, failed),
+                    Err(err) => {
+                        log::warn!("重新同步 Skill 到 {app:?} 失败: {err:#}");
+                        (Some(format!("{err:#}")), Vec::new())
+                    }
+                };
+                SkillAppSyncOutcome {
+                    app: app.as_str().to_string(),
+                    ok: error.is_none() && failed_skills.is_empty(),
+                    error,
+                    failed_skills,
+                }
+            })
+            .collect()
+    }
+
+    fn is_sync_managed_app(app: &AppType) -> bool {
+        !matches!(
+            app,
+            AppType::ClaudeDesktop | AppType::OpenClaw | AppType::Pi
+        )
+    }
+
+    fn download_timeout_error(repo: &SkillRepo) -> String {
+        format_skill_error(
+            "DOWNLOAD_TIMEOUT",
+            &[
+                ("owner", &repo.owner),
+                ("name", &repo.name),
+                ("timeout", "60"),
+            ],
+            Some("checkNetwork"),
+        )
+    }
+
+    fn repo_failure(repo: &SkillRepo, error: String) -> SkillRepoFailure {
+        SkillRepoFailure {
+            owner: repo.owner.clone(),
+            name: repo.name.clone(),
+            branch: repo.branch.clone(),
+            error,
+        }
+    }
+
+    pub async fn check_updates_report(&self, db: &Arc<Database>) -> Result<SkillUpdateCheckResult> {
+        let skills = db.get_all_installed_skills()?;
+        let mut updates = Vec::new();
+        let mut failures = Vec::new();
+
+        // 按 (owner, name, branch) 分组
+        let mut repo_groups: HashMap<(String, String, String), Vec<InstalledSkill>> =
+            HashMap::new();
+
+        for skill in skills.into_values() {
+            let (owner, name, branch) =
+                match (&skill.repo_owner, &skill.repo_name, &skill.repo_branch) {
+                    (Some(o), Some(n), Some(b)) => (o.clone(), n.clone(), b.clone()),
+                    (Some(o), Some(n), None) => (o.clone(), n.clone(), "main".to_string()),
+                    _ => continue,
+                };
+            repo_groups
+                .entry((owner, name, branch))
+                .or_default()
+                .push(skill);
+        }
+
+        let ssot_dir = Self::get_ssot_dir()?;
+
+        for ((owner, name, branch), group_skills) in &repo_groups {
+            let repo = SkillRepo {
+                owner: owner.clone(),
+                name: name.clone(),
+                branch: branch.clone(),
+                enabled: true,
+            };
+
+            // 下载仓库 ZIP
+            let (temp_guard, _used_branch) = match timeout(
+                std::time::Duration::from_secs(60),
+                self.download_repo(&repo),
+            )
+            .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
+                    log::warn!("检查更新时下载 {}/{} 失败: {e}", owner, name);
+                    failures.push(Self::repo_failure(&repo, e.to_string()));
+                    continue;
+                }
+                Err(_) => {
+                    log::warn!("检查更新时下载 {}/{} 超时", owner, name);
+                    failures.push(Self::repo_failure(
+                        &repo,
+                        Self::download_timeout_error(&repo),
+                    ));
+                    continue;
+                }
+            };
+            let temp_dir = temp_guard.path();
+
+            // 扫描仓库中的所有 Skill 目录
+            let mut remote_skills: Vec<DiscoverableSkill> = Vec::new();
+            if let Err(e) = self.scan_dir_recursive(temp_dir, temp_dir, &repo, &mut remote_skills) {
+                // 扫到一半失败：已扫到的照常比对，但如实报告这个仓库可能不完整
+                log::warn!("检查更新时扫描 {}/{} 失败: {e}", owner, name);
+                failures.push(Self::repo_failure(&repo, e.to_string()));
+            }
+
+            // Remote I/O is complete. Stabilize the local DB + SSOT while hashes
+            // are read and any missing hash metadata is backfilled.
+            let _state_guard = skill_state_read_guard();
+
+            for skill in group_skills {
+                let remote_match = Self::find_remote_skill_for_install(
+                    &remote_skills,
+                    &skill.directory,
+                    skill.readme_url.as_deref(),
+                );
+                let remote_skill_dir = match remote_match {
+                    Some(rs) => match Self::resolve_skill_source_dir(temp_dir, &rs.directory) {
+                        Some(path) => path,
+                        None => continue,
+                    },
+                    None => continue,
+                };
+
+                let remote_hash = match Self::compute_dir_hash(&remote_skill_dir) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        log::warn!("计算远程哈希失败 {}: {e}", skill.id);
+                        continue;
+                    }
+                };
+
+                let local_hash = match Self::local_hash_for_update_check(
+                    &ssot_dir,
+                    &skill.directory,
+                    skill.content_hash.as_deref(),
+                ) {
+                    Some((h, freshly_computed)) => {
+                        if freshly_computed {
+                            let _ = db.update_skill_hash(&skill.id, &h, 0);
+                        }
+                        Some(h)
+                    }
+                    None => None,
+                };
+
+                if local_hash.as_deref() != Some(&remote_hash) {
+                    updates.push(SkillUpdateInfo {
+                        id: skill.id.clone(),
+                        name: skill.name.clone(),
+                        current_hash: local_hash,
+                        remote_hash,
+                    });
+                }
+            }
+        }
+
+        // 分组用的是 HashMap，排一下让结果稳定
+        failures.sort_by(|a: &SkillRepoFailure, b| (&a.owner, &a.name).cmp(&(&b.owner, &b.name)));
+        Ok(SkillUpdateCheckResult { updates, failures })
+    }
+
     pub fn new() -> Self {
-        Self
+        Self {
+            #[cfg(test)]
+            repo_fixture: None,
+        }
     }
 
     /// 构建 Skill 文档 URL（指向仓库中的 SKILL.md 文件）
@@ -591,7 +868,7 @@ impl SkillService {
 
     // ========== 路径管理 ==========
 
-    fn ssot_dir_for_location(location: SkillStorageLocation) -> PathBuf {
+    pub(crate) fn ssot_dir_for_location(location: SkillStorageLocation) -> PathBuf {
         match location {
             SkillStorageLocation::CcSwitch => get_app_config_dir().join("skills"),
             SkillStorageLocation::Unified => get_home_dir().join(".agents").join("skills"),
@@ -810,13 +1087,14 @@ impl SkillService {
             repo_branch = used_branch;
 
             // 复制到 SSOT
-            let source = Self::resolve_skill_source_dir(temp_dir, &skill.directory).ok_or_else(|| {
-                anyhow!(format_skill_error(
-                    "SKILL_DIR_NOT_FOUND",
-                    &[("path", &temp_dir.join(&source_rel).display().to_string())],
-                    Some("checkRepoUrl"),
-                ))
-            })?;
+            let source =
+                Self::resolve_skill_source_dir(temp_dir, &skill.directory).ok_or_else(|| {
+                    anyhow!(format_skill_error(
+                        "SKILL_DIR_NOT_FOUND",
+                        &[("path", &temp_dir.join(&source_rel).display().to_string())],
+                        Some("checkRepoUrl"),
+                    ))
+                })?;
 
             let canonical_temp = temp_dir
                 .canonicalize()
@@ -1040,109 +1318,6 @@ impl SkillService {
     ///
     /// 仅检查有 repo_owner 的 Skill（本地 Skill 跳过），
     /// 按仓库分组下载，避免重复下载同一仓库。
-    pub async fn check_updates(&self, db: &Arc<Database>) -> Result<Vec<SkillUpdateInfo>> {
-        let skills = db.get_all_installed_skills()?;
-        let mut updates = Vec::new();
-
-        let mut repo_groups: HashMap<(String, String, String), Vec<InstalledSkill>> =
-            HashMap::new();
-        for skill in skills.into_values() {
-            let (owner, name, branch) =
-                match (&skill.repo_owner, &skill.repo_name, &skill.repo_branch) {
-                    (Some(o), Some(n), Some(b)) => (o.clone(), n.clone(), b.clone()),
-                    (Some(o), Some(n), None) => (o.clone(), n.clone(), "main".to_string()),
-                    _ => continue,
-                };
-            repo_groups
-                .entry((owner, name, branch))
-                .or_default()
-                .push(skill);
-        }
-
-        let ssot_dir = Self::get_ssot_dir()?;
-
-        for ((owner, name, branch), group_skills) in &repo_groups {
-            let repo = SkillRepo {
-                owner: owner.clone(),
-                name: name.clone(),
-                branch: branch.clone(),
-                enabled: true,
-            };
-
-            let (temp_guard, _used_branch) = match timeout(
-                std::time::Duration::from_secs(60),
-                self.download_repo(&repo),
-            )
-            .await
-            {
-                Ok(Ok(result)) => result,
-                Ok(Err(err)) => {
-                    log::warn!("检查更新时下载 {}/{} 失败: {err}", owner, name);
-                    continue;
-                }
-                Err(_) => {
-                    log::warn!("检查更新时下载 {}/{} 超时", owner, name);
-                    continue;
-                }
-            };
-            let temp_dir = temp_guard.path();
-
-            let mut remote_skills = Vec::new();
-            let _ = self.scan_dir_recursive(temp_dir, temp_dir, &repo, &mut remote_skills);
-
-            let _state_guard = skill_state_read_guard();
-
-            for skill in group_skills {
-                let remote_match = Self::find_remote_skill_for_install(
-                    &remote_skills,
-                    &skill.directory,
-                    skill.readme_url.as_deref(),
-                );
-
-                let remote_skill_dir = match remote_match {
-                    Some(remote_skill) => temp_dir.join(&remote_skill.directory),
-                    None => continue,
-                };
-
-                if !remote_skill_dir.exists() {
-                    continue;
-                }
-
-                let remote_hash = match Self::compute_dir_hash(&remote_skill_dir) {
-                    Ok(hash) => hash,
-                    Err(err) => {
-                        log::warn!("计算远程 Skill 哈希失败 {}: {err}", skill.id);
-                        continue;
-                    }
-                };
-
-                let local_hash = match Self::local_hash_for_update_check(
-                    &ssot_dir,
-                    &skill.directory,
-                    skill.content_hash.as_deref(),
-                ) {
-                    Some((hash, freshly_computed)) => {
-                        if freshly_computed {
-                            let _ = db.update_skill_hash(&skill.id, &hash, 0);
-                        }
-                        Some(hash)
-                    }
-                    None => None,
-                };
-
-                if local_hash.as_deref() != Some(&remote_hash) {
-                    updates.push(SkillUpdateInfo {
-                        id: skill.id.clone(),
-                        name: skill.name.clone(),
-                        current_hash: local_hash,
-                        remote_hash,
-                    });
-                }
-            }
-        }
-
-        Ok(updates)
-    }
 
     /// 更新单个 Skill（重新下载并替换本地文件）
     pub async fn update_skill(&self, db: &Arc<Database>, skill_id: &str) -> Result<InstalledSkill> {
@@ -1194,12 +1369,12 @@ impl SkillService {
             skill.readme_url.as_deref(),
         )
         .ok_or_else(|| {
-                anyhow!(format_skill_error(
-                    "SKILL_DIR_NOT_FOUND",
-                    &[("path", &skill.directory)],
-                    Some("checkRepoUrl"),
-                ))
-            })?;
+            anyhow!(format_skill_error(
+                "SKILL_DIR_NOT_FOUND",
+                &[("path", &skill.directory)],
+                Some("checkRepoUrl"),
+            ))
+        })?;
 
         let source = temp_dir.join(&remote_match.directory);
         if !source.exists() {
@@ -1840,12 +2015,13 @@ impl SkillService {
     /// 同步所有已启用的 Skills 到指定应用
     pub fn sync_to_app(db: &Arc<Database>, app: &AppType) -> Result<()> {
         let _state_guard = skill_state_read_guard();
-        Self::sync_to_app_unlocked(db, app)
+        Self::sync_to_app_unlocked(db, app).map(|_| ())
     }
 
-    fn sync_to_app_unlocked(db: &Arc<Database>, app: &AppType) -> Result<()> {
-        if matches!(app, AppType::Pi) {
-            return Ok(());
+    fn sync_to_app_unlocked(db: &Arc<Database>, app: &AppType) -> Result<Vec<SkillSyncFailure>> {
+        let mut failed = Vec::new();
+        if !Self::is_sync_managed_app(app) {
+            return Ok(failed);
         }
         let skills = db.get_all_installed_skills()?;
         let ssot_dir = Self::get_ssot_dir()?;
@@ -1888,11 +2064,15 @@ impl SkillService {
                         "同步 skill {} 到 {app:?} 失败，跳过该条: {err}",
                         skill.directory
                     );
+                    failed.push(SkillSyncFailure {
+                        directory: skill.directory.clone(),
+                        error: format!("{err:#}"),
+                    });
                 }
             }
         }
 
-        Ok(())
+        Ok(failed)
     }
 
     // ========== 发现功能（保留原有逻辑）==========
@@ -1902,30 +2082,7 @@ impl SkillService {
         &self,
         repos: Vec<SkillRepo>,
     ) -> Result<Vec<DiscoverableSkill>> {
-        let mut skills = Vec::new();
-
-        // 仅使用启用的仓库
-        let enabled_repos: Vec<SkillRepo> = repos.into_iter().filter(|repo| repo.enabled).collect();
-
-        let fetch_tasks = enabled_repos
-            .iter()
-            .map(|repo| self.fetch_repo_skills(repo));
-
-        let results: Vec<Result<Vec<DiscoverableSkill>>> =
-            futures::future::join_all(fetch_tasks).await;
-
-        for (repo, result) in enabled_repos.into_iter().zip(results.into_iter()) {
-            match result {
-                Ok(repo_skills) => skills.extend(repo_skills),
-                Err(e) => log::warn!("获取仓库 {}/{} 技能失败: {}", repo.owner, repo.name, e),
-            }
-        }
-
-        // 去重并排序
-        Self::deduplicate_discoverable_skills(&mut skills);
-        skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-        Ok(skills)
+        Ok(self.discover_available_report(repos).await?.skills)
     }
 
     /// 从仓库获取技能列表
@@ -2235,6 +2392,11 @@ impl SkillService {
 
         let temp_dir = tempfile::tempdir()?;
         let temp_path = temp_dir.path().to_path_buf();
+        #[cfg(test)]
+        if let Some(fixture) = &self.repo_fixture {
+            Self::copy_dir_recursive(fixture, &temp_path)?;
+            return Ok((temp_dir, repo.branch.clone()));
+        }
 
         let mut branches = Vec::new();
         if !repo.branch.is_empty() && !repo.branch.eq_ignore_ascii_case("HEAD") {
@@ -2712,7 +2874,7 @@ impl SkillService {
         db: &Arc<Database>,
         zip_path: &Path,
         current_app: &AppType,
-    ) -> Result<Vec<InstalledSkill>> {
+    ) -> Result<ZipInstallResult> {
         // 解压到临时目录
         let temp_guard = Self::extract_local_zip(zip_path)?;
         let temp_dir = temp_guard.path();
@@ -2732,6 +2894,7 @@ impl SkillService {
 
         let ssot_dir = Self::get_ssot_dir()?;
         let mut installed = Vec::new();
+        let mut skipped = Vec::new();
         let existing_skills = db.get_all_installed_skills()?;
         let zip_stem = zip_path
             .file_stem()
@@ -2794,6 +2957,11 @@ impl SkillService {
                     install_name,
                     existing.id
                 );
+                skipped.push(ZipSkippedSkill {
+                    directory: install_name,
+                    existing_id: existing.id.clone(),
+                    existing_name: existing.name.clone(),
+                });
                 continue;
             }
 
@@ -2842,7 +3010,7 @@ impl SkillService {
             installed.push(skill);
         }
 
-        Ok(installed)
+        Ok(ZipInstallResult { installed, skipped })
     }
 
     /// 搜索 skills.sh 公共目录
@@ -3226,6 +3394,42 @@ mod tests {
     use std::env;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn sync_to_openclaw_preserves_unmanaged_and_same_name_skills() {
+        let _home = TempHome::new();
+        let home = crate::config::get_home_dir();
+        let ssot = home.join(".cc-switch-web").join("skills");
+        write_skill(&ssot.join("shared-name"), "Managed");
+        let own_dir = home.join(".openclaw").join("skills");
+        write_skill(&own_dir.join("shared-name"), "OpenClaw Own");
+        write_skill(&own_dir.join("other"), "Other");
+        let own_file = own_dir.join("shared-name").join("SKILL.md");
+        let original = fs::read(&own_file).unwrap();
+        let db = create_test_db();
+        db.save_skill(&InstalledSkill {
+            id: "local:shared-name".to_string(),
+            name: "Shared".to_string(),
+            description: None,
+            directory: "shared-name".to_string(),
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            apps: SkillApps {
+                claude: true,
+                ..Default::default()
+            },
+            installed_at: 0,
+            content_hash: None,
+            updated_at: 0,
+        })
+        .expect("save skill");
+        SkillService::sync_to_app(&db, &AppType::OpenClaw).expect("no-op sync");
+        assert_eq!(fs::read(&own_file).unwrap(), original);
+        assert!(own_dir.join("other").join("SKILL.md").exists());
+    }
 
     #[test]
     fn resolve_skill_source_dir_falls_back_to_unique_metadata_name() {
@@ -4064,5 +4268,245 @@ mod tests {
             SkillService::local_hash_for_update_check(ssot.path(), "demo", Some("cached")),
             None
         );
+    }
+    fn poisoned_skill(id: &str, directory: &str) -> InstalledSkill {
+        InstalledSkill {
+            id: id.to_string(),
+            name: "poisoned".to_string(),
+            description: None,
+            directory: directory.to_string(),
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            apps: SkillApps::default(),
+            installed_at: 0,
+            content_hash: None,
+            updated_at: 0,
+        }
+    }
+    fn repo(owner: &str, name: &str, enabled: bool) -> SkillRepo {
+        SkillRepo {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            branch: "main".to_string(),
+            enabled,
+        }
+    }
+
+    #[tokio::test]
+    async fn discover_report_lists_unreadable_repos_and_ignores_disabled_ones() {
+        let remote = tempfile::tempdir().expect("remote repo");
+        write_skill(&remote.path().join("pdf"), "pdf");
+        let service = SkillService {
+            repo_fixture: Some(remote.path().to_path_buf()),
+        };
+
+        let report = service
+            .discover_available_report(vec![
+                repo("owner", "repo", true),
+                // 坐标不合法：下载前就失败，不碰网络
+                repo("bad owner!", "broken", true),
+                // 停用的仓库不读，也不该出现在失败里
+                repo("bad owner?", "disabled", false),
+            ])
+            .await
+            .expect("discover report");
+
+        assert_eq!(
+            report
+                .skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pdf"]
+        );
+        assert_eq!(report.failures.len(), 1);
+        let failure = &report.failures[0];
+        assert_eq!(
+            (
+                failure.owner.as_str(),
+                failure.name.as_str(),
+                failure.branch.as_str()
+            ),
+            ("bad owner!", "broken", "main")
+        );
+        assert!(
+            failure.error.contains("INVALID_REPO_REF"),
+            "unexpected error: {}",
+            failure.error
+        );
+
+        // 旧接口只取 skills，行为不变
+        let skills = service
+            .discover_available(vec![
+                repo("owner", "repo", true),
+                repo("bad owner!", "x", true),
+            ])
+            .await
+            .expect("discover");
+        assert_eq!(skills.len(), 1);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn check_updates_report_lists_unreadable_repos() {
+        let test_home = TempHome::new();
+        let _home = &test_home._dir;
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut installed = poisoned_skill("bad owner!/broken:skill", "skill");
+        installed.repo_owner = Some("bad owner!".to_string());
+        installed.repo_name = Some("broken".to_string());
+        installed.repo_branch = Some("main".to_string());
+        db.save_skill(&installed).expect("seed installed skill");
+
+        let report = SkillService::new()
+            .check_updates_report(&db)
+            .await
+            .expect("check updates report");
+
+        assert!(report.updates.is_empty());
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].owner, "bad owner!");
+        assert_eq!(report.failures[0].name, "broken");
+        assert!(report.failures[0].error.contains("INVALID_REPO_REF"));
+    }
+
+    fn build_skills_zip(dirs: &[&str]) -> Vec<u8> {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = SimpleFileOptions::default();
+            for dir in dirs {
+                zip.start_file(format!("{dir}/SKILL.md"), opts).unwrap();
+                zip.write_all(format!("---\nname: {dir}\ndescription: zipped\n---\n").as_bytes())
+                    .unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    /// #3749：ZIP 里和已安装 Skill 同名的被跳过时要如实返回，而不是让界面说「ZIP 中没有技能」。
+    #[test]
+    #[serial_test::serial]
+    fn install_from_zip_reports_skills_skipped_for_taken_directory() {
+        let test_home = TempHome::new();
+        let _home = &test_home._dir;
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut existing = poisoned_skill("local:my-helper", "my-helper");
+        existing.name = "My Helper".to_string();
+        db.save_skill(&existing).expect("seed existing skill");
+
+        let zip_path = _home.path().join("team.zip");
+        fs::write(&zip_path, build_skills_zip(&["My-Helper", "fresh"])).expect("write zip");
+
+        let result = SkillService::install_from_zip(&db, &zip_path, &AppType::Claude)
+            .expect("install from zip");
+
+        assert_eq!(
+            result
+                .installed
+                .iter()
+                .map(|skill| skill.directory.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fresh"]
+        );
+        assert_eq!(
+            result.skipped,
+            vec![ZipSkippedSkill {
+                directory: "My-Helper".to_string(),
+                existing_id: "local:my-helper".to_string(),
+                existing_name: "My Helper".to_string(),
+            }]
+        );
+
+        // 全部同名：不再报错，安装列表为空、跳过列表如实给出
+        let only_taken = _home.path().join("taken.zip");
+        fs::write(&only_taken, build_skills_zip(&["fresh"])).expect("write zip");
+        let result = SkillService::install_from_zip(&db, &only_taken, &AppType::Claude)
+            .expect("all-skipped ZIP is not an error");
+        assert!(result.installed.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].existing_id, "local:fresh");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resync_all_apps_reports_each_app_and_failed_skills() {
+        let test_home = TempHome::new();
+        let _home = &test_home._dir;
+        let ssot_dir = SkillService::get_ssot_dir().expect("ssot dir");
+        write_skill(&ssot_dir.join("good-skill"), "good");
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut good = poisoned_skill("owner/repo:good", "good-skill");
+        good.name = "good".to_string();
+        good.apps = SkillApps::only(&AppType::Claude);
+        good.apps.codex = true;
+        db.save_skill(&good).expect("seed good row");
+        let mut bad = poisoned_skill("owner/repo:bad", "../../escape-sync");
+        bad.apps = SkillApps::only(&AppType::Claude);
+        db.save_skill(&bad).expect("seed poisoned row");
+
+        let outcomes = SkillService::resync_all_apps(&db);
+
+        let apps: Vec<&str> = outcomes.iter().map(|o| o.app.as_str()).collect();
+        assert!(!apps.contains(&"claude-desktop") && !apps.contains(&"pi"));
+        assert!(apps.contains(&"claude") && apps.contains(&"codex"));
+
+        let claude = outcomes.iter().find(|o| o.app == "claude").unwrap();
+        assert!(!claude.ok);
+        assert!(claude.error.is_none());
+        assert_eq!(claude.failed_skills.len(), 1);
+        assert_eq!(claude.failed_skills[0].directory, "../../escape-sync");
+
+        let codex = outcomes.iter().find(|o| o.app == "codex").unwrap();
+        assert!(codex.ok, "codex should sync: {codex:?}");
+        for app in [AppType::Claude, AppType::Codex] {
+            let dir = SkillService::get_app_skills_dir(&app).expect("app dir");
+            assert!(dir.join("good-skill").join("SKILL.md").exists());
+        }
+        assert!(outcomes.iter().filter(|o| o.app != "claude").all(|o| o.ok));
+    }
+
+    /// OpenClaw 不支持 Skills，`~/.openclaw/skills` 归它自己：里面和受管 Skill 同名的
+    /// 真实目录不能被当成「已关掉的投影」删掉。
+    #[test]
+    #[serial_test::serial]
+    fn resync_all_apps_leaves_openclaw_skills_dir_alone() {
+        let test_home = TempHome::new();
+        let _home = &test_home._dir;
+        let ssot_dir = SkillService::get_ssot_dir().expect("ssot dir");
+        write_skill(&ssot_dir.join("shared-name"), "managed copy");
+
+        let openclaw_dir = SkillService::get_app_skills_dir(&AppType::OpenClaw).expect("dir");
+        let own_skill = openclaw_dir.join("shared-name").join("SKILL.md");
+        fs::create_dir_all(own_skill.parent().unwrap()).unwrap();
+        fs::write(&own_skill, "openclaw's own skill").unwrap();
+        write_skill(&openclaw_dir.join("other"), "untouched");
+
+        let db = Arc::new(Database::memory().expect("memory db"));
+        let mut skill = poisoned_skill("owner/repo:shared", "shared-name");
+        skill.name = "shared".to_string();
+        skill.apps = SkillApps::only(&AppType::Claude);
+        db.save_skill(&skill).expect("seed row");
+
+        let outcomes = SkillService::resync_all_apps(&db);
+
+        assert!(outcomes.iter().all(|o| o.app != "openclaw"));
+        assert!(outcomes.iter().all(|o| o.ok), "{outcomes:?}");
+        assert_eq!(
+            fs::read_to_string(&own_skill).unwrap(),
+            "openclaw's own skill"
+        );
+        assert!(openclaw_dir.join("other").join("SKILL.md").exists());
+
+        // 切换供应商走的同一条同步也不能碰它
+        SkillService::sync_to_app(&db, &AppType::OpenClaw).expect("no-op sync");
+        assert!(own_skill.exists());
     }
 }

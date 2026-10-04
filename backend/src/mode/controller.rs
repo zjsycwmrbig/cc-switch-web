@@ -1,0 +1,1182 @@
+//! Web 模式控制：直连指针独立于代理路由，客户端文件与模式一起提交。
+//! 所有生命周期入口先拿进程内服务锁，再拿应用切换锁，最后进入写入引擎。
+use super::{
+    contract, current, operation, stack,
+    state::{self, op, Mode, ModeState, PendingTarget, StackState},
+};
+use crate::app_config::AppType;
+use crate::error::AppError;
+use crate::live::engine::DeviceStore;
+use crate::live::project::claude::{
+    direct_patch, proxy_projection, ClaudeProjection, ProxyAuth, PROXY_TOKEN_PLACEHOLDER,
+};
+use crate::live::project::gemini::GeminiProjection;
+use crate::live::project::grok::GrokProjection;
+use crate::provider::Provider;
+use crate::services::provider::{claude_direct, codex_direct, gemini_direct, grok_direct};
+use crate::store::AppState;
+
+static SERVICE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) async fn lock_service() -> tokio::sync::MutexGuard<'static, ()> {
+    SERVICE_LOCK.lock().await
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EditorEdits<'a> {
+    Claude(
+        &'a [crate::services::provider::claude_editor::JsonChange],
+        crate::services::provider::claude_editor::ConflictPolicy,
+    ),
+    Codex(&'a crate::services::provider::editor_toml::TomlEdits),
+    Gemini(&'a crate::services::provider::gemini_editor::GeminiEdits),
+    Grok(&'a crate::services::provider::editor_toml::TomlEdits),
+}
+
+pub const PROXY_APPS: [AppType; 4] = [
+    AppType::Claude,
+    AppType::Codex,
+    AppType::Gemini,
+    AppType::GrokBuild,
+];
+fn require_app(app: &AppType) -> Result<(), AppError> {
+    if PROXY_APPS.contains(app) {
+        Ok(())
+    } else {
+        Err(AppError::Message(format!(
+            "{} 不支持本地路由",
+            app.as_str()
+        )))
+    }
+}
+fn provider(state: &AppState, app: &AppType, id: &str) -> Result<Provider, AppError> {
+    state
+        .db
+        .get_provider_by_id(id, app.as_str())?
+        .ok_or_else(|| AppError::Message(format!("供应商 {id} 不存在")))
+}
+fn stored_mode(app: &AppType) -> Result<ModeState, AppError> {
+    state::mode_state(&DeviceStore::for_device(), app.as_str())
+}
+fn reject_official(app: &AppType, row: &Provider) -> Result<(), AppError> {
+    if row.category.as_deref() == Some("official")
+        && !crate::services::provider::official_provider_supports_proxy_takeover(app, row)
+    {
+        Err(AppError::Message("该官方供应商不支持本地路由".into()))
+    } else {
+        Ok(())
+    }
+}
+fn origin(address: &str, port: u16) -> String {
+    let host = match address {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "[::1]",
+        host => host,
+    };
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    format!("http://{host}:{port}")
+}
+fn live_owner(
+    state: &AppState,
+    app: &AppType,
+    mode: &ModeState,
+) -> Result<Option<Provider>, AppError> {
+    if mode.attached {
+        mode.proxy_route
+            .as_deref()
+            .map(|id| state.db.get_provider_by_id(id, app.as_str()))
+            .transpose()
+            .map(Option::flatten)
+    } else {
+        current::direct_provider(&state.db, app)
+    }
+}
+fn codex_owner<'a>(mode: &'a ModeState, owner: Option<&'a Provider>) -> codex_direct::Owner<'a> {
+    match mode.contract.as_ref().filter(|_| mode.attached) {
+        Some(contract) => codex_direct::Owner::Contract {
+            contract,
+            route: owner,
+        },
+        None => owner.map_or(codex_direct::Owner::None, codex_direct::Owner::Provider),
+    }
+}
+/// 保存路由契约时不修改直连指针；相同契约仍允许更新实际请求路由。
+async fn write_proxy(
+    state: &AppState,
+    app: &AppType,
+    row: &Provider,
+    url: &str,
+    op_name: &str,
+) -> Result<(), AppError> {
+    write_proxy_with_stack(state, app, row, url, op_name, None).await
+}
+async fn write_proxy_with_stack(
+    state: &AppState,
+    app: &AppType,
+    row: &Provider,
+    url: &str,
+    op_name: &str,
+    change: Option<StackState>,
+) -> Result<(), AppError> {
+    write_proxy_with_edits(state, app, row, url, op_name, change, None).await
+}
+async fn write_proxy_with_edits(
+    state: &AppState,
+    app: &AppType,
+    row: &Provider,
+    url: &str,
+    op_name: &str,
+    change: Option<StackState>,
+    edits: Option<EditorEdits<'_>>,
+) -> Result<(), AppError> {
+    reject_official(app, row)?;
+    let before = stored_mode(app)?;
+    let owner = live_owner(state, app, &before)?;
+    let mut stack_state = match change {
+        Some(next) => next,
+        None => state::stack(&DeviceStore::for_device(), app.as_str())?,
+    };
+    if stack_state.enabled {
+        add_default(app, &mut stack_state, row);
+    }
+    let pending_mode = |mode| PendingTarget {
+        state: Some(mode),
+        stack: Some(stack_state.clone()),
+        ..PendingTarget::default()
+    };
+    let members = super::stack::published_members(&state.db, app, &stack_state, Some(&row.id))?;
+    let mut after = ModeState {
+        mode: Some(Mode::Proxy),
+        attached: true,
+        proxy_route: Some(row.id.clone()),
+        contract: None,
+    };
+    match app {
+        AppType::Claude => {
+            let auth = if row.uses_managed_account_auth() {
+                ProxyAuth::Managed {
+                    auth_token: !row.is_github_copilot()
+                        || row
+                            .settings_config
+                            .pointer("/env/ANTHROPIC_API_KEY")
+                            .is_none(),
+                }
+            } else {
+                ProxyAuth::FollowRow
+            };
+            let default = stack::claude_route_default(&members);
+            let mut projection = proxy_projection(
+                &ClaudeProjection::of(&row.settings_config),
+                url,
+                auth,
+                default
+                    .as_ref()
+                    .map(|model| crate::live::project::claude::StackRoleModel {
+                        id: &model.id,
+                        name: &model.name,
+                    }),
+            );
+            with_stack_models(&mut projection, &stack::claude_published(&members));
+            after.contract = Some(contract::claude(&projection));
+            if edits.is_none() && before.attached && before.contract == after.contract {
+                return operation::commit_target(
+                    &state.db,
+                    &DeviceStore::for_device(),
+                    app.as_str(),
+                    &pending_mode(after),
+                );
+            }
+            let previous = claude_direct::previous_projection(&state.db, owner.as_ref())?;
+            let patch = direct_patch(previous.as_ref(), &projection);
+            let mut pending = claude_direct::recorded_target(None, &projection);
+            pending.state = Some(after);
+            pending.stack = Some(stack_state.clone());
+            if let Some(EditorEdits::Claude(changes, on_conflict)) = edits {
+                let combined = crate::services::provider::claude_editor::EditorPatch {
+                    changes,
+                    on_conflict,
+                    key_fields: Some(patch),
+                };
+                operation::AppWrite::begin(&state.db, app.as_str())?.run(
+                    op_name,
+                    &[operation::FileChange {
+                        file: claude_direct::settings_file(),
+                        patch: &combined,
+                    }],
+                    pending,
+                )?;
+            } else {
+                claude_direct::run(&state.db, op_name, Some(&patch), pending)?;
+            }
+        }
+        AppType::Codex => {
+            let owner = codex_owner(&before, owner.as_ref());
+            let base_url = format!("{url}/v1");
+            let target = codex_direct::Target::Proxy {
+                route: row,
+                base_url: &base_url,
+                stack: &members,
+            };
+            let mut prepared = codex_direct::prepare(state, &owner, &target)?;
+            codex_direct::prepare_official_rows(&state.db, &owner, &target, &mut prepared).await?;
+            let planned = codex_direct::plan(&state.db, &owner, &target, &prepared)?;
+            after.contract = Some(planned.contract.clone());
+            if edits.is_none() && before.attached && before.contract == after.contract {
+                return operation::commit_target(
+                    &state.db,
+                    &DeviceStore::for_device(),
+                    app.as_str(),
+                    &pending_mode(after),
+                );
+            }
+            codex_direct::run_with_edits(
+                &state.db,
+                op_name,
+                planned,
+                &prepared,
+                pending_mode(after),
+                match edits {
+                    Some(EditorEdits::Codex(edits)) => Some(edits),
+                    _ => None,
+                },
+            )?;
+        }
+        AppType::Gemini => {
+            let projection = GeminiProjection::proxy_contract(
+                &gemini_direct::projection(row)?,
+                url,
+                PROXY_TOKEN_PLACEHOLDER,
+            );
+            after.contract = Some(contract::gemini(&projection));
+            if edits.is_none() && before.attached && before.contract == after.contract {
+                return operation::commit_target(
+                    &state.db,
+                    &DeviceStore::for_device(),
+                    app.as_str(),
+                    &pending_mode(after),
+                );
+            }
+            gemini_direct::run_with_edits(
+                &state.db,
+                op_name,
+                Some(&projection),
+                pending_mode(after),
+                match edits {
+                    Some(EditorEdits::Gemini(edits)) => Some(edits),
+                    _ => None,
+                },
+            )?;
+        }
+        AppType::GrokBuild => {
+            let projection = GrokProjection::proxy_contract(
+                &grok_direct::projection(row)?,
+                &format!("{url}/grokbuild/v1"),
+                PROXY_TOKEN_PLACEHOLDER,
+            )?;
+            after.contract = Some(contract::grok(&projection));
+            if edits.is_none() && before.attached && before.contract == after.contract {
+                return operation::commit_target(
+                    &state.db,
+                    &DeviceStore::for_device(),
+                    app.as_str(),
+                    &pending_mode(after),
+                );
+            }
+            grok_direct::run_with_edits(
+                &state.db,
+                op_name,
+                owner.as_ref(),
+                Some(&projection),
+                pending_mode(after),
+                match edits {
+                    Some(EditorEdits::Grok(edits)) => Some(edits),
+                    _ => None,
+                },
+            )?;
+        }
+        _ => require_app(app)?,
+    }
+    Ok(())
+}
+fn write_direct(state: &AppState, app: &AppType, detach: bool) -> Result<(), AppError> {
+    let before = stored_mode(app)?;
+    let owner = live_owner(state, app, &before)?;
+    let direct = current::direct_provider(&state.db, app)?.filter(|row| {
+        !crate::services::proxy::ProxyService::live_has_proxy_placeholder_for_app(
+            &state.db,
+            app,
+            &row.settings_config,
+        )
+    });
+    let after = ModeState {
+        mode: Some(if detach { Mode::Proxy } else { Mode::Direct }),
+        attached: false,
+        contract: None,
+        proxy_route: before.proxy_route.clone(),
+    };
+    let op_name = if detach { op::DETACH } else { op::EXIT };
+    if !before.attached {
+        return operation::commit_target(
+            &state.db,
+            &DeviceStore::for_device(),
+            app.as_str(),
+            &PendingTarget::mode(after),
+        );
+    }
+    match app {
+        AppType::Claude => {
+            let previous = claude_direct::previous_projection(&state.db, owner.as_ref())?;
+            let projection = direct
+                .as_ref()
+                .map(|p| ClaudeProjection::of(&p.settings_config))
+                .unwrap_or_default();
+            let patch = direct_patch(previous.as_ref(), &projection);
+            let mut pending = claude_direct::recorded_target(None, &projection);
+            pending.state = Some(after);
+            claude_direct::run(&state.db, op_name, Some(&patch), pending)?;
+        }
+        AppType::Codex => {
+            let owner = codex_owner(&before, owner.as_ref());
+            let write = |row: Option<&Provider>| -> Result<(), AppError> {
+                let target = codex_direct::Target::Direct(row);
+                let prepared = codex_direct::prepare(state, &owner, &target)?;
+                let planned = codex_direct::plan(&state.db, &owner, &target, &prepared)?;
+                codex_direct::run(
+                    &state.db,
+                    op_name,
+                    planned,
+                    &prepared,
+                    PendingTarget::mode(after.clone()),
+                )?;
+                Ok(())
+            };
+            if let Err(error) = write(direct.as_ref()) {
+                // 已开始发布的操作必须按原 pending 恢复，不能用兜底覆盖。
+                if operation::has_pending(app.as_str()) {
+                    return Err(error);
+                }
+                log::warn!("Codex 直连供应商不可用，撤回代理关键字段: {error}");
+                write(None)?;
+            }
+        }
+        AppType::Gemini => {
+            let projection = direct
+                .as_ref()
+                .map(gemini_direct::projection)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    log::warn!("Gemini 直连配置不可用: {error}");
+                    None
+                })
+                .unwrap_or_else(GeminiProjection::empty);
+            gemini_direct::run(
+                &state.db,
+                op_name,
+                Some(&projection),
+                PendingTarget::mode(after),
+            )?;
+        }
+        AppType::GrokBuild => {
+            let projection = direct
+                .as_ref()
+                .map(grok_direct::projection)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    log::warn!("Grok 直连配置不可用: {error}");
+                    None
+                })
+                .unwrap_or(GrokProjection { table: None });
+            grok_direct::run(
+                &state.db,
+                op_name,
+                owner.as_ref(),
+                Some(&projection),
+                PendingTarget::mode(after),
+            )?;
+        }
+        _ => require_app(app)?,
+    }
+    Ok(())
+}
+/// 预选代理路由；处于直连时不启动服务，也不改客户端配置。
+pub async fn set_route(state: &AppState, app: &AppType, id: &str) -> Result<(), AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    set_route_locked(state, app, id).await
+}
+
+pub(crate) async fn set_route_locked(
+    state: &AppState,
+    app: &AppType,
+    id: &str,
+) -> Result<(), AppError> {
+    require_app(app)?;
+    let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+    operation::settle(&state.db, app.as_str())?;
+    let row = provider(state, app, id)?;
+    reject_official(app, &row)?;
+    let mut mode = stored_mode(app)?;
+    if mode.is_proxy() && mode.attached {
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .map_err(AppError::Message)?;
+        if !status.running {
+            return Err(AppError::Message("路由服务未运行，请先恢复模式".into()));
+        }
+        write_proxy(
+            state,
+            app,
+            &row,
+            &origin(&status.address, status.port),
+            op::ROUTE,
+        )
+        .await
+    } else {
+        mode.mode.get_or_insert(Mode::Direct);
+        mode.proxy_route = Some(id.to_string());
+        operation::commit_target(
+            &state.db,
+            &DeviceStore::for_device(),
+            app.as_str(),
+            &PendingTarget::mode(mode),
+        )
+    }
+}
+/// 启动成功后才发布客户端契约；发布失败且没有 pending 时恢复服务总开关。
+pub async fn enter(state: &AppState, app: &AppType, route: Option<&str>) -> Result<(), AppError> {
+    enter_mode(state, app, route, false).await
+}
+pub async fn enter_mode(
+    state: &AppState,
+    app: &AppType,
+    route: Option<&str>,
+    aggregation: bool,
+) -> Result<(), AppError> {
+    if aggregation && !stack::supports_stack(app) {
+        return Err(AppError::Message("该应用不支持聚合".into()));
+    }
+    require_app(app)?;
+    let _service = SERVICE_LOCK.lock().await;
+    let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+    operation::settle(&state.db, app.as_str())?;
+    let previous = stored_mode(app)?;
+    let id = route
+        .map(str::to_string)
+        .or(previous.proxy_route)
+        .or(current::provider_for(
+            &state.db,
+            app,
+            current::Purpose::Direct,
+        )?)
+        .ok_or_else(|| AppError::Message("请先选择供应商".into()))?;
+    let row = provider(state, app, &id)?;
+    reject_official(app, &row)?;
+    let mut stack_state = state::stack(&DeviceStore::for_device(), app.as_str())?;
+    stack_state.enabled = aggregation;
+    let running = state.proxy_service.is_running().await;
+    let global = state.db.get_global_proxy_config().await?;
+    let started = state.proxy_service.start().await;
+    let result = match started {
+        Ok(info) => {
+            write_proxy_with_stack(
+                state,
+                app,
+                &row,
+                &origin(&info.address, info.port),
+                op::ENTER,
+                Some(stack_state),
+            )
+            .await
+        }
+        Err(error) => Err(AppError::Message(error)),
+    };
+    if result.is_err() && !operation::has_pending(app.as_str()) && !running {
+        if state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .map_err(AppError::Message)?;
+        }
+        state.db.update_global_proxy_config(global).await?;
+    }
+    if result.is_ok() {
+        state.mode_startup_errors.write().await.remove(app.as_str());
+    }
+    result
+}
+pub async fn exit(state: &AppState, app: &AppType) -> Result<(), AppError> {
+    require_app(app)?;
+    let _service = SERVICE_LOCK.lock().await;
+    let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+    operation::settle(&state.db, app.as_str())?;
+    write_direct(state, app, false)?;
+    state.mode_startup_errors.write().await.remove(app.as_str());
+    let mut attached = false;
+    for app in PROXY_APPS {
+        attached |= stored_mode(&app)?.attached;
+    }
+    let desktop_mapping = current::direct_provider(&state.db, &AppType::ClaudeDesktop)?
+        .is_some_and(|row| {
+            !crate::claude_desktop_config::is_official_provider(&row)
+                && crate::claude_desktop_config::provider_mode(&row)
+                    == crate::provider::ClaudeDesktopMode::Proxy
+        });
+    if !attached && !desktop_mapping && state.proxy_service.is_running().await {
+        state
+            .proxy_service
+            .stop()
+            .await
+            .map_err(AppError::Message)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "controller_tests.rs"]
+pub(crate) mod tests;
+
+/// 官方缓存更新只重投影当前接入的路由；失败保留重试标记。
+pub async fn resync_codex_if_behind(state: &AppState) {
+    use crate::services::provider::codex_official_models as models;
+    if !models::take_client_behind() {
+        return;
+    }
+    let result = async {
+        let _service = SERVICE_LOCK.lock().await;
+        let _app = state.proxy_service.lock_switch_for_app("codex").await;
+        operation::settle(&state.db, "codex")?;
+        let mode = stored_mode(&AppType::Codex)?;
+        if !mode.is_proxy() || !mode.attached {
+            return Ok::<_, AppError>(());
+        }
+        let Some(id) = mode.proxy_route else {
+            return Ok(());
+        };
+        let row = provider(state, &AppType::Codex, &id)?;
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .map_err(AppError::Message)?;
+        if !status.running {
+            return Err(AppError::Message("路由服务未运行".into()));
+        }
+        write_proxy(
+            state,
+            &AppType::Codex,
+            &row,
+            &origin(&status.address, status.port),
+            op::APPLY,
+        )
+        .await
+    }
+    .await;
+    if let Err(error) = result {
+        models::mark_client_behind();
+        log::warn!("Codex 官方模型更新后重写失败，下次重试: {error}");
+    }
+}
+
+pub async fn check_codex_official_models(state: &AppState) {
+    use crate::services::provider::codex_official_models as models;
+    let snapshot = state.clone();
+    let result = codex_direct::off_runtime(move || -> Result<(), AppError> {
+        let mode = stored_mode(&AppType::Codex)?;
+        if !mode.is_proxy() || !mode.attached {
+            return Ok(());
+        }
+        let Some(id) = mode.proxy_route.as_deref() else {
+            return Ok(());
+        };
+        let row = provider(&snapshot, &AppType::Codex, id)?;
+        let stack = state::stack(&DeviceStore::for_device(), "codex")?;
+        let members =
+            super::stack::published_members(&snapshot.db, &AppType::Codex, &stack, Some(id))?;
+        if !codex_direct::needs_official_rows(&row, &members) {
+            return Ok(());
+        }
+        let owner = codex_owner(&mode, Some(&row));
+        let target = codex_direct::Target::Proxy {
+            route: &row,
+            base_url: "",
+            stack: &members,
+        };
+        let prepared = codex_direct::prepare(&snapshot, &owner, &target)?;
+        if let Some(login) =
+            codex_direct::predicted_official_login(&snapshot.db, &owner, &target, &prepared)?
+        {
+            if let Some(version) = models::needs_refresh(&login) {
+                models::refresh(&login, &version).map_err(AppError::Message)?;
+            }
+        }
+        Ok(())
+    })
+    .await;
+    if let Err(error) = result.and_then(|r| r) {
+        log::debug!("检查 Codex 官方模型列表失败: {error}");
+    }
+    resync_codex_if_behind(state).await;
+}
+
+fn add_default(app: &AppType, roster: &mut StackState, row: &Provider) {
+    if !stack::supports_stack(app)
+        || (matches!(app, AppType::Codex) && codex_direct::is_official(row))
+    {
+        return;
+    }
+    stack::allocate_key(roster, row);
+    if !roster.members.contains(&row.id) {
+        roster.members.push(row.id.clone());
+    }
+}
+
+/// 成员变化与客户端目录一起提交，旧 key 永久保留，不会转给另一家。
+pub async fn set_stack_member(
+    state: &AppState,
+    app: &AppType,
+    id: &str,
+    present: bool,
+) -> Result<(), AppError> {
+    if !stack::supports_stack(app) {
+        return Err(AppError::Message("该应用不支持聚合".into()));
+    }
+    let _service = SERVICE_LOCK.lock().await;
+    let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+    operation::settle(&state.db, app.as_str())?;
+    let mode = stored_mode(app)?;
+    let mut roster = state::stack(&DeviceStore::for_device(), app.as_str())?;
+    if present {
+        let row = provider(state, app, id)?;
+        if row.category.as_deref() == Some("official")
+            || (matches!(app, AppType::Codex) && codex_direct::is_official(&row))
+        {
+            return Err(AppError::Message(
+                "官方账号可作为默认路由，不能作为聚合成员".into(),
+            ));
+        }
+        if matches!(app, AppType::Codex) {
+            codex_direct::check_stack_member(&row)?;
+        }
+        add_default(app, &mut roster, &row);
+    } else {
+        if mode.is_proxy() && roster.enabled && mode.proxy_route.as_deref() == Some(id) {
+            return Err(AppError::Message("请先更换默认供应商，再移除此成员".into()));
+        }
+        roster.members.retain(|member| member != id);
+    }
+    if mode.is_proxy() && mode.attached && roster.enabled {
+        let id = mode
+            .proxy_route
+            .as_deref()
+            .ok_or_else(|| AppError::Message("尚未设置默认供应商".into()))?;
+        let row = provider(state, app, id)?;
+        let status = state
+            .proxy_service
+            .get_status()
+            .await
+            .map_err(AppError::Message)?;
+        if !status.running {
+            return Err(AppError::Message("路由服务未运行".into()));
+        }
+        write_proxy_with_stack(
+            state,
+            app,
+            &row,
+            &origin(&status.address, status.port),
+            op::STACK,
+            Some(roster),
+        )
+        .await
+    } else {
+        operation::commit_target(
+            &state.db,
+            &DeviceStore::for_device(),
+            app.as_str(),
+            &PendingTarget {
+                stack: Some(roster),
+                ..PendingTarget::default()
+            },
+        )
+    }
+}
+
+/// 给 Web 的聚合名单与客户端目录提示；供应商展示按名称 A–Z。
+pub async fn stack_view(state: &AppState, app: &AppType) -> Result<stack::StackView, AppError> {
+    let mode = stored_mode(app)?;
+    let roster = state::stack(&DeviceStore::for_device(), app.as_str())?;
+    let members = stack::members(&state.db, app, &roster, mode.proxy_route.as_deref())?;
+    let active = mode.is_proxy() && roster.enabled;
+    let mut view = stack::StackView {
+        active,
+        members: stack::member_views(&members),
+        ..stack::StackView::default()
+    };
+    if active && matches!(app, AppType::Codex) && members.iter().any(stack::is_published) {
+        let route = mode
+            .proxy_route
+            .as_deref()
+            .map(|id| provider(state, app, id))
+            .transpose()?;
+        view.notice = if route.as_ref().is_some_and(codex_direct::route_owns_catalog) {
+            Some("routeOwnsCatalog")
+        } else if !crate::live::project::codex::live_catalog_is_ours(
+            &codex_direct::read_config_text()?,
+        ) {
+            let text = codex_direct::read_config_text()?;
+            let doc = text
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| AppError::Message(e.to_string()))?;
+            if doc.get("model_catalog_json").is_some() {
+                Some("configOwnsCatalog")
+            } else {
+                Some("officialModelsUnavailable")
+            }
+        } else {
+            match crate::services::provider::codex_official_models::last_source() {
+                Some(crate::services::provider::codex_official_models::NativeSource::Bundled) => {
+                    Some("officialModelsBundled")
+                }
+                _ => None,
+            }
+        };
+        view.stale_clients = codex_direct::off_runtime(|| {
+            crate::services::provider::codex_client_catalog::stale_clients(
+                &DeviceStore::for_device(),
+            )
+        })
+        .await?;
+    }
+    Ok(view)
+}
+
+/// Claude Code 的模型发现开关：打开后启动时向 `ANTHROPIC_BASE_URL/v1/models` 取模型列表，
+/// Stack 模型才会出现在 `/model` 里。独有字段：记进契约，退出代理时按记录删（同值才删），
+/// 用户自己设的全局值在直连切换时不受影响。
+const CLAUDE_GATEWAY_DISCOVERY_ENV: &str = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY";
+const CLAUDE_MAX_CONTEXT_ENV: &str = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
+
+/// 发布了 Stack 模型时：打开模型发现；`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 改由 Stack 模型决定，取
+/// 非 1M 模型里最小的窗口（等于默认 200K 时不写）。四档别名也写成 Stack id，同样受 MAX 约束；
+/// 1M 的 Stack 模型不受 MAX 影响。没有发布 Stack 模型时契约和原来逐字节一致。
+fn with_stack_models(projection: &mut ClaudeProjection, stack: &[stack::StackModel]) {
+    if stack.is_empty() {
+        return;
+    }
+    projection.exclusive.insert(
+        CLAUDE_GATEWAY_DISCOVERY_ENV.to_string(),
+        serde_json::Value::String("1".to_string()),
+    );
+    projection.exclusive.shift_remove(CLAUDE_MAX_CONTEXT_ENV);
+    let smallest = stack
+        .iter()
+        .filter(|model| !model.one_m)
+        .map(|model| model.window)
+        .min();
+    if let Some(window) = smallest.filter(|window| *window != stack::CLAUDE_DEFAULT_WINDOW) {
+        projection.exclusive.insert(
+            CLAUDE_MAX_CONTEXT_ENV.to_string(),
+            serde_json::Value::String(window.to_string()),
+        );
+    }
+}
+
+/// Web 服务正常退出时撤回客户端代理地址，保留代理/聚合模式供下次启动接回。
+/// 任一应用撤回失败时保持服务运行，避免留下指向已停止端口的配置。
+pub async fn detach_all(state: &AppState) -> Result<(), AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    exit_all_locked(state, true).await
+}
+
+/// 手动关闭路由：成功撤回所有客户端后才停止服务，模式持久化为直连。
+pub async fn exit_all(state: &AppState) -> Result<(), AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    exit_all_locked(state, false).await
+}
+
+async fn exit_all_locked(state: &AppState, detach: bool) -> Result<(), AppError> {
+    let mut errors = Vec::new();
+    for app in PROXY_APPS {
+        let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+        let result = operation::settle(&state.db, app.as_str()).and_then(|_| {
+            if stored_mode(&app)?.attached || !detach {
+                write_direct(state, &app, detach)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = result {
+            errors.push(format!("{}: {error}", app.as_str()));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(AppError::Message(errors.join("; ")));
+    }
+    if state.proxy_service.is_running().await {
+        state
+            .proxy_service
+            .stop()
+            .await
+            .map_err(AppError::Message)?;
+    }
+    Ok(())
+}
+
+/// 模式启动恢复：旧备份只归档，永不以陈旧快照覆盖客户端全局设置。
+/// 返回逐应用失败信息供 Web 展示；一个失败不会阻止其它应用恢复。
+pub async fn startup(state: &AppState) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    for app in PROXY_APPS {
+        let result = startup_app(state, &app).await;
+        if let Err(error) = result {
+            log::error!("恢复 {} 模式失败: {error}", app.as_str());
+            failures.push((app.as_str().to_string(), error.to_string()));
+        }
+    }
+    if let Some(row) = current::direct_provider(&state.db, &AppType::ClaudeDesktop)
+        .ok()
+        .flatten()
+        .filter(desktop_row_uses_mapping)
+    {
+        if let Err(error) = switch_desktop(state, &row.id).await {
+            failures.push(("claude-desktop".into(), error.to_string()));
+        }
+    }
+    crate::services::provider::codex_client_catalog::observe(&DeviceStore::for_device());
+    *state.mode_startup_errors.write().await = failures.iter().cloned().collect();
+    failures
+}
+
+async fn startup_app(state: &AppState, app: &AppType) -> Result<(), AppError> {
+    operation::settle(&state.db, app.as_str())?;
+    let store = DeviceStore::for_device();
+    let backup = state.db.get_live_backup(app.as_str()).await?;
+    let mut mode = stored_mode(app)?;
+    let placeholder = !mode.attached
+        && crate::services::provider::ProviderService::read_live_settings(app.clone()).is_ok_and(
+            |live| {
+                crate::services::proxy::ProxyService::live_has_proxy_placeholder_for_app(
+                    &state.db, app, &live,
+                )
+            },
+        );
+    let (legacy_enabled, _) = state.db.get_proxy_flags_sync(app.as_str());
+    let want_proxy = if backup.is_some() || placeholder {
+        legacy_enabled
+    } else {
+        mode.mode.map_or(legacy_enabled, |mode| mode == Mode::Proxy)
+    };
+    if placeholder {
+        mode.attached = true;
+        operation::commit_target(
+            &state.db,
+            &store,
+            app.as_str(),
+            &PendingTarget::mode(mode.clone()),
+        )?;
+    }
+    if want_proxy {
+        let aggregation = state::stack(&store, app.as_str())?.enabled;
+        if let Err(error) = enter_mode(state, app, mode.proxy_route.as_deref(), aggregation).await {
+            if !operation::has_pending(app.as_str()) {
+                // 无写入意图时才撤回；已有 pending 保留原目标，由下一次恢复补完。
+                let _service = SERVICE_LOCK.lock().await;
+                let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+                write_direct(state, app, false)?;
+            }
+            return Err(error);
+        }
+    } else if mode.mode != Some(Mode::Direct) || mode.attached {
+        exit(state, app).await?;
+    }
+    if let Some(backup) = backup {
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
+        let path = crate::config::get_app_config_dir()
+            .join("backups")
+            .join("proxy-live-backup")
+            .join(format!("{}-{stamp}.json", app.as_str()));
+        crate::config::write_json_file_private(
+            &path,
+            &serde_json::json!({
+                "app": app.as_str(), "backedUpAt": backup.backed_up_at,
+                "originalConfig": serde_json::from_str::<serde_json::Value>(&backup.original_config).unwrap_or(serde_json::Value::String(backup.original_config)),
+            }),
+        )?;
+        state.db.delete_live_backup(app.as_str()).await?;
+    }
+    Ok(())
+}
+
+/// 新模式的故障转移只记代理路由；None 表示尚未迁移的旧设备状态。
+/// 服务锁使迟到的转移结果在进入聚合或退出代理之后失效。
+pub async fn record_failover(
+    db: &crate::database::Database,
+    app: &AppType,
+    id: &str,
+) -> Result<Option<bool>, AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    operation::settle(db, app.as_str())?;
+    let mut mode = stored_mode(app)?;
+    if mode.mode.is_none() {
+        return Ok(None);
+    }
+    if !mode.is_proxy()
+        || !mode.attached
+        || mode.proxy_route.as_deref() == Some(id)
+        || state::stack(&DeviceStore::for_device(), app.as_str())?.enabled
+    {
+        return Ok(Some(false));
+    }
+    if db.get_provider_by_id(id, app.as_str())?.is_none() {
+        return Err(AppError::Message(format!("供应商 {id} 不存在")));
+    }
+    mode.proxy_route = Some(id.to_string());
+    let write = operation::AppWrite::begin(db, app.as_str())?;
+    write.run(op::ROUTE, &[], PendingTarget::mode(mode))?;
+    Ok(Some(true))
+}
+
+/// 调用方已持有服务锁和应用切换锁，供应商行已暂存；全局编辑与代理契约同事务发布。
+pub(crate) async fn reapply_after_save_locked(
+    state: &AppState,
+    app: &AppType,
+    edits: Option<EditorEdits<'_>>,
+) -> Result<bool, AppError> {
+    let mode = stored_mode(app)?;
+    if !mode.is_proxy() || !mode.attached {
+        return Ok(false);
+    }
+    let id = mode
+        .proxy_route
+        .as_deref()
+        .ok_or_else(|| AppError::Message("代理模式缺少路由".into()))?;
+    let row = provider(state, app, id)?;
+    let status = state
+        .proxy_service
+        .get_status()
+        .await
+        .map_err(AppError::Message)?;
+    if !status.running {
+        return Err(AppError::Message("路由服务未运行，请先恢复模式".into()));
+    }
+    write_proxy_with_edits(
+        state,
+        app,
+        &row,
+        &origin(&status.address, status.port),
+        op::APPLY,
+        None,
+        edits,
+    )
+    .await?;
+    Ok(true)
+}
+
+/// 独立启动服务（尚不接管应用），失败时恢复总开关。
+pub async fn start_service(
+    state: &AppState,
+) -> Result<crate::proxy::types::ProxyServerInfo, AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    let previous = state.db.get_global_proxy_config().await?;
+    match state.proxy_service.start().await {
+        Ok(info) => Ok(info),
+        Err(error) => {
+            state.db.update_global_proxy_config(previous).await?;
+            Err(AppError::Message(error))
+        }
+    }
+}
+
+/// 全局设置只改监听与日志；每应用的重试、超时和队列设置保持独立。
+/// 重启绑定失败时回滚配置并恢复原服务，客户端地址在绑定成功前不动。
+pub async fn configure_service(
+    state: &AppState,
+    mut config: crate::proxy::types::GlobalProxyConfig,
+    restart: bool,
+) -> Result<(), AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    let previous = state.db.get_global_proxy_config().await?;
+    let running = state.proxy_service.is_running().await;
+    config.proxy_enabled = previous.proxy_enabled;
+    let old_status = state
+        .proxy_service
+        .get_status()
+        .await
+        .map_err(AppError::Message)?;
+    let rebind = restart
+        || config.listen_address != previous.listen_address
+        || config.listen_port != previous.listen_port;
+    if running && rebind {
+        state
+            .proxy_service
+            .stop()
+            .await
+            .map_err(AppError::Message)?;
+    }
+    if let Err(error) = state.db.update_global_proxy_config(config).await {
+        if running && rebind {
+            let _ = state.proxy_service.start().await;
+        }
+        return Err(error);
+    }
+    if (running && rebind) || (restart && !running) {
+        if let Err(error) = state.proxy_service.start().await {
+            let mut restore_config = previous.clone();
+            if running {
+                restore_config.listen_port = old_status.port;
+            }
+            state.db.update_global_proxy_config(restore_config).await?;
+            let restored = if running {
+                state.proxy_service.start().await.map(|_| ())
+            } else {
+                Ok(())
+            };
+            state.db.update_global_proxy_config(previous).await?;
+            return Err(AppError::Message(match restored {
+                Ok(()) => format!("新监听地址不可用，已恢复原配置: {error}"),
+                Err(restore) => format!("新监听地址不可用: {error}；恢复原服务失败: {restore}"),
+            }));
+        }
+        for app in PROXY_APPS {
+            let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+            operation::settle(&state.db, app.as_str())?;
+            reapply_after_save_locked(state, &app, None).await?;
+        }
+        if let Some(row) = current::direct_provider(&state.db, &AppType::ClaudeDesktop)?
+            .filter(desktop_row_uses_mapping)
+        {
+            let _app = state
+                .proxy_service
+                .lock_switch_for_app("claude-desktop")
+                .await;
+            crate::claude_desktop_config::apply_provider(&state.db, &row)?;
+        }
+    } else if running {
+        state
+            .proxy_service
+            .refresh_runtime_config()
+            .await
+            .map_err(AppError::Message)?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeView {
+    pub startup_error: Option<String>,
+    pub mode: &'static str,
+    pub attached: bool,
+    pub direct_provider_id: Option<String>,
+    pub route_provider_id: Option<String>,
+    pub aggregation: stack::StackView,
+    pub eligible_provider_ids: Vec<String>,
+}
+
+pub async fn view(state: &AppState, app: &AppType) -> Result<ModeView, AppError> {
+    require_app(app)?;
+    let _service = SERVICE_LOCK.lock().await;
+    let _app = state.proxy_service.lock_switch_for_app(app.as_str()).await;
+    operation::settle(&state.db, app.as_str())?;
+    let mode = stored_mode(app)?;
+    let aggregation = stack_view(state, app).await?;
+    Ok(ModeView {
+        startup_error: state
+            .mode_startup_errors
+            .read()
+            .await
+            .get(app.as_str())
+            .cloned(),
+        mode: if mode.is_proxy() {
+            if aggregation.active {
+                "aggregation"
+            } else {
+                "routing"
+            }
+        } else {
+            "direct"
+        },
+        attached: mode.attached,
+        direct_provider_id: current::provider_for(&state.db, app, current::Purpose::Direct)?,
+        route_provider_id: mode.proxy_route,
+        aggregation,
+        eligible_provider_ids: state
+            .db
+            .get_all_providers(app.as_str())?
+            .values()
+            .filter(|row| reject_official(app, row).is_ok())
+            .map(|row| row.id.clone())
+            .collect(),
+    })
+}
+
+pub(crate) fn desktop_uses_mapping(state: &AppState) -> Result<bool, AppError> {
+    Ok(
+        current::direct_provider(&state.db, &AppType::ClaudeDesktop)?
+            .as_ref()
+            .is_some_and(desktop_row_uses_mapping),
+    )
+}
+fn desktop_row_uses_mapping(row: &Provider) -> bool {
+    !crate::claude_desktop_config::is_official_provider(row)
+        && crate::claude_desktop_config::provider_mode(row)
+            == crate::provider::ClaudeDesktopMode::Proxy
+}
+
+/// 调用方持有服务锁和 Desktop 切换锁；映射卡需先启动服务，再提交 profile。
+pub(crate) async fn apply_desktop_locked(
+    state: &AppState,
+    row: &Provider,
+    was_mapping: bool,
+) -> Result<(), AppError> {
+    let mapping = desktop_row_uses_mapping(row);
+    let running = state.proxy_service.is_running().await;
+    let previous = state.db.get_global_proxy_config().await?;
+    if mapping && !running {
+        if let Err(error) = state.proxy_service.start().await {
+            state.db.update_global_proxy_config(previous).await?;
+            return Err(AppError::Message(error));
+        }
+    }
+    if let Err(error) = crate::claude_desktop_config::switch_provider(&state.db, row) {
+        if mapping && !running && !operation::has_pending("claude-desktop") {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .map_err(AppError::Message)?;
+            state.db.update_global_proxy_config(previous).await?;
+        }
+        return Err(error);
+    }
+    if was_mapping && !mapping {
+        let mut needed = false;
+        for app in PROXY_APPS {
+            needed |= stored_mode(&app)?.attached;
+        }
+        if !needed && state.proxy_service.is_running().await {
+            state
+                .proxy_service
+                .stop()
+                .await
+                .map_err(AppError::Message)?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn switch_desktop(state: &AppState, id: &str) -> Result<(), AppError> {
+    let _service = SERVICE_LOCK.lock().await;
+    let _app = state
+        .proxy_service
+        .lock_switch_for_app("claude-desktop")
+        .await;
+    operation::settle(&state.db, "claude-desktop")?;
+    let row = provider(state, &AppType::ClaudeDesktop, id)?;
+    let was_mapping = desktop_uses_mapping(state)?;
+    apply_desktop_locked(state, &row, was_mapping).await
+}

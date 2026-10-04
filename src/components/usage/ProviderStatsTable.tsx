@@ -1,3 +1,4 @@
+import { TablePagination, useClientPagination } from "./TablePagination";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -9,7 +10,12 @@ import {
 } from "@/components/ui/table";
 import { useProviderStats } from "@/lib/query/usage";
 import type { UsageRangeSelection } from "@/types/usage";
-import { fmtUsd } from "./format";
+import {
+  fmtUsd,
+  formatTokensPerSecond,
+  getAggregateTokensPerSecond,
+} from "./format";
+import { compareProviderNames } from "@/utils/providerSort";
 
 interface ProviderStatsTableProps {
   range: UsageRangeSelection;
@@ -26,6 +32,13 @@ export function ProviderStatsTable({
   const { data: stats, isLoading } = useProviderStats(range, appType, {
     refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
   });
+
+  const pagination = useClientPagination(
+    [...(stats ?? [])].sort((a, b) =>
+      compareProviderNames(a.providerName, b.providerName),
+    ),
+    JSON.stringify([range, appType]),
+  );
 
   if (isLoading) {
     return <div className="h-[400px] animate-pulse rounded bg-gray-100" />;
@@ -52,20 +65,26 @@ export function ProviderStatsTable({
             <TableHead className="text-right">
               {t("usage.avgLatency", "平均延迟")}
             </TableHead>
+            <TableHead className="text-right">
+              {t("usage.outputSpeed", "输出速度")}
+            </TableHead>
+            <TableHead className="text-right">
+              {t("usage.estimatedSpeed", "估算速度")}
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {stats?.length === 0 ? (
             <TableRow>
               <TableCell
-                colSpan={6}
+                colSpan={8}
                 className="text-center text-muted-foreground"
               >
                 {t("usage.noData", "暂无数据")}
               </TableCell>
             </TableRow>
           ) : (
-            stats?.map((stat) => (
+            pagination.pageRows.map((stat) => (
               <TableRow key={stat.providerId}>
                 <TableCell className="font-medium">
                   {stat.providerName}
@@ -85,11 +104,30 @@ export function ProviderStatsTable({
                 <TableCell className="text-right">
                   {stat.avgLatencyMs}ms
                 </TableCell>
+                <TableCell className="text-right">
+                  {formatTokensPerSecond(
+                    getAggregateTokensPerSecond(
+                      stat.speedOutputTokens,
+                      stat.speedGenerationMs,
+                    ),
+                  ) ?? "—"}{" "}
+                  tps
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatTokensPerSecond(
+                    getAggregateTokensPerSecond(
+                      stat.estSpeedOutputTokens,
+                      stat.estSpeedDurationMs,
+                    ),
+                  ) ?? "—"}{" "}
+                  tps
+                </TableCell>
               </TableRow>
             ))
           )}
         </TableBody>
       </Table>
+      <TablePagination {...pagination} onPageChange={pagination.setPage} />
     </div>
   );
 }

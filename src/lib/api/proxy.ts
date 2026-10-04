@@ -1,3 +1,5 @@
+import type { AppId } from "@/lib/api/types";
+import type { AppMode, AppModeView } from "@/types/proxy";
 import { invoke } from "@/lib/runtime/client/core";
 import type {
   ProxyStatus,
@@ -8,6 +10,32 @@ import type {
 } from "@/types/proxy";
 
 export const proxyApi = {
+  restartCodexDaemon(): Promise<"restarted" | "notRunning"> {
+    return invoke("restart_codex_daemon");
+  },
+  getAppMode(appType: AppId): Promise<AppModeView> {
+    return invoke("get_app_mode", { appType });
+  },
+  setAppMode(
+    appType: AppId,
+    mode: AppMode,
+    routeProviderId?: string,
+  ): Promise<void> {
+    return invoke("set_app_mode", { appType, mode, routeProviderId });
+  },
+  setAggregationMember(
+    appType: AppId,
+    providerId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    return invoke("set_aggregation_member", { appType, providerId, enabled });
+  },
+  setRoute(appType: AppId, providerId: string): Promise<void> {
+    return invoke("switch_proxy_provider", { appType, providerId });
+  },
+  restartService(config: GlobalProxyConfig): Promise<void> {
+    return invoke("restart_proxy_service", { config });
+  },
   // ========== 代理服务器控制 API ==========
 
   // 启动代理服务器
@@ -63,19 +91,6 @@ export const proxyApi = {
   },
 
   // ========== 计费默认配置 API ==========
-
-  // 获取默认成本倍率
-  async getDefaultCostMultiplier(appType: string): Promise<string> {
-    return invoke("get_default_cost_multiplier", { appType });
-  },
-
-  // 设置默认成本倍率
-  async setDefaultCostMultiplier(
-    appType: string,
-    value: string,
-  ): Promise<void> {
-    return invoke("set_default_cost_multiplier", { appType, value });
-  },
 
   // 获取计费模式来源
   async getPricingModelSource(appType: string): Promise<string> {

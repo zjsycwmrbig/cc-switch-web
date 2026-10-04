@@ -1,3 +1,6 @@
+import { WindowedRows } from "@/components/common/WindowedRows";
+import { ResyncButton } from "@/components/common/ResyncButton";
+import { mcpApi } from "@/lib/api/mcp";
 import React, { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Search, Server } from "lucide-react";
@@ -10,7 +13,7 @@ import {
   useDeleteMcpServer,
   useImportMcpFromApps,
 } from "@/hooks/useMcp";
-import type { McpServer } from "@/types";
+import type { McpServer, VisibleApps } from "@/types";
 import type { AppId } from "@/lib/api/types";
 import McpFormModal from "./McpFormModal";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -18,13 +21,14 @@ import { Edit3, Trash2, ExternalLink } from "lucide-react";
 import { settingsApi } from "@/lib/api";
 import { mcpPresets } from "@/config/mcpPresets";
 import { toast } from "sonner";
-import { MCP_SKILLS_APP_IDS } from "@/config/appConfig";
+import { MCP_SKILLS_APP_IDS, type McpAppId } from "@/config/appConfig";
 import { AppCountBar } from "@/components/common/AppCountBar";
 import { AppToggleGroup } from "@/components/common/AppToggleGroup";
 import { ListItemRow } from "@/components/common/ListItemRow";
 import { ManagementListSearch } from "@/components/common/ManagementListSearch";
 
 interface UnifiedMcpPanelProps {
+  visibleApps?: VisibleApps;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -36,7 +40,10 @@ export interface UnifiedMcpPanelHandle {
 const UnifiedMcpPanel = React.forwardRef<
   UnifiedMcpPanelHandle,
   UnifiedMcpPanelProps
->(({ onOpenChange: _onOpenChange }, ref) => {
+>(({ onOpenChange: _onOpenChange, visibleApps }, ref) => {
+  const visibleAppIds = MCP_SKILLS_APP_IDS.filter(
+    (app) => visibleApps?.[app] !== false,
+  );
   const { t } = useTranslation();
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -99,13 +106,13 @@ const UnifiedMcpPanel = React.forwardRef<
       hermes: 0,
       mcode: 0,
     };
-    serverEntries.forEach(([_, server]) => {
+    filteredServerEntries.forEach(([_, server]) => {
       for (const app of MCP_SKILLS_APP_IDS) {
         if (server.apps[app]) counts[app]++;
       }
     });
     return counts;
-  }, [serverEntries]);
+  }, [filteredServerEntries]);
 
   const handleToggleApp = async (
     serverId: string,
@@ -122,7 +129,7 @@ const UnifiedMcpPanel = React.forwardRef<
 
   const handleToggleAll = async (app: AppId, enabled: boolean) => {
     if (writePending) return;
-    const serverIds = serverEntries
+    const serverIds = filteredServerEntries
       .filter(
         ([_, server]) =>
           Boolean(server.apps[app as keyof typeof server.apps]) !== enabled,
@@ -139,6 +146,32 @@ const UnifiedMcpPanel = React.forwardRef<
       toast.error(
         t("common.bulkToggleFailed", { count: result.failed.length }),
       );
+    }
+    if (result.succeeded.length > 0) {
+      toast.success(t("common.saved"), {
+        action: {
+          label: t("common.undo"),
+          onClick: () => {
+            void bulkToggleAppMutation
+              .mutateAsync({
+                serverIds: result.succeeded,
+                app,
+                enabled: !enabled,
+              })
+              .then((undone) => {
+                if (undone.failed.length)
+                  toast.error(
+                    t("common.bulkToggleFailed", {
+                      count: undone.failed.length,
+                    }),
+                  );
+              })
+              .catch((error) =>
+                toast.error(t("common.error"), { description: String(error) }),
+              );
+          },
+        },
+      });
     }
   };
 
@@ -198,11 +231,16 @@ const UnifiedMcpPanel = React.forwardRef<
 
   return (
     <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
+      <ResyncButton
+        run={() => mcpApi.resyncToApps()}
+        queryKey={["mcp", "all"]}
+        disabled={writePending}
+      />
       <AppCountBar
         totalLabel={t("mcp.serverCount", { count: serverEntries.length })}
         counts={enabledCounts}
-        appIds={MCP_SKILLS_APP_IDS}
-        totalCount={serverEntries.length}
+        appIds={visibleAppIds}
+        totalCount={filteredServerEntries.length}
         onToggleAll={handleToggleAll}
         pendingApp={bulkToggleAppMutation.variables?.app ?? null}
         disabled={writePending}
@@ -241,18 +279,21 @@ const UnifiedMcpPanel = React.forwardRef<
         ) : (
           <TooltipProvider delayDuration={300}>
             <div className="rounded-xl border border-border-default overflow-hidden">
-              {filteredServerEntries.map(([id, server], index) => (
-                <UnifiedMcpListItem
-                  key={id}
-                  id={id}
-                  server={server}
-                  onToggleApp={handleToggleApp}
-                  onEdit={handleEdit}
-                  onDelete={handleDelete}
-                  disabled={writePending}
-                  isLast={index === filteredServerEntries.length - 1}
-                />
-              ))}
+              <WindowedRows>
+                {filteredServerEntries.map(([id, server], index) => (
+                  <UnifiedMcpListItem
+                    key={id}
+                    id={id}
+                    server={server}
+                    visibleAppIds={visibleAppIds}
+                    onToggleApp={handleToggleApp}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
+                    disabled={writePending}
+                    isLast={index === filteredServerEntries.length - 1}
+                  />
+                ))}
+              </WindowedRows>
             </div>
           </TooltipProvider>
         )}
@@ -264,8 +305,8 @@ const UnifiedMcpPanel = React.forwardRef<
           initialData={
             editingId && serversMap ? serversMap[editingId] : undefined
           }
-          existingIds={serversMap ? Object.keys(serversMap) : []}
-          defaultFormat="json"
+          existingServers={serversMap ?? {}}
+          visibleAppIds={visibleAppIds}
           onSave={async () => {
             setIsFormOpen(false);
             setEditingId(null);
@@ -290,6 +331,7 @@ const UnifiedMcpPanel = React.forwardRef<
 UnifiedMcpPanel.displayName = "UnifiedMcpPanel";
 
 interface UnifiedMcpListItemProps {
+  visibleAppIds: McpAppId[];
   id: string;
   server: McpServer;
   onToggleApp: (serverId: string, app: AppId, enabled: boolean) => void;
@@ -302,6 +344,7 @@ interface UnifiedMcpListItemProps {
 const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
   id,
   server,
+  visibleAppIds,
   onToggleApp,
   onEdit,
   onDelete,
@@ -363,11 +406,11 @@ const UnifiedMcpListItem: React.FC<UnifiedMcpListItemProps> = ({
       <AppToggleGroup
         apps={server.apps}
         onToggle={(app, enabled) => onToggleApp(id, app, enabled)}
-        appIds={MCP_SKILLS_APP_IDS}
+        appIds={visibleAppIds}
         disabled={disabled}
       />
 
-      <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="flex items-center gap-0.5 flex-shrink-0 md:opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
         <Button
           type="button"
           variant="ghost"

@@ -1,3 +1,5 @@
+import { parseProviderEditorConflict } from "@/utils/providerEditorConflict";
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -29,6 +31,7 @@ export const useAddProviderMutation = (appId: AppId) => {
         addToLive?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
         ensureCodexOfficialSeed?: boolean;
+        editorSave?: ProviderEditorSave;
       },
     ) => {
       const {
@@ -36,6 +39,7 @@ export const useAddProviderMutation = (appId: AppId) => {
         addToLive,
         ensureGrokBuildOfficialSeed,
         ensureCodexOfficialSeed,
+        editorSave,
         ...rest
       } = providerInput;
 
@@ -47,6 +51,14 @@ export const useAddProviderMutation = (appId: AppId) => {
         if (!officialProvider) {
           throw new Error("Grok Build official provider was not created");
         }
+        if (editorSave) {
+          await providersApi.update(
+            { ...officialProvider, ...rest, id: officialProvider.id },
+            appId,
+            undefined,
+            editorSave,
+          );
+        }
         return officialProvider;
       }
 
@@ -56,7 +68,8 @@ export const useAddProviderMutation = (appId: AppId) => {
         appId === "opencode" ||
         appId === "openclaw" ||
         appId === "hermes" ||
-        appId === "pi"
+        appId === "pi" ||
+        appId === "mcode"
       ) {
         if (
           providerInput.category === "omo" ||
@@ -83,7 +96,9 @@ export const useAddProviderMutation = (appId: AppId) => {
       };
       delete (newProvider as any).providerKey;
 
-      await providersApi.add(newProvider, appId, addToLive);
+      if (editorSave)
+        await providersApi.add(newProvider, appId, addToLive, editorSave);
+      else await providersApi.add(newProvider, appId, addToLive);
       return newProvider;
     },
     onSuccess: async () => {
@@ -127,6 +142,7 @@ export const useAddProviderMutation = (appId: AppId) => {
       );
     },
     onError: (error: Error) => {
+      if (parseProviderEditorConflict(error)) return;
       const rawDetail = extractErrorMessage(error);
       const detail =
         (appId === "pi"
@@ -152,11 +168,15 @@ export const useUpdateProviderMutation = (appId: AppId) => {
     mutationFn: async ({
       provider,
       originalId,
+      editorSave,
     }: {
       provider: Provider;
       originalId?: string;
+      editorSave?: ProviderEditorSave;
     }) => {
-      await providersApi.update(provider, appId, originalId);
+      if (editorSave)
+        await providersApi.update(provider, appId, originalId, editorSave);
+      else await providersApi.update(provider, appId, originalId);
       return provider;
     },
     onSuccess: async () => {
@@ -182,6 +202,7 @@ export const useUpdateProviderMutation = (appId: AppId) => {
       );
     },
     onError: (error: Error) => {
+      if (parseProviderEditorConflict(error)) return;
       const rawDetail = extractErrorMessage(error);
       const detail =
         (appId === "pi"

@@ -16,6 +16,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import type { FetchedModel } from "@/lib/api/model-fetch";
+import { compareProviderNames } from "@/utils/providerSort";
 
 export function ModelDropdown({
   models,
@@ -34,7 +35,7 @@ export function ModelDropdown({
     if (!grouped[vendor]) grouped[vendor] = [];
     grouped[vendor].push(model);
   }
-  const vendors = Object.keys(grouped).sort();
+  const vendors = Object.keys(grouped).sort(compareProviderNames);
 
   return (
     <Popover modal open={open} onOpenChange={setOpen}>

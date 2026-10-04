@@ -6,28 +6,23 @@
 
 use crate::app_config::{AppType, InstalledSkill, UnmanagedSkill};
 use crate::services::skill::{
-    DiscoverableSkill, ImportSkillSelection, MigrationResult, SkillBackupEntry, SkillRepo,
-    SkillService, SkillStorageLocation, SkillUninstallResult, SkillUpdateInfo,
-    SkillsShSearchResult,
+    DiscoverableSkill, ImportSkillSelection, MigrationResult, SkillBackupEntry,
+    SkillDiscoveryResult, SkillRepo, SkillService, SkillStorageLocation, SkillUninstallResult,
+    SkillUpdateCheckResult, SkillsShSearchResult, ZipInstallResult,
 };
 use crate::store::AppState;
 use std::path::Path;
 
 /// 解析 app 参数为 AppType
 fn parse_app_type(app: &str) -> Result<AppType, String> {
-    match app.to_lowercase().as_str() {
-        "claude" => Ok(AppType::Claude),
-        "codex" => Ok(AppType::Codex),
-        "gemini" => Ok(AppType::Gemini),
-        "opencode" => Ok(AppType::OpenCode),
-        "openclaw" => Ok(AppType::OpenClaw),
-        _ => Err(format!("不支持的 app 类型: {app}")),
-    }
+    app.parse::<AppType>().map_err(|e| e.to_string())
 }
 
 // ========== 统一管理命令 ==========
 
-pub(crate) fn get_installed_skills_internal(app_state: &AppState) -> Result<Vec<InstalledSkill>, String> {
+pub(crate) fn get_installed_skills_internal(
+    app_state: &AppState,
+) -> Result<Vec<InstalledSkill>, String> {
     SkillService::get_all_installed(&app_state.db).map_err(|e| e.to_string())
 }
 
@@ -97,7 +92,7 @@ pub(crate) fn install_skills_from_zip_internal(
     app_state: &AppState,
     zip_path: &Path,
     current_app: String,
-) -> Result<Vec<InstalledSkill>, String> {
+) -> Result<ZipInstallResult, String> {
     let app_type = parse_app_type(&current_app)?;
     SkillService::install_from_zip(&app_state.db, zip_path, &app_type).map_err(|e| e.to_string())
 }
@@ -106,19 +101,19 @@ pub(crate) fn install_skills_from_zip_internal(
 
 pub(crate) async fn discover_available_skills_internal(
     app_state: &AppState,
-) -> Result<Vec<DiscoverableSkill>, String> {
+) -> Result<SkillDiscoveryResult, String> {
     let repos = app_state.db.get_skill_repos().map_err(|e| e.to_string())?;
     SkillService::new()
-        .discover_available(repos)
+        .discover_available_report(repos)
         .await
         .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn check_skill_updates_internal(
     app_state: &AppState,
-) -> Result<Vec<SkillUpdateInfo>, String> {
+) -> Result<SkillUpdateCheckResult, String> {
     SkillService::new()
-        .check_updates(&app_state.db)
+        .check_updates_report(&app_state.db)
         .await
         .map_err(|e| e.to_string())
 }
@@ -156,7 +151,10 @@ pub(crate) fn get_skill_repos_internal(app_state: &AppState) -> Result<Vec<Skill
     app_state.db.get_skill_repos().map_err(|e| e.to_string())
 }
 
-pub(crate) fn add_skill_repo_internal(app_state: &AppState, repo: SkillRepo) -> Result<bool, String> {
+pub(crate) fn add_skill_repo_internal(
+    app_state: &AppState,
+    repo: SkillRepo,
+) -> Result<bool, String> {
     SkillService::validate_repo_ref(&repo.owner, &repo.name, &repo.branch)
         .map_err(|e| e.to_string())?;
     app_state

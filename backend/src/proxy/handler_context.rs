@@ -60,6 +60,7 @@ pub struct RequestContext {
     pub rectifier_config: RectifierConfig,
     /// 优化器配置
     pub optimizer_config: OptimizerConfig,
+    pub is_stack: bool,
 }
 
 impl RequestContext {
@@ -75,18 +76,19 @@ impl RequestContext {
     ///
     /// # Errors
     /// 返回 `ProxyError` 如果 Provider 选择失败
-    pub async fn new(
+    pub async fn new_with_stack(
         state: &ProxyState,
         body: &serde_json::Value,
         headers: &HeaderMap,
         app_type: AppType,
         tag: &'static str,
         app_type_str: &'static str,
+        stack: Option<crate::mode::stack::StackTarget>,
     ) -> Result<Self, ProxyError> {
         let start_time = Instant::now();
 
         // 从数据库读取应用级代理配置（per-app）
-        let app_config = state
+        let mut app_config = state
             .db
             .get_proxy_config_for_app(app_type_str)
             .await
@@ -96,8 +98,13 @@ impl RequestContext {
         let rectifier_config = state.db.get_rectifier_config().unwrap_or_default();
         let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
 
-        let current_provider_id =
-            crate::settings::get_current_provider(&app_type).unwrap_or_default();
+        let current_provider_id = crate::mode::current::provider_for(
+            &state.db,
+            &app_type,
+            crate::mode::current::Purpose::InUse,
+        )
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+        .unwrap_or_default();
 
         // 从请求体提取模型名称
         let request_model = body
@@ -118,24 +125,43 @@ impl RequestContext {
             session_result.client_provided
         );
 
-        // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）
-        // 注意：只在这里调用一次，结果传递给 forwarder，避免重复消耗 HalfOpen 名额
-        let providers = state
-            .provider_router
-            .select_providers(app_type_str)
-            .await
-            .map_err(|e| match e {
-                crate::error::AppError::AllProvidersCircuitOpen => {
-                    ProxyError::AllProvidersCircuitOpen
-                }
-                crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-                _ => ProxyError::DatabaseError(e.to_string()),
-            })?;
-
-        let provider = providers
-            .first()
-            .cloned()
-            .ok_or(ProxyError::NoAvailableProvider)?;
+        let is_stack = stack.is_some();
+        let (provider, providers, current_provider_id, request_model) = if let Some(target) = stack
+        {
+            app_config.auto_failover_enabled = false;
+            (
+                target.provider.clone(),
+                vec![target.provider.clone()],
+                target.provider.id,
+                target.original_model,
+            )
+        } else {
+            let providers = if crate::mode::stack::stack_mode_now(&app_type) {
+                app_config.auto_failover_enabled = false;
+                vec![crate::mode::current::provider_in_use(&state.db, &app_type)
+                    .map_err(|e| ProxyError::DatabaseError(e.to_string()))?
+                    .ok_or(ProxyError::NoProvidersConfigured)?]
+            } else {
+                state
+                    .provider_router
+                    .select_providers(app_type_str)
+                    .await
+                    .map_err(|e| match e {
+                        crate::error::AppError::AllProvidersCircuitOpen => {
+                            ProxyError::AllProvidersCircuitOpen
+                        }
+                        crate::error::AppError::NoProvidersConfigured => {
+                            ProxyError::NoProvidersConfigured
+                        }
+                        _ => ProxyError::DatabaseError(e.to_string()),
+                    })?
+            };
+            let provider = providers
+                .first()
+                .cloned()
+                .ok_or(ProxyError::NoAvailableProvider)?;
+            (provider, providers, current_provider_id, request_model)
+        };
 
         log::debug!(
             "[{}] Provider: {}, model: {}, failover chain: {} providers, session: {}",
@@ -159,7 +185,19 @@ impl RequestContext {
             session_client_provided: session_result.client_provided,
             rectifier_config,
             optimizer_config,
+            is_stack,
         })
+    }
+
+    pub async fn new(
+        state: &ProxyState,
+        body: &serde_json::Value,
+        headers: &HeaderMap,
+        app_type: AppType,
+        tag: &'static str,
+        app_type_str: &'static str,
+    ) -> Result<Self, ProxyError> {
+        Self::new_with_stack(state, body, headers, app_type, tag, app_type_str, None).await
     }
 
     /// 从 URI 提取模型名称（Gemini 专用）
@@ -226,6 +264,7 @@ impl RequestContext {
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
         )
+        .stack_request(self.is_stack)
     }
 
     /// 获取 Provider 列表（用于故障转移）

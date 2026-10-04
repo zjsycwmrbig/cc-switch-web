@@ -204,4 +204,18 @@ describe("useDirectorySettings", () => {
     expect(result.current.resolvedDirs.opencode).toBe("/server/opencode");
     expect(result.current.resolvedDirs.pi).toBe("/server/pi");
   });
+  it("reset uses the baseline moved after a successful save", async () => {
+    const { result } = renderHook(() =>
+      useDirectorySettings({ settings: createSettings(), onUpdateSettings }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => {
+      result.current.markAppConfigDirSaved("/saved/new-dir");
+      result.current.updateAppConfigDir("/unsaved/draft");
+    });
+    act(() =>
+      result.current.resetAllDirectories(undefined, undefined, undefined),
+    );
+    expect(result.current.appConfigDir).toBe("/saved/new-dir");
+  });
 });

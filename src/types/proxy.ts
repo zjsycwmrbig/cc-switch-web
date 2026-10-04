@@ -130,3 +130,23 @@ export interface AppProxyConfig {
   circuitErrorRateThreshold: number;
   circuitMinRequests: number;
 }
+
+export type AppMode = "direct" | "routing" | "aggregation";
+export interface AppModeView {
+  startupError?: string | null;
+  mode: AppMode;
+  attached: boolean;
+  directProviderId: string | null;
+  routeProviderId: string | null;
+  eligibleProviderIds: string[];
+  aggregation: {
+    active: boolean;
+    members: { providerId: string; modelIds: string[]; route: boolean }[];
+    notice?:
+      | "routeOwnsCatalog"
+      | "configOwnsCatalog"
+      | "officialModelsBundled"
+      | "officialModelsUnavailable";
+    staleClients?: { daemon: boolean; others: boolean };
+  };
+}

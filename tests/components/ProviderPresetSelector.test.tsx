@@ -12,7 +12,6 @@ import {
   getPresetSearchText,
   getVisiblePresetEntries,
   sortPresetEntries,
-  type PresetSortMode,
 } from "@/components/providers/forms/ProviderPresetSelector";
 
 // Mock ProviderIcon 以避免依赖图标库的实际内容
@@ -51,6 +50,22 @@ const translations: Record<string, string> = {
 };
 
 const t = ((key: string) => translations[key] ?? key) as TFunction;
+
+it("finds Tu-zi by Chinese and compact aliases when the display language is English", () => {
+  const entries = [
+    {
+      id: "tuzi",
+      preset: {
+        name: "Tu-zi",
+        websiteUrl: "https://api.tu-zi.com",
+        settingsConfig: {},
+      },
+    },
+  ];
+  for (const query of ["兔子", "兔子api", "tuzi"]) {
+    expect(filterPresetEntries(entries, query, t)).toEqual(entries);
+  }
+});
 
 type TestPresetEntry = {
   id: string;
@@ -156,12 +171,6 @@ function getSearchButton() {
   });
 }
 
-function getSortButton() {
-  return screen.getByRole("button", {
-    name: /providerPreset\.(sort|sortByName|restoreOriginalOrder)|按名称排序|恢复原顺序|sort/i,
-  });
-}
-
 function getSearchInput() {
   return screen.getByRole("textbox", {
     name: /providerPreset\.(searchInput|searchPlaceholder)|搜索预设|search/i,
@@ -178,12 +187,12 @@ describe("ProviderPresetSelector pure helpers", () => {
     );
   });
 
-  it("仅拼接显示名与原始名称、统一 lower-case，不含 URL 或分类 label", () => {
+  it("拼接名称与域名并统一 lower-case，不包含分类 label", () => {
     const searchText = getPresetSearchText(presetEntries[1], t);
 
     expect(searchText).toContain("alpha 本地名");
     expect(searchText).toContain("alpha raw");
-    expect(searchText).not.toContain("example.com");
+    expect(searchText).toContain("example.com");
     expect(searchText).not.toContain("官方");
     expect(searchText).toBe(searchText.toLowerCase());
   });
@@ -195,51 +204,27 @@ describe("ProviderPresetSelector pure helpers", () => {
     ).toEqual(["alpha"]);
   });
 
-  it("不再通过 URL 或分类 label 搜索（仅匹配名称）", () => {
+  it("支持 URL 搜索且不按分类标签匹配", () => {
     expect(
       getIds(filterPresetEntries(presetEntries, "cn-gateway.example.com", t)),
-    ).toEqual([]);
+    ).toEqual(["beta"]);
     expect(getIds(filterPresetEntries(presetEntries, "聚合", t))).toEqual([]);
   });
 
-  it("支持 A-Z 排序、original 模式将官方分类置顶，并且 getVisible 先 filter 再 sort", () => {
-    const originalMode: PresetSortMode = "original";
-    const nameAscMode: PresetSortMode = "nameAsc";
-
-    const original = sortPresetEntries(presetEntries, originalMode, t);
-    expect(original).not.toBe(presetEntries);
-    // original 模式置顶官方分类（alpha）；其余均非赞助商，按显示名排序
-    // （Beta Gateway < Delta Mirror < Gamma 本地名）。
-    expect(getIds(original)).toEqual(["alpha", "beta", "delta", "gamma"]);
-
-    expect(getIds(sortPresetEntries(presetEntries, nameAscMode, t))).toEqual([
+  it("按翻译显示名 A–Z 排序，不修改输入；搜索结果保持相同顺序", () => {
+    expect(getIds(sortPresetEntries(presetEntries, t))).toEqual([
       "alpha",
       "beta",
       "delta",
       "gamma",
     ]);
     expect(getIds(presetEntries)).toEqual(["gamma", "alpha", "beta", "delta"]);
-
     expect(
-      getIds(
-        getVisiblePresetEntries(presetEntries, {
-          query: "a",
-          sortMode: nameAscMode,
-          t,
-        }),
-      ),
+      getIds(getVisiblePresetEntries(presetEntries, { query: "a", t })),
     ).toEqual(["alpha", "beta", "delta", "gamma"]);
   });
 
-  it("original 模式按「官方 → 尊享伙伴 → 赞助商 → 非赞助商」四段排序，前三组保序、末组按显示名，双重身份不重复", () => {
-    // 故意打乱传入顺序，验证：
-    // - official 组置顶（officialOnly、officialPrime 按出现顺序）；
-    // - 非官方且 primePartner 的预设次之（primeAndPartner）；
-    // - 赞助商（isPartner）第三段，保持传入（预设文件）顺序：
-    //   partnerZeta 在 partnerAlpha 前，不按字母重排；
-    // - 非赞助商按显示名排序：restAlpha 排到 restZulu 前；
-    // - 既是 official 又是 primePartner 的只归入官方组；
-    //   既是 primePartner 又是 isPartner 的只归入 prime 组、不在赞助商组重复。
+  it("官方、合作及双重身份均不影响字母顺序", () => {
     const mixed: TestPresetEntry[] = [
       {
         id: "restZulu",
@@ -311,56 +296,69 @@ describe("ProviderPresetSelector pure helpers", () => {
       },
     ];
 
-    expect(getIds(sortPresetEntries(mixed, "original", t))).toEqual([
+    expect(getIds(sortPresetEntries(mixed, t))).toEqual([
+      "partnerAlpha",
+      "restAlpha",
       "officialOnly",
       "officialPrime",
       "primeAndPartner",
       "partnerZeta",
-      "partnerAlpha",
-      "restAlpha",
       "restZulu",
     ]);
   });
 });
 
 describe("ProviderPresetSelector", () => {
-  it("默认（original 模式）将官方分类置顶，非赞助商按显示名排序", () => {
+  it("默认按显示名称 A–Z 排序，自定义入口单独保留", () => {
     renderSelector();
-
-    // 组件内 t() 未配置翻译资源，显示名回退为 key 字面量：
-    // Beta Gateway < Delta Mirror < preset.gamma。
     expect(getPresetButtonTexts()).toEqual([
       "providerPreset.custom",
-      "preset.alpha",
       "Beta Gateway",
       "Delta Mirror",
+      "preset.alpha",
       "preset.gamma",
     ]);
   });
 
-  it("点击排序按钮后普通 preset A-Z，再点恢复原顺序", async () => {
-    const user = userEvent.setup();
-    renderSelector();
-
-    await user.click(getSortButton());
-
-    expect(getPresetButtonTexts()).toEqual([
-      "providerPreset.custom",
-      "Beta Gateway",
-      "Delta Mirror",
-      "preset.alpha",
-      "preset.gamma",
+  it("合作预设无星标、心形、合作标签或原始顺序切换入口", () => {
+    const entries: TestPresetEntry[] = [
+      {
+        id: "z",
+        preset: {
+          name: "Zulu",
+          category: "official",
+          isPartner: true,
+          primePartner: true,
+          websiteUrl: "https://example.com",
+          settingsConfig: {},
+        },
+      },
+      {
+        id: "a",
+        preset: {
+          name: "alpha",
+          category: "third_party",
+          websiteUrl: "https://example.com",
+          settingsConfig: {},
+        },
+      },
+    ];
+    const { container } = renderSelector({ entries });
+    const buttons = screen
+      .getAllByRole("button")
+      .filter((button) => ["alpha", "Zulu"].includes(button.textContent ?? ""));
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      "alpha",
+      "Zulu",
     ]);
-
-    await user.click(getSortButton());
-
-    expect(getPresetButtonTexts()).toEqual([
-      "providerPreset.custom",
-      "preset.alpha",
-      "Beta Gateway",
-      "Delta Mirror",
-      "preset.gamma",
-    ]);
+    expect(buttons[0].className).toBe(buttons[1].className);
+    expect(container.querySelector(".lucide-star, .lucide-heart")).toBeNull();
+    expect(
+      screen.queryByText(/providerPreset\.(partner|primePartner)/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /sort|排序|恢复原顺序/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("搜索只过滤普通 preset，自定义配置始终保留", async () => {

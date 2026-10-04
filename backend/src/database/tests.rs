@@ -1225,6 +1225,53 @@ fn model_pricing_refresh_finishes_old_repair_chains_and_preserves_custom_prices(
 }
 
 #[test]
+fn model_pricing_seed_adds_gpt_6_1_sol_without_overwriting_custom_prices() {
+    let db = Database::memory().expect("create memory db");
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        conn.execute(
+            "DELETE FROM model_pricing WHERE model_id = 'gpt-6.1-sol'",
+            [],
+        )
+        .expect("simulate existing database without the new model");
+    }
+    db.ensure_model_pricing_seeded()
+        .expect("seed missing price");
+    {
+        let conn = db.conn.lock().expect("lock conn");
+        let price: (String, String, String, String) = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                        cache_read_cost_per_million, cache_creation_cost_per_million
+                 FROM model_pricing WHERE model_id = 'gpt-6.1-sol'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("query seeded price");
+        assert_eq!(
+            price,
+            ("2".into(), "10".into(), "0.10".into(), "2.50".into())
+        );
+        conn.execute(
+            "UPDATE model_pricing SET input_cost_per_million = '7' WHERE model_id = 'gpt-6.1-sol'",
+            [],
+        )
+        .expect("set custom price");
+    }
+    db.ensure_model_pricing_seeded()
+        .expect("seed on next startup");
+    let conn = db.conn.lock().expect("lock conn");
+    let input: String = conn
+        .query_row(
+            "SELECT input_cost_per_million FROM model_pricing WHERE model_id = 'gpt-6.1-sol'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read custom price");
+    assert_eq!(input, "7");
+}
+
+#[test]
 fn model_pricing_seed_includes_gpt_6_astra() {
     let db = Database::memory().expect("create memory db");
     let conn = db.conn.lock().expect("lock conn");
@@ -1473,4 +1520,31 @@ fn schema_v15_adds_byte_cursor_columns_to_existing_sync_table() {
         .expect("read legacy row");
     assert_eq!(byte_offset, None, "存量行的字节游标必须为 NULL");
     assert_eq!(fingerprint, None, "存量行的尾部指纹必须为 NULL");
+}
+
+#[test]
+fn incremental_vacuum_reclaims_entire_freelist() {
+    let temp = NamedTempFile::new().expect("create temp db file");
+    let conn = Connection::open(temp.path()).expect("open temp db");
+    conn.execute("PRAGMA auto_vacuum = INCREMENTAL;", [])
+        .expect("set incremental auto_vacuum");
+    conn.execute_batch(
+        "CREATE TABLE bulk (payload BLOB);
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+         INSERT INTO bulk SELECT zeroblob(4096) FROM n;
+         DELETE FROM bulk;",
+    )
+    .expect("fill and clear table");
+
+    let freelist = |conn: &Connection| -> i64 {
+        conn.query_row("PRAGMA freelist_count;", [], |row| row.get(0))
+            .expect("read freelist_count")
+    };
+    assert!(
+        freelist(&conn) > 100,
+        "deleting rows should leave free pages"
+    );
+
+    Database::incremental_vacuum_on_conn(&conn).expect("incremental vacuum");
+    assert_eq!(freelist(&conn), 0, "all free pages should be reclaimed");
 }

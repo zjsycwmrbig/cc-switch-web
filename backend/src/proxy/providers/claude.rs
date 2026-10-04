@@ -362,6 +362,15 @@ impl ClaudeAdapter {
                 log::debug!("[Claude] 使用 OPENAI_API_KEY");
                 return Some(key.to_string());
             }
+            // Bedrock 原生 API Key；旧行仍通过下面的顶层 apiKey 兼容。
+            if let Some(key) = env
+                .get("AWS_BEARER_TOKEN_BEDROCK")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(key.to_string());
+            }
         }
 
         // 尝试直接获取
@@ -700,6 +709,25 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_extract_auth_reads_bedrock_bearer_token_env() {
+        // 新版 Bedrock API Key 预设把 Key 放在 env.AWS_BEARER_TOKEN_BEDROCK；
+        // 鉴权策略与旧版顶层 apiKey 保持一致，不在这次改动里变。
+        let adapter = ClaudeAdapter::new();
+        let provider = create_provider(json!({
+            "apiKey": "stale-top-level",
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://bedrock-runtime.us-west-2.amazonaws.com",
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-key",
+                "CLAUDE_CODE_USE_BEDROCK": "1"
+            }
+        }));
+
+        let auth = adapter.extract_auth(&provider).unwrap();
+        assert_eq!(auth.api_key, "bedrock-key");
+        assert_eq!(auth.strategy, AuthStrategy::Anthropic);
+    }
+
+    #[test]
     fn codex_oauth_generation_uses_gpt6_compatible_identity() {
         let headers: http::HeaderMap = ClaudeAdapter::new()
             .get_auth_headers(&AuthInfo::new(
@@ -716,10 +744,10 @@ mod tests {
             .split('.')
             .map(|part| part.parse().unwrap())
             .collect();
-        // 官方 rust-v0.153.4 目录：gpt-6-astra 需要 0.153.0。
+        // GPT-6.1 Sol 的 ChatGPT 账号目录要求至少 0.159.0。
         assert!(
-            version.as_slice() >= [0, 153, 0].as_slice(),
-            "gpt-6-astra requires Codex >= 0.153.0; sent {version:?}"
+            version.as_slice() >= [0, 159, 0].as_slice(),
+            "gpt-6.1-sol requires Codex >= 0.159.0; sent {version:?}"
         );
     }
 

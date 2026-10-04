@@ -148,7 +148,8 @@ export function AppSwitcher({
             {appsToShow.map((app) => (
               <DropdownMenuRadioItem key={app} value={app}>
                 <ProviderIcon
-                  icon={appIconName[app]}
+                  className={activeApp !== app ? "grayscale opacity-60" : ""}
+              icon={appIconName[app]}
                   name={appDisplayName[app]}
                   size={iconSize}
                 />
@@ -178,6 +179,7 @@ export function AppSwitcher({
             )}
           >
             <ProviderIcon
+              className={activeApp !== app ? "grayscale opacity-60" : ""}
               icon={appIconName[app]}
               name={appDisplayName[app]}
               size={iconSize}
@@ -213,7 +215,8 @@ export function AppSwitcher({
                   className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <ProviderIcon
-                    icon={appIconName[app]}
+                    className={activeApp !== app ? "grayscale opacity-60" : ""}
+              icon={appIconName[app]}
                     name={appDisplayName[app]}
                     size={iconSize}
                   />

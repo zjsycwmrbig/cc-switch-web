@@ -28,6 +28,7 @@ const DEFAULT_CODEX_COMMON_CONFIG_SNIPPET = `# Common Codex config
 # Add your common TOML configuration here`;
 
 interface UseCodexCommonConfigProps {
+  enabled?: boolean;
   codexConfig: string;
   onConfigChange: (config: string) => void;
   initialData?: {
@@ -42,6 +43,7 @@ interface UseCodexCommonConfigProps {
  * 从统一配置存储读取和保存
  */
 export function useCodexCommonConfig({
+  enabled = true,
   codexConfig,
   onConfigChange,
   initialData,
@@ -67,6 +69,7 @@ export function useCodexCommonConfig({
   const latestCodexConfigRef = useRef(codexConfig);
 
   useEffect(() => {
+    if (!enabled) return;
     latestCodexConfigRef.current = codexConfig;
   }, [codexConfig]);
 
@@ -79,36 +82,41 @@ export function useCodexCommonConfig({
 
   // 当预设变化时，重置初始化标记，使新预设能够重新触发初始化逻辑
   useEffect(() => {
+    if (!enabled) return;
     hasInitializedNewMode.current = false;
     hasInitializedEditMode.current = false;
   }, [selectedPresetId, initialEnabled]);
 
-  const parseCommonConfigSnippet = useCallback((snippetString: string) => {
-    const trimmed = snippetString.trim();
-    if (!trimmed) {
-      return {
-        hasContent: false,
-      };
-    }
+  const parseCommonConfigSnippet = useCallback(
+    (snippetString: string) => {
+      const trimmed = snippetString.trim();
+      if (!trimmed) {
+        return {
+          hasContent: false,
+        };
+      }
 
-    try {
-      const parsed = parseToml(normalizeTomlText(snippetString)) as Record<
-        string,
-        unknown
-      >;
-      return {
-        hasContent: Object.keys(parsed).length > 0,
-      };
-    } catch (error) {
-      return {
-        hasContent: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }, []);
+      try {
+        const parsed = parseToml(normalizeTomlText(snippetString)) as Record<
+          string,
+          unknown
+        >;
+        return {
+          hasContent: Object.keys(parsed).length > 0,
+        };
+      } catch (error) {
+        return {
+          hasContent: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [enabled],
+  );
 
   // 初始化：从统一配置存储加载
   useEffect(() => {
+    if (!enabled) return;
     let mounted = true;
 
     const loadSnippet = async () => {
@@ -152,10 +160,11 @@ export function useCodexCommonConfig({
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [enabled]);
 
   // 初始化时检查通用配置片段（编辑模式）
   useEffect(() => {
+    if (!enabled) return;
     if (
       !initialData?.settingsConfig ||
       isLoading ||
@@ -229,6 +238,7 @@ export function useCodexCommonConfig({
 
   // 新建模式：如果通用配置片段存在且有效，默认启用
   useEffect(() => {
+    if (!enabled) return;
     if (initialData || isLoading || hasInitializedNewMode.current) {
       return;
     }
@@ -447,6 +457,7 @@ export function useCodexCommonConfig({
 
   // 当配置变化时检查是否包含通用配置（但避免在通过通用配置更新时检查）
   useEffect(() => {
+    if (!enabled) return;
     if (isUpdatingFromCommonConfig.current || isLoading) {
       return;
     }

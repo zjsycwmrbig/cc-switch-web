@@ -53,9 +53,11 @@ describe("AWS Bedrock Provider Presets", () => {
     expect(bedrockApiKey).toBeDefined();
   });
 
-  it("API Key preset should have apiKey field and AWS env variables", () => {
+  // Claude Code 只从 AWS_BEARER_TOKEN_BEDROCK 读 Bedrock API Key，顶层 apiKey 不生效
+  it("API Key preset should carry the key in AWS_BEARER_TOKEN_BEDROCK", () => {
     const config = bedrockApiKey!.settingsConfig as any;
-    expect(config).toHaveProperty("apiKey", "");
+    expect(config).not.toHaveProperty("apiKey");
+    expect(config.env).toHaveProperty("AWS_BEARER_TOKEN_BEDROCK", "");
     expect(config.env).toHaveProperty("AWS_REGION");
     expect(config.env).toHaveProperty("CLAUDE_CODE_USE_BEDROCK", "1");
   });
@@ -81,7 +83,7 @@ describe("AWS Bedrock Provider Presets", () => {
 
 describe("Claude Provider Presets", () => {
   it("should match the complete upstream catalog", () => {
-    expect(providerPresets).toHaveLength(94);
+    expect(providerPresets).toHaveLength(96);
     expect(providerPresets.map((preset) => preset.name)).toEqual(
       expect.arrayContaining([
         "Kimi",

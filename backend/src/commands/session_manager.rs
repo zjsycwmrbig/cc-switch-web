@@ -16,7 +16,7 @@ pub async fn get_session_messages_internal(
 ) -> Result<Vec<session_manager::SessionMessage>, String> {
     let provider_id = providerId.clone();
     let source_path = sourcePath.clone();
-    spawn_blocking(move || session_manager::load_messages(&provider_id, &source_path))
+    spawn_blocking(move || session_manager::load_transcript(&provider_id, &source_path).map(|loaded| loaded.transcript.messages.clone()))
     .await
     .map_err(|e| format!("Failed to load session messages: {e}"))?
 }

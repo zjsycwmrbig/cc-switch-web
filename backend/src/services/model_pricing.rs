@@ -41,7 +41,7 @@ pub struct ModelPricingInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelsDevSyncConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_sync_enabled: bool,
     #[serde(default = "default_true")]
     pub include_common_models: bool,
@@ -58,7 +58,7 @@ pub struct ModelsDevSyncConfig {
 impl Default for ModelsDevSyncConfig {
     fn default() -> Self {
         Self {
-            auto_sync_enabled: false,
+            auto_sync_enabled: true,
             include_common_models: true,
             selected_model_keys: Vec::new(),
             excluded_common_model_keys: Vec::new(),
@@ -508,7 +508,7 @@ mod tests {
         with_test_home(|db, path| {
             let state = get_models_dev_sync_state(db).expect("sync state");
             assert!(path.exists());
-            assert!(!state.config.auto_sync_enabled);
+            assert!(state.config.auto_sync_enabled);
             assert!(state.config.include_common_models);
             assert_eq!(state.config_path, path.display().to_string());
 

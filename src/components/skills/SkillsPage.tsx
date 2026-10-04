@@ -1,3 +1,6 @@
+import { WindowedRows } from "@/components/common/WindowedRows";
+import { SkillRepoFailures } from "./SkillRepoFailures";
+import { useSkillRepoFailures } from "@/hooks/useSkills";
 import {
   useState,
   useMemo,
@@ -63,6 +66,7 @@ const SKILLSSH_PAGE_SIZE = 20;
 export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
   ({ initialApp = "claude" }, ref) => {
     const { t } = useTranslation();
+    const { data: discoveryFailures } = useSkillRepoFailures("discoverable");
     const [repoManagerOpen, setRepoManagerOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const [filterRepo, setFilterRepo] = useState<string>("all");
@@ -82,7 +86,6 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
     const {
       data: discoverableSkills,
       isLoading: loadingDiscoverable,
-      isFetching: fetchingDiscoverable,
       refetch: refetchDiscoverable,
     } = useDiscoverableSkills();
     const { data: installedSkills } = useInstalledSkills();
@@ -91,6 +94,8 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       data: skillsShResult,
       isLoading: loadingSkillsSh,
       isFetching: fetchingSkillsSh,
+      isError: skillsShFailed,
+      refetch: refetchSkillsSh,
     } = useSearchSkillsSh(skillsShQuery, SKILLSSH_PAGE_SIZE, skillsShOffset);
 
     useEffect(() => {
@@ -163,7 +168,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
 
     const loading =
       searchSource === "repos"
-        ? loadingDiscoverable || fetchingDiscoverable
+        ? loadingDiscoverable && !discoverableSkills
         : false;
 
     useImperativeHandle(ref, () => ({
@@ -316,6 +321,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col overflow-hidden px-4 sm:px-6">
         <div className="scroll-overlay flex-1 overflow-y-auto overflow-x-hidden animate-fade-in">
           <div className="space-y-4 py-4 sm:py-5">
+            <SkillRepoFailures failures={discoveryFailures} />
             <div className="glass-card rounded-[30px] border border-border-default p-5 sm:p-6">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                 <div className="space-y-3">
@@ -676,7 +682,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <WindowedRows grid>
                   {filteredSkills.map((skill) => (
                     <SkillCard
                       key={skill.key}
@@ -685,7 +691,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                       onUninstall={handleUninstall}
                     />
                   ))}
-                </div>
+                </WindowedRows>
               )
             ) : loadingSkillsSh && accumulatedResults.length === 0 ? (
               <div className="glass-card flex h-64 items-center justify-center rounded-[28px] border border-border-default">
@@ -693,6 +699,21 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                 <span className="ml-3 text-sm text-muted-foreground">
                   {t("skills.skillssh.loading")}
                 </span>
+              </div>
+            ) : skillsShFailed ? (
+              <div className="rounded-lg border p-4">
+                <p>{t("skills.searchFailed")}</p>
+                <Button
+                  onClick={() => {
+                    if (skillsShOffset === 0) void refetchSkillsSh();
+                    else {
+                      setAccumulatedResults([]);
+                      setSkillsShOffset(0);
+                    }
+                  }}
+                >
+                  {t("common.retry")}
+                </Button>
               </div>
             ) : skillsShQuery.length < 2 ? (
               <div className="glass-card rounded-[28px] border border-dashed border-border-default px-6 py-12 text-center">
@@ -725,7 +746,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <WindowedRows grid>
                   {accumulatedResults.map((skill) => {
                     const installed = isSkillsShInstalled(skill);
                     return (
@@ -741,7 +762,7 @@ export const SkillsPage = forwardRef<SkillsPageHandle, SkillsPageProps>(
                       />
                     );
                   })}
-                </div>
+                </WindowedRows>
 
                 <div className="glass-card mt-2 rounded-[24px] border border-border-default px-4 py-5">
                   <div className="flex flex-col items-center gap-2 text-center">

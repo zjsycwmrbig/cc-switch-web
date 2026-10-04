@@ -1,3 +1,4 @@
+import { sortProvidersByName } from "@/utils/providerSort";
 import { useState, useCallback, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Layers } from "lucide-react";
@@ -184,7 +185,7 @@ export function UniversalProviderPanel() {
     [providers],
   );
 
-  const providerList = Object.values(providers);
+  const providerList = sortProvidersByName(Object.values(providers));
 
   return (
     <div className="space-y-4">

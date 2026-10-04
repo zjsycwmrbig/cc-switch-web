@@ -1,3 +1,4 @@
+import { TablePagination, useClientPagination } from "./TablePagination";
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -18,7 +19,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -39,7 +39,6 @@ type PricingApp = (typeof PRICING_APPS)[number];
 type PricingModelSource = "request" | "response";
 
 interface AppConfig {
-  multiplier: string;
   source: PricingModelSource;
 }
 
@@ -55,10 +54,10 @@ export function PricingConfigPanel() {
 
   // 三个应用的配置状态
   const [appConfigs, setAppConfigs] = useState<AppConfigState>({
-    claude: { multiplier: "1", source: "response" },
-    codex: { multiplier: "1", source: "response" },
-    gemini: { multiplier: "1", source: "response" },
-    grokbuild: { multiplier: "1", source: "response" },
+    claude: { source: "response" },
+    codex: { source: "response" },
+    gemini: { source: "response" },
+    grokbuild: { source: "response" },
   });
   const [originalConfigs, setOriginalConfigs] = useState<AppConfigState | null>(
     null,
@@ -70,9 +69,7 @@ export function PricingConfigPanel() {
   const isDirty =
     originalConfigs !== null &&
     PRICING_APPS.some(
-      (app) =>
-        appConfigs[app].multiplier !== originalConfigs[app].multiplier ||
-        appConfigs[app].source !== originalConfigs[app].source,
+      (app) => appConfigs[app].source !== originalConfigs[app].source,
     );
 
   // 加载所有应用的配置
@@ -84,13 +81,9 @@ export function PricingConfigPanel() {
       try {
         const results = await Promise.all(
           PRICING_APPS.map(async (app) => {
-            const [multiplier, source] = await Promise.all([
-              proxyApi.getDefaultCostMultiplier(app),
-              proxyApi.getPricingModelSource(app),
-            ]);
+            const source = await proxyApi.getPricingModelSource(app);
             return {
               app,
-              multiplier,
               source: (source === "request"
                 ? "request"
                 : "response") as PricingModelSource,
@@ -101,14 +94,13 @@ export function PricingConfigPanel() {
         if (!isMounted) return;
 
         const newState: AppConfigState = {
-          claude: { multiplier: "1", source: "response" },
-          codex: { multiplier: "1", source: "response" },
-          gemini: { multiplier: "1", source: "response" },
-          grokbuild: { multiplier: "1", source: "response" },
+          claude: { source: "response" },
+          codex: { source: "response" },
+          gemini: { source: "response" },
+          grokbuild: { source: "response" },
         };
         for (const result of results) {
           newState[result.app] = {
-            multiplier: result.multiplier,
             source: result.source,
           };
         }
@@ -137,33 +129,12 @@ export function PricingConfigPanel() {
 
   // 保存所有配置
   const handleSaveAll = async () => {
-    // 验证所有倍率
-    for (const app of PRICING_APPS) {
-      const trimmed = appConfigs[app].multiplier.trim();
-      if (!trimmed) {
-        toast.error(
-          `${t(`apps.${app}`)}: ${t("settings.globalProxy.defaultCostMultiplierRequired")}`,
-        );
-        return;
-      }
-      if (!/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
-        toast.error(
-          `${t(`apps.${app}`)}: ${t("settings.globalProxy.defaultCostMultiplierInvalid")}`,
-        );
-        return;
-      }
-    }
-
     setIsSaving(true);
     try {
       await Promise.all(
-        PRICING_APPS.flatMap((app) => [
-          proxyApi.setDefaultCostMultiplier(
-            app,
-            appConfigs[app].multiplier.trim(),
-          ),
+        PRICING_APPS.map((app) =>
           proxyApi.setPricingModelSource(app, appConfigs[app].source),
-        ]),
+        ),
       );
       toast.success(t("settings.globalProxy.pricingSaved"));
       setOriginalConfigs({ ...appConfigs });
@@ -199,6 +170,8 @@ export function PricingConfigPanel() {
       cacheCreationCostPerMillion: "0",
     });
   };
+
+  const pagination = useClientPagination(pricing ?? []);
 
   if (isLoading) {
     return (
@@ -260,9 +233,6 @@ export function PricingConfigPanel() {
                     {t("settings.globalProxy.pricingAppLabel")}
                   </th>
                   <th className="px-3 py-2 text-left font-medium text-muted-foreground">
-                    {t("settings.globalProxy.defaultCostMultiplierLabel")}
-                  </th>
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">
                     {t("settings.globalProxy.pricingModelSourceLabel")}
                   </th>
                 </tr>
@@ -279,23 +249,6 @@ export function PricingConfigPanel() {
                   >
                     <td className="px-3 py-1.5 font-medium">
                       {t(`apps.${app}`)}
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <Input
-                        type="number"
-                        step="0.01"
-                        inputMode="decimal"
-                        value={appConfigs[app].multiplier}
-                        onChange={(e) =>
-                          setAppConfigs((prev) => ({
-                            ...prev,
-                            [app]: { ...prev[app], multiplier: e.target.value },
-                          }))
-                        }
-                        disabled={isSaving}
-                        placeholder="1"
-                        className="w-24"
-                      />
                     </td>
                     <td className="px-3 py-1.5">
                       <Select
@@ -389,7 +342,7 @@ export function PricingConfigPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {pricing.map((model) => (
+                  {pagination.pageRows.map((model) => (
                     <TableRow key={model.modelId}>
                       <TableCell className="font-mono text-sm">
                         {model.modelId}
@@ -435,6 +388,10 @@ export function PricingConfigPanel() {
                   ))}
                 </TableBody>
               </Table>
+              <TablePagination
+                {...pagination}
+                onPageChange={pagination.setPage}
+              />
             </div>
           )}
         </div>

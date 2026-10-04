@@ -20,6 +20,7 @@ pub(crate) mod json_canonical;
 pub(crate) mod log_codes;
 pub(crate) mod media_sanitizer;
 pub(crate) mod model_mapper;
+pub(crate) mod opaque_state_rectifier;
 pub(crate) mod provider_router;
 pub(crate) mod providers;
 pub(crate) mod response_processor;
@@ -37,3 +38,8 @@ pub(crate) mod usage;
 // 公开导出给外部使用（commands, services等模块需要）
 pub(crate) use error::ProxyError;
 pub(crate) use session::extract_session_id;
+
+#[cfg(test)]
+mod aggregation_tests;
+#[cfg(test)]
+mod compaction_tests;

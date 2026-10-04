@@ -35,7 +35,7 @@ use crate::services::profile::{ProfilePayload, ProfileScope, ProfileService};
 use crate::services::provider::{ProviderSortUpdate, SwitchResult};
 use crate::services::skill::{
     DiscoverableSkill, ImportSkillSelection, MigrationResult, SkillBackupEntry, SkillRepo,
-    SkillStorageLocation, SkillUninstallResult, SkillUpdateInfo, SkillsShSearchResult,
+    SkillStorageLocation, SkillUninstallResult, SkillsShSearchResult,
 };
 use crate::services::speedtest::EndpointLatency;
 use crate::settings::WebDavSyncSettings;
@@ -186,6 +186,8 @@ struct FetchModelsRequest {
     /// 用于 DeepSeek 这类把 Anthropic 协议挂在子路径，但 `/models` 在根上的供应商。
     models_url: Option<String>,
     custom_user_agent: Option<String>,
+    api_format: Option<String>,
+    request_headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,6 +489,15 @@ struct ToolVersionsRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ToolManagementRequest {
+    tools: Option<Vec<String>>,
+    action: Option<String>,
+    wsl_shell_by_tool:
+        Option<HashMap<String, crate::commands::tool_management::WslShellPreferenceInput>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LatestReleaseQuery {
     current_version: Option<String>,
 }
@@ -550,6 +561,7 @@ struct UsageModelPricingInfo {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SkillArchiveInstallResult {
+    skipped: Vec<crate::services::skill::ZipSkippedSkill>,
     file_name: String,
     installed: Vec<crate::app_config::InstalledSkill>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -871,8 +883,7 @@ fn pi_prompt_kind(
     }
 }
 
-async fn get_pi_state(
-) -> Result<Json<crate::services::pi_state::PiCurrentState>, ApiError> {
+async fn get_pi_state() -> Result<Json<crate::services::pi_state::PiCurrentState>, ApiError> {
     crate::services::pi_state::PiStateService::current()
         .map(Json)
         .map_err(|error| ApiError::internal(format!("failed to load Pi state: {error}")))
@@ -1119,35 +1130,47 @@ async fn fetch_provider_models(
         payload.is_full_url,
         payload.models_url,
         payload.custom_user_agent,
+        payload.api_format,
+        payload.request_headers,
     )
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(models))
 }
 
-async fn get_opencode_models(
-) -> Result<Json<Vec<crate::commands::OpenCodeModelRef>>, ApiError> {
+async fn get_opencode_models() -> Result<Json<Vec<crate::commands::OpenCodeModelRef>>, ApiError> {
     crate::commands::get_opencode_models_internal()
         .await
         .map(Json)
         .map_err(ApiError::internal)
 }
 
+async fn fetch_codex_oauth_models(
+    State(state): State<WebApiState>,
+    Query(query): Query<ManagedAccountModelsQuery>,
+) -> Result<Json<Vec<crate::services::model_fetch::FetchedModel>>, ApiError> {
+    let models = crate::commands::fetch_codex_oauth_models_internal(
+        query.account_id,
+        &state.codex_oauth_state,
+    )
+    .await
+    .map_err(|e| ApiError::internal(format!("failed to fetch Codex models: {e}")))?;
+    Ok(Json(models))
+}
+
 async fn fetch_xai_oauth_models(
     State(state): State<WebApiState>,
     Query(query): Query<ManagedAccountModelsQuery>,
 ) -> Result<Json<Vec<crate::services::model_fetch::FetchedModel>>, ApiError> {
-    let models = crate::commands::fetch_xai_oauth_models_internal(
-        query.account_id,
-        &state.xai_oauth_state,
-    )
-    .await
-    .map_err(|e| ApiError::internal(format!("failed to fetch xAI models: {e}")))?;
+    let models =
+        crate::commands::fetch_xai_oauth_models_internal(query.account_id, &state.xai_oauth_state)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to fetch xAI models: {e}")))?;
     Ok(Json(models))
 }
 
-async fn get_windows_env_paths(
-) -> Result<Json<std::collections::HashMap<String, String>>, ApiError> {
+async fn get_windows_env_paths() -> Result<Json<std::collections::HashMap<String, String>>, ApiError>
+{
     Ok(Json(crate::commands::get_windows_env_paths_internal()))
 }
 
@@ -1354,9 +1377,56 @@ async fn remove_skill_repo(
     Ok(Json(removed))
 }
 
+#[derive(Deserialize)]
+struct ResyncMcpRequest {
+    apps: Option<Vec<String>>,
+}
+async fn resync_mcp(
+    State(state): State<WebApiState>,
+    Json(payload): Json<ResyncMcpRequest>,
+) -> Result<Json<Vec<crate::services::mcp::McpAppSyncOutcome>>, ApiError> {
+    use crate::services::mcp::McpService;
+    let targets = McpService::resync_targets(payload.apps.as_deref())
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let mut outcomes = Vec::new();
+    for app in targets {
+        let app_state = state.app_state.clone();
+        let guard = app_state
+            .proxy_service
+            .lock_switch_for_app(app.as_str())
+            .await;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            McpService::resync_app(&app_state, &app)
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+        outcomes.push(outcome);
+    }
+    Ok(Json(outcomes))
+}
+
+async fn skill_storage_paths() -> Json<Value> {
+    use crate::services::skill::{SkillService, SkillStorageLocation};
+    Json(
+        json!({ "ccSwitch": SkillService::ssot_dir_for_location(SkillStorageLocation::CcSwitch), "unified": SkillService::ssot_dir_for_location(SkillStorageLocation::Unified) }),
+    )
+}
+
+async fn resync_skills(
+    State(state): State<WebApiState>,
+) -> Result<Json<Vec<crate::services::skill::SkillAppSyncOutcome>>, ApiError> {
+    blocking_json(move || {
+        Ok::<_, String>(crate::services::skill::SkillService::resync_all_apps(
+            &state.app_state.db,
+        ))
+    })
+    .await
+}
+
 async fn discover_available_skills(
     State(state): State<WebApiState>,
-) -> Result<Json<Vec<DiscoverableSkill>>, ApiError> {
+) -> Result<Json<crate::services::skill::SkillDiscoveryResult>, ApiError> {
     let skills = crate::commands::discover_available_skills_internal(state.app_state.as_ref())
         .await
         .map_err(|e| ApiError::internal(format!("failed to discover skills: {e}")))?;
@@ -1365,7 +1435,7 @@ async fn discover_available_skills(
 
 async fn check_skill_updates(
     State(state): State<WebApiState>,
-) -> Result<Json<Vec<SkillUpdateInfo>>, ApiError> {
+) -> Result<Json<crate::services::skill::SkillUpdateCheckResult>, ApiError> {
     let updates = crate::commands::check_skill_updates_internal(state.app_state.as_ref())
         .await
         .map_err(|e| ApiError::internal(format!("failed to check skill updates: {e}")))?;
@@ -1711,6 +1781,109 @@ async fn get_session_messages(
     Ok(Json(messages))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionContentRequest {
+    provider_id: String,
+    source_path: String,
+    content_ref: crate::session_manager::model::ContentRef,
+    offset: Option<u32>,
+    limit: Option<u32>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionImageRequest {
+    provider_id: String,
+    source_path: String,
+    image: crate::session_manager::model::ImageRef,
+}
+async fn stream_session_messages(
+    Query(query): Query<SessionMessagesQuery>,
+) -> Result<axum::response::Response, ApiError> {
+    use crate::session_manager::{self, cache::chunk_ranges, model::TranscriptChunk};
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+    tokio::task::spawn_blocking(move || {
+        let send = |chunk: TranscriptChunk| -> Result<(), String> {
+            let mut bytes = serde_json::to_vec(&chunk).map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            tx.blocking_send(bytes)
+                .map_err(|_| "reader disconnected".to_string())
+        };
+        let loaded = match session_manager::load_transcript(&query.provider_id, &query.source_path)
+        {
+            Ok(loaded) => loaded,
+            Err(message) => {
+                let _ = send(TranscriptChunk::Error { message });
+                return;
+            }
+        };
+        let transcript = loaded.transcript;
+        if send(TranscriptChunk::Header {
+            total: transcript.messages.len(),
+            turns: transcript.turns.clone(),
+            cached: loaded.cached,
+            parse_ms: loaded.parse_ms,
+        })
+        .is_err()
+        {
+            return;
+        }
+        for (start, end) in chunk_ranges(&transcript.message_bytes) {
+            if send(TranscriptChunk::Messages {
+                start,
+                messages: transcript.messages[start..end].to_vec(),
+            })
+            .is_err()
+            {
+                return;
+            }
+        }
+        let _ = send(TranscriptChunk::Done {
+            payload_bytes: transcript.approx_bytes as u64,
+        });
+    });
+    let stream = futures::stream::unfold(rx, |mut rx| async {
+        rx.recv()
+            .await
+            .map(|bytes| (Ok::<_, std::convert::Infallible>(bytes), rx))
+    });
+    Ok(axum::response::Response::builder()
+        .header("content-type", "application/x-ndjson")
+        .header("cache-control", "no-store")
+        .header("x-content-type-options", "nosniff")
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap())
+}
+async fn get_session_block_content(
+    Json(p): Json<SessionContentRequest>,
+) -> Result<Json<crate::session_manager::content::BlockContent>, ApiError> {
+    blocking_json(move || {
+        use crate::session_manager::content;
+        let source = content::validate_source(&p.provider_id, &p.source_path)?;
+        let full = content::resolve_content_ref(&source, &p.content_ref)?;
+        Ok::<_, String>(content::paginate(&full, p.offset, p.limit))
+    })
+    .await
+}
+async fn get_session_image(
+    Json(p): Json<SessionImageRequest>,
+) -> Result<axum::response::Response, ApiError> {
+    let bytes = tokio::task::spawn_blocking(move || {
+        use crate::session_manager::content;
+        let source = content::validate_source(&p.provider_id, &p.source_path)?;
+        content::load_image(&source, &p.image)
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(ApiError::bad_request)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "application/octet-stream")
+        .header("cache-control", "no-store")
+        .header("x-content-type-options", "nosniff")
+        .body(axum::body::Body::from(bytes))
+        .unwrap())
+}
+
 async fn launch_session_terminal(
     Json(payload): Json<LaunchSessionTerminalRequest>,
 ) -> Result<Json<bool>, ApiError> {
@@ -1746,83 +1919,112 @@ async fn delete_sessions(
     Ok(Json(results))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionUsageQuery {
+    app_type: String,
+    session_id: String,
+}
+async fn get_session_usage_summary(
+    State(state): State<WebApiState>,
+    Query(query): Query<SessionUsageQuery>,
+) -> Result<Json<crate::services::usage_stats::UsageSummary>, ApiError> {
+    blocking_json(move || {
+        state
+            .app_state
+            .db
+            .get_session_usage_summary(&query.app_type, &query.session_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
 async fn get_usage_summary(
     State(state): State<WebApiState>,
     Query(query): Query<UsageRangeQuery>,
 ) -> Result<Json<crate::services::usage_stats::UsageSummary>, ApiError> {
-    let summary = crate::commands::get_usage_summary_internal(
-        state.app_state.as_ref(),
-        query.start_date,
-        query.end_date,
-        query.app_type.clone(),
-    )
-    .map_err(|e| ApiError::internal(format!("failed to load usage summary: {e}")))?;
-    Ok(Json(summary))
+    blocking_json(move || {
+        crate::commands::get_usage_summary_internal(
+            state.app_state.as_ref(),
+            query.start_date,
+            query.end_date,
+            query.app_type.clone(),
+        )
+    })
+    .await
 }
 
 async fn get_usage_trends(
     State(state): State<WebApiState>,
     Query(query): Query<UsageRangeQuery>,
 ) -> Result<Json<Vec<crate::services::usage_stats::DailyStats>>, ApiError> {
-    let trends = crate::commands::get_usage_trends_internal(
-        state.app_state.as_ref(),
-        query.start_date,
-        query.end_date,
-        query.app_type.clone(),
-    )
-    .map_err(|e| ApiError::internal(format!("failed to load usage trends: {e}")))?;
-    Ok(Json(trends))
+    blocking_json(move || {
+        crate::commands::get_usage_trends_internal(
+            state.app_state.as_ref(),
+            query.start_date,
+            query.end_date,
+            query.app_type.clone(),
+        )
+    })
+    .await
 }
 
 async fn get_usage_provider_stats(
     State(state): State<WebApiState>,
     Query(query): Query<UsageRangeQuery>,
 ) -> Result<Json<Vec<crate::services::usage_stats::ProviderStats>>, ApiError> {
-    let stats = crate::commands::get_provider_stats_internal(
-        state.app_state.as_ref(),
-        query.start_date,
-        query.end_date,
-        query.app_type.clone(),
-    )
-        .map_err(|e| ApiError::internal(format!("failed to load provider stats: {e}")))?;
-    Ok(Json(stats))
+    blocking_json(move || {
+        crate::commands::get_provider_stats_internal(
+            state.app_state.as_ref(),
+            query.start_date,
+            query.end_date,
+            query.app_type.clone(),
+        )
+    })
+    .await
 }
 
 async fn get_usage_model_stats(
     State(state): State<WebApiState>,
     Query(query): Query<UsageRangeQuery>,
 ) -> Result<Json<Vec<crate::services::usage_stats::ModelStats>>, ApiError> {
-    let stats = crate::commands::get_model_stats_internal(
-        state.app_state.as_ref(),
-        query.start_date,
-        query.end_date,
-        query.app_type.clone(),
-    )
-        .map_err(|e| ApiError::internal(format!("failed to load model stats: {e}")))?;
-    Ok(Json(stats))
+    blocking_json(move || {
+        crate::commands::get_model_stats_internal(
+            state.app_state.as_ref(),
+            query.start_date,
+            query.end_date,
+            query.app_type.clone(),
+        )
+    })
+    .await
 }
 
 async fn get_usage_request_logs(
     State(state): State<WebApiState>,
     Json(payload): Json<RequestLogsPayload>,
 ) -> Result<Json<crate::services::usage_stats::PaginatedLogs>, ApiError> {
-    let logs = crate::commands::get_request_logs_internal(
-        state.app_state.as_ref(),
-        payload.filters,
-        payload.page.unwrap_or(0),
-        payload.page_size.unwrap_or(20),
-    )
-    .map_err(|e| ApiError::internal(format!("failed to load request logs: {e}")))?;
-    Ok(Json(logs))
+    blocking_json(move || {
+        crate::commands::get_request_logs_internal(
+            state.app_state.as_ref(),
+            payload.filters,
+            payload.page.unwrap_or(0),
+            payload.page_size.unwrap_or(20),
+        )
+    })
+    .await
 }
 
 async fn get_usage_request_detail(
     State(state): State<WebApiState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<Option<crate::services::usage_stats::RequestLogDetail>>, ApiError> {
-    let detail = crate::commands::get_request_detail_internal(state.app_state.as_ref(), request_id)
-        .map_err(|e| ApiError::internal(format!("failed to load request detail: {e}")))?;
-    Ok(Json(detail))
+    blocking_json(move || {
+        crate::commands::get_request_detail_internal(state.app_state.as_ref(), request_id)
+    })
+    .await
+}
+
+async fn last_session_scan() -> Json<Option<i64>> {
+    Json(crate::services::session_usage::last_scan_finished())
 }
 
 async fn sync_usage_session_logs(
@@ -1893,11 +2095,11 @@ async fn update_usage_model_pricing_batch(
     State(state): State<WebApiState>,
     Json(entries): Json<Vec<crate::services::model_pricing::ModelPricingInfo>>,
 ) -> Result<Json<usize>, ApiError> {
-    let changed = crate::commands::update_model_pricing_batch_internal(
-        state.app_state.as_ref(),
-        entries,
-    )
-    .map_err(|e| ApiError::internal(format!("failed to update model pricing batch: {e}")))?;
+    let changed =
+        crate::commands::update_model_pricing_batch_internal(state.app_state.as_ref(), entries)
+            .map_err(|e| {
+                ApiError::internal(format!("failed to update model pricing batch: {e}"))
+            })?;
     Ok(Json(changed))
 }
 
@@ -2044,6 +2246,7 @@ async fn install_skill_archives(
         if !is_zip {
             results.push(SkillArchiveInstallResult {
                 file_name,
+                skipped: Vec::new(),
                 installed: Vec::new(),
                 error: Some("only .zip archives are supported".to_string()),
             });
@@ -2067,13 +2270,15 @@ async fn install_skill_archives(
         let _ = std::fs::remove_file(&archive_path);
 
         match install_result {
-            Ok(installed) => results.push(SkillArchiveInstallResult {
+            Ok(result) => results.push(SkillArchiveInstallResult {
                 file_name,
-                installed,
+                skipped: result.skipped,
+                installed: result.installed,
                 error: None,
             }),
             Err(error) => results.push(SkillArchiveInstallResult {
                 file_name,
+                skipped: Vec::new(),
                 installed: Vec::new(),
                 error: Some(error.to_string()),
             }),
@@ -2249,17 +2454,18 @@ async fn import_config_upload(
     Ok(Json(payload))
 }
 
-async fn migrate_from_cc_switch(
-    State(state): State<WebApiState>,
-) -> Result<Json<Value>, ApiError> {
+async fn migrate_from_cc_switch(State(state): State<WebApiState>) -> Result<Json<Value>, ApiError> {
     let result = state
         .app_state
         .db
         .migrate_from_cc_switch()
-        .map_err(|error| ApiError::internal(format!("failed to migrate from CC Switch: {error}")))?;
+        .map_err(|error| {
+            ApiError::internal(format!("failed to migrate from CC Switch: {error}"))
+        })?;
     let warning = crate::commands::post_import_sync_warning_for_state(state.app_state.as_ref());
-    let payload = serde_json::to_value(result)
-        .map_err(|error| ApiError::internal(format!("failed to encode migration result: {error}")))?;
+    let payload = serde_json::to_value(result).map_err(|error| {
+        ApiError::internal(format!("failed to encode migration result: {error}"))
+    })?;
     Ok(Json(crate::commands::attach_warning(payload, warning)))
 }
 
@@ -2309,9 +2515,10 @@ async fn save_settings(
     State(state): State<WebApiState>,
     Json(settings): Json<crate::settings::AppSettings>,
 ) -> Result<Json<bool>, ApiError> {
-    crate::commands::save_settings_internal(state.app_state.as_ref(), settings)
-        .map(Json)
-        .map_err(|e| ApiError::internal(format!("failed to save settings: {e}")))
+    blocking_json(move || {
+        crate::commands::save_settings_internal(state.app_state.as_ref(), settings)
+    })
+    .await
 }
 
 async fn has_codex_unify_history_backup() -> Json<bool> {
@@ -2545,6 +2752,37 @@ async fn get_tool_versions(
         .await
         .map_err(|e| ApiError::internal(format!("failed to load tool versions: {e}")))?;
     Ok(Json(versions))
+}
+
+async fn get_managed_tool_versions(
+    Json(payload): Json<ToolManagementRequest>,
+) -> Result<Json<Vec<crate::commands::tool_management::ToolVersion>>, ApiError> {
+    crate::commands::tool_management::get_tool_versions(payload.tools, payload.wsl_shell_by_tool)
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+async fn probe_tool_installations(
+    Json(payload): Json<ToolManagementRequest>,
+) -> Result<Json<Vec<crate::commands::tool_management::ToolInstallationReport>>, ApiError> {
+    crate::commands::tool_management::list_tool_installations(payload.tools.unwrap_or_default())
+        .await
+        .map(Json)
+        .map_err(ApiError::bad_request)
+}
+
+async fn run_tool_lifecycle_action(
+    Json(payload): Json<ToolManagementRequest>,
+) -> Result<Json<bool>, ApiError> {
+    crate::commands::tool_management::run_tool_lifecycle_action(
+        payload.tools.unwrap_or_default(),
+        payload.action.unwrap_or_default(),
+        payload.wsl_shell_by_tool,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(true))
 }
 
 async fn get_latest_release(
@@ -2971,19 +3209,212 @@ async fn disable_current_omo_slim(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct ClaudeEditorSaveRequest {
+    provider: Provider,
+    editor: crate::services::provider::claude_editor::EditorSave,
+    add: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiEditorViewRequest {
+    settings: serde_json::Value,
+    category: Option<String>,
+    provider_id: Option<String>,
+}
+
+/// 同步供应商服务会等待模式锁、后台模型读取或服务停止；保持 Tokio 调度线程可运行。
+async fn blocking_json<T: Send + 'static, E: std::fmt::Display + Send + 'static>(
+    work: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<Json<T>, ApiError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| ApiError::internal(format!("后台任务失败: {e}")))?
+        .map(Json)
+        .map_err(|e| ApiError::internal(e.to_string()))
+}
+
+async fn gemini_editor_view(
+    State(state): State<WebApiState>,
+    Json(payload): Json<GeminiEditorViewRequest>,
+) -> Result<Json<crate::services::provider::claude_editor::EditorView>, ApiError> {
+    let category = if let Some(id) = payload.provider_id.as_deref() {
+        let row = state
+            .app_state
+            .db
+            .get_provider_by_id(id, "gemini")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if row
+            .as_ref()
+            .is_some_and(crate::services::provider::gemini_direct::is_official)
+        {
+            Some("official".to_string())
+        } else {
+            payload.category
+        }
+    } else {
+        payload.category
+    };
+    blocking_json(move || {
+        crate::services::provider::ProviderService::gemini_editor_view(
+            state.app_state.as_ref(),
+            &payload.settings,
+            category.as_deref(),
+        )
+    })
+    .await
+}
+
+async fn save_gemini_editor(
+    State(state): State<WebApiState>,
+    Json(payload): Json<ClaudeEditorSaveRequest>,
+) -> Result<Json<bool>, ApiError> {
+    blocking_json(move || {
+        crate::services::provider::ProviderService::save_gemini(
+            state.app_state.as_ref(),
+            payload.provider,
+            Some(payload.editor),
+            payload.add,
+        )
+    })
+    .await
+}
+
+async fn codex_editor_view(
+    State(state): State<WebApiState>,
+    Json(payload): Json<GeminiEditorViewRequest>,
+) -> Result<Json<crate::services::provider::claude_editor::EditorView>, ApiError> {
+    let category = if let Some(id) = payload.provider_id.as_deref() {
+        let row = state
+            .app_state
+            .db
+            .get_provider_by_id(id, "codex")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if row
+            .as_ref()
+            .is_some_and(crate::services::provider::codex_direct::is_official)
+        {
+            Some("official".to_string())
+        } else {
+            payload.category
+        }
+    } else {
+        payload.category
+    };
+    blocking_json(move || {
+        crate::services::provider::ProviderService::codex_editor_view(
+            state.app_state.as_ref(),
+            &payload.settings,
+            category.as_deref(),
+        )
+    })
+    .await
+}
+
+async fn save_codex_editor(
+    State(state): State<WebApiState>,
+    Json(payload): Json<ClaudeEditorSaveRequest>,
+) -> Result<Json<bool>, ApiError> {
+    blocking_json(move || {
+        crate::services::provider::ProviderService::save_codex(
+            state.app_state.as_ref(),
+            payload.provider,
+            Some(payload.editor),
+            payload.add,
+        )
+    })
+    .await
+}
+
+async fn grok_editor_view(
+    State(state): State<WebApiState>,
+    Json(payload): Json<GeminiEditorViewRequest>,
+) -> Result<Json<crate::services::provider::claude_editor::EditorView>, ApiError> {
+    let category = if let Some(id) = payload.provider_id.as_deref() {
+        let row = state
+            .app_state
+            .db
+            .get_provider_by_id(id, "grokbuild")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        if row
+            .as_ref()
+            .is_some_and(crate::services::provider::grok_direct::is_official)
+        {
+            Some("official".to_string())
+        } else {
+            payload.category
+        }
+    } else {
+        payload.category
+    };
+    blocking_json(move || {
+        crate::services::provider::ProviderService::grok_editor_view(
+            state.app_state.as_ref(),
+            &payload.settings,
+            category.as_deref(),
+        )
+    })
+    .await
+}
+
+async fn save_grok_editor(
+    State(state): State<WebApiState>,
+    Json(payload): Json<ClaudeEditorSaveRequest>,
+) -> Result<Json<bool>, ApiError> {
+    blocking_json(move || {
+        crate::services::provider::ProviderService::save_grok(
+            state.app_state.as_ref(),
+            payload.provider,
+            Some(payload.editor),
+            payload.add,
+        )
+    })
+    .await
+}
+
+async fn claude_editor_view(
+    State(state): State<WebApiState>,
+    Json(settings): Json<serde_json::Value>,
+) -> Result<Json<crate::services::provider::claude_editor::EditorView>, ApiError> {
+    blocking_json(move || {
+        crate::services::provider::ProviderService::claude_editor_view(
+            state.app_state.as_ref(),
+            &settings,
+        )
+    })
+    .await
+}
+
+async fn save_claude_editor(
+    State(state): State<WebApiState>,
+    Json(payload): Json<ClaudeEditorSaveRequest>,
+) -> Result<Json<bool>, ApiError> {
+    blocking_json(move || {
+        crate::services::provider::ProviderService::save_claude(
+            state.app_state.as_ref(),
+            payload.provider,
+            Some(payload.editor),
+            payload.add,
+        )
+    })
+    .await
+}
+
 async fn add_provider(
     State(state): State<WebApiState>,
     Path(app): Path<String>,
     Json(payload): Json<AddProviderRequest>,
 ) -> Result<Json<bool>, ApiError> {
-    let added = crate::commands::add_provider_internal(
-        state.app_state.as_ref(),
-        app,
-        payload.provider,
-        payload.add_to_live,
-    )
-    .map_err(|e| ApiError::internal(format!("failed to add provider: {e}")))?;
-    Ok(Json(added))
+    blocking_json(move || {
+        crate::commands::add_provider_internal(
+            state.app_state.as_ref(),
+            app,
+            payload.provider,
+            payload.add_to_live,
+        )
+    })
+    .await
 }
 
 async fn update_provider(
@@ -2991,23 +3422,20 @@ async fn update_provider(
     Path((app, id)): Path<(String, String)>,
     Json(provider): Json<Provider>,
 ) -> Result<Json<bool>, ApiError> {
-    let updated = crate::commands::update_provider_internal(
-        state.app_state.as_ref(),
-        app,
-        Some(id),
-        provider,
-    )
-    .map_err(|e| ApiError::internal(format!("failed to update provider: {e}")))?;
-    Ok(Json(updated))
+    blocking_json(move || {
+        crate::commands::update_provider_internal(state.app_state.as_ref(), app, Some(id), provider)
+    })
+    .await
 }
 
 async fn delete_provider(
     State(state): State<WebApiState>,
     Path((app, id)): Path<(String, String)>,
 ) -> Result<Json<bool>, ApiError> {
-    let deleted = crate::commands::delete_provider_internal(state.app_state.as_ref(), app, id)
-        .map_err(|e| ApiError::internal(format!("failed to delete provider: {e}")))?;
-    Ok(Json(deleted))
+    blocking_json(move || {
+        crate::commands::delete_provider_internal(state.app_state.as_ref(), app, id)
+    })
+    .await
 }
 
 async fn update_providers_sort_order(
@@ -3028,10 +3456,10 @@ async fn switch_provider(
     State(state): State<WebApiState>,
     Path((app, id)): Path<(String, String)>,
 ) -> Result<Json<SwitchResult>, ApiError> {
-    let result =
+    blocking_json(move || {
         crate::commands::switch_provider_by_name_internal(state.app_state.as_ref(), app, id)
-            .map_err(|e| ApiError::internal(format!("failed to switch provider: {e}")))?;
-    Ok(Json(result))
+    })
+    .await
 }
 
 async fn open_provider_terminal(
@@ -3047,6 +3475,78 @@ async fn open_provider_terminal(
     )
     .map_err(|e| ApiError::internal(format!("failed to open provider terminal: {e}")))?;
     Ok(Json(opened))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RequestedMode {
+    Direct,
+    Routing,
+    Aggregation,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetModeRequest {
+    mode: RequestedMode,
+    route_provider_id: Option<String>,
+}
+
+async fn get_app_mode(
+    State(state): State<WebApiState>,
+    Path(app): Path<String>,
+) -> Result<Json<crate::mode::controller::ModeView>, ApiError> {
+    let app = AppType::from_str(&app).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    crate::mode::controller::view(&state.app_state, &app)
+        .await
+        .map(Json)
+        .map_err(|e| ApiError::internal(e.to_string()))
+}
+async fn set_app_mode(
+    State(state): State<WebApiState>,
+    Path(app): Path<String>,
+    Json(payload): Json<SetModeRequest>,
+) -> Result<StatusCode, ApiError> {
+    let app = AppType::from_str(&app).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    match payload.mode {
+        RequestedMode::Direct => crate::mode::controller::exit(&state.app_state, &app).await,
+        RequestedMode::Routing | RequestedMode::Aggregation => {
+            crate::mode::controller::enter_mode(
+                &state.app_state,
+                &app,
+                payload.route_provider_id.as_deref(),
+                matches!(payload.mode, RequestedMode::Aggregation),
+            )
+            .await
+        }
+    }
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn set_aggregation_member(
+    State(state): State<WebApiState>,
+    Path((app, id)): Path<(String, String)>,
+    Json(payload): Json<EnabledRequest>,
+) -> Result<StatusCode, ApiError> {
+    let app = AppType::from_str(&app).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    crate::mode::controller::set_stack_member(&state.app_state, &app, &id, payload.enabled)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn restart_proxy_service(
+    State(state): State<WebApiState>,
+    Json(config): Json<GlobalProxyConfig>,
+) -> Result<StatusCode, ApiError> {
+    crate::mode::controller::configure_service(&state.app_state, config, true)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn restart_codex_daemon(
+) -> Result<Json<crate::services::provider::codex_client_catalog::RestartOutcome>, ApiError> {
+    blocking_json(crate::services::provider::codex_client_catalog::restart_daemon).await
 }
 
 async fn get_proxy_status(State(state): State<WebApiState>) -> Result<Json<ProxyStatus>, ApiError> {
@@ -3102,12 +3602,9 @@ async fn is_proxy_running(State(state): State<WebApiState>) -> Json<bool> {
 async fn get_claude_desktop_status(
     State(state): State<WebApiState>,
 ) -> Result<Json<crate::claude_desktop_config::ClaudeDesktopStatus>, ApiError> {
-    let status =
-        crate::commands::get_claude_desktop_status_internal(state.app_state.as_ref())
-            .await
-            .map_err(|e| {
-                ApiError::internal(format!("failed to load claude-desktop status: {e}"))
-            })?;
+    let status = crate::commands::get_claude_desktop_status_internal(state.app_state.as_ref())
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to load claude-desktop status: {e}")))?;
     Ok(Json(status))
 }
 
@@ -3228,36 +3725,6 @@ async fn switch_proxy_provider(
     crate::commands::switch_proxy_provider_internal(state.app_state.as_ref(), app, id)
         .await
         .map_err(|e| ApiError::internal(format!("failed to switch proxy provider: {e}")))?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn get_default_cost_multiplier(
-    State(state): State<WebApiState>,
-    Path(app): Path<String>,
-) -> Result<Json<String>, ApiError> {
-    let app_type = AppType::from_str(&app).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let value = crate::commands::get_default_cost_multiplier_internal(
-        state.app_state.as_ref(),
-        app_type.as_str(),
-    )
-    .await
-    .map_err(|e| ApiError::internal(format!("failed to load default cost multiplier: {e}")))?;
-    Ok(Json(value))
-}
-
-async fn set_default_cost_multiplier(
-    State(state): State<WebApiState>,
-    Path(app): Path<String>,
-    Json(payload): Json<ValueRequest>,
-) -> Result<StatusCode, ApiError> {
-    let app_type = AppType::from_str(&app).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    crate::commands::set_default_cost_multiplier_internal(
-        state.app_state.as_ref(),
-        app_type.as_str(),
-        &payload.value,
-    )
-    .await
-    .map_err(|e| ApiError::internal(format!("failed to update default cost multiplier: {e}")))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -3678,9 +4145,34 @@ pub async fn run_web_server() -> Result<(), String> {
     run_web_server_with_options(WebServerOptions::from_env()).await
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            log::error!("监听 Ctrl+C 失败: {error}");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                log::error!("监听 SIGTERM 失败: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+}
+
 pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<(), String> {
     let access_key = WebAccessKey::from_env()?;
     let db = Arc::new(Database::init().map_err(|e| format!("database init failed: {e}"))?);
+    crate::mode::operation::recover_on_startup(db.as_ref());
     match db.init_default_skill_repos() {
         Ok(count) if count > 0 => {
             log::info!("startup initialized {count} default skill repositories");
@@ -3694,11 +4186,10 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         log::warn!("startup periodic maintenance failed: {err}");
     }
     let app_state = Arc::new(AppState::new(db));
-    if let Err(err) =
-        crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
-            app_state.as_ref(),
-        )
-        .await
+    if let Err(err) = crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
+        app_state.as_ref(),
+    )
+    .await
     {
         log::warn!("startup Gemini common-config credential scrub failed: {err}");
     }
@@ -3746,7 +4237,7 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         codex_oauth_state: app_state.codex_oauth_state.clone(),
         xai_oauth_state: app_state.xai_oauth_state.clone(),
         access_key,
-        app_state,
+        app_state: app_state.clone(),
     };
     let bind_options = resolve_bind_options(&options)?;
 
@@ -3836,7 +4327,13 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
             get(get_stream_check_config).put(set_stream_check_config),
         )
         .route("/api/settings/tool-versions", post(get_tool_versions))
-        .route("/api/settings/windows-env-paths", get(get_windows_env_paths))
+        .route("/api/tools/versions", post(get_managed_tool_versions))
+        .route("/api/tools/installations", post(probe_tool_installations))
+        .route("/api/tools/action", post(run_tool_lifecycle_action))
+        .route(
+            "/api/settings/windows-env-paths",
+            get(get_windows_env_paths),
+        )
         .route("/api/settings/latest-release", get(get_latest_release))
         .route("/api/settings/config-dir/:app", get(get_config_dir))
         .route("/api/omo/local-file", get(get_omo_local_file))
@@ -3863,6 +4360,10 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         )
         .route("/api/auth/logout", post(auth_logout))
         .route("/api/auth/xai_oauth/models", get(fetch_xai_oauth_models))
+        .route(
+            "/api/auth/codex_oauth/models",
+            get(fetch_codex_oauth_models),
+        )
         .route("/api/copilot/token", get(get_copilot_token))
         .route(
             "/api/copilot/accounts/:account_id/token",
@@ -3905,6 +4406,32 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         .route(
             "/api/profiles/:id",
             put(update_profile).delete(delete_profile),
+        )
+        .route("/api/providers/codex/editor/view", post(codex_editor_view))
+        .route("/api/providers/codex/editor/save", post(save_codex_editor))
+        .route(
+            "/api/providers/grokbuild/editor/view",
+            post(grok_editor_view),
+        )
+        .route(
+            "/api/providers/grokbuild/editor/save",
+            post(save_grok_editor),
+        )
+        .route(
+            "/api/providers/gemini/editor/view",
+            post(gemini_editor_view),
+        )
+        .route(
+            "/api/providers/gemini/editor/save",
+            post(save_gemini_editor),
+        )
+        .route(
+            "/api/providers/claude/editor/view",
+            post(claude_editor_view),
+        )
+        .route(
+            "/api/providers/claude/editor/save",
+            post(save_claude_editor),
         )
         .route("/api/providers/:app", get(get_providers).post(add_provider))
         .route(
@@ -3983,6 +4510,9 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
             axum::routing::delete(remove_skill_repo),
         )
         .route("/api/skills/discover", get(discover_available_skills))
+        .route("/api/skills/resync", post(resync_skills))
+        .route("/api/skills/storage-paths", get(skill_storage_paths))
+        .route("/api/mcp/resync", post(resync_mcp))
         .route("/api/skills/updates", get(check_skill_updates))
         .route("/api/skills/install", post(install_skill_unified))
         .route("/api/skills/install-archives", post(install_skill_archives))
@@ -4055,7 +4585,10 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
             get(get_hermes_memory).put(set_hermes_memory),
         )
         .route("/api/hermes/model", get(get_hermes_model_config))
-        .route("/api/hermes/live-provider-ids", get(get_hermes_live_provider_ids))
+        .route(
+            "/api/hermes/live-provider-ids",
+            get(get_hermes_live_provider_ids),
+        )
         .route("/api/hermes/web-ui-url", get(get_hermes_web_ui_url))
         .route("/api/hermes/dashboard", post(launch_hermes_dashboard))
         .route("/api/hermes/health", get(scan_hermes_config_health))
@@ -4066,13 +4599,23 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         )
         .route("/api/sessions", get(list_sessions).delete(delete_session))
         .route("/api/sessions/messages", get(get_session_messages))
-        .route("/api/sessions/launch-terminal", post(launch_session_terminal))
+        .route("/api/sessions/stream", get(stream_session_messages))
+        .route("/api/sessions/usage", get(get_session_usage_summary))
+        .route("/api/sessions/content", post(get_session_block_content))
+        .route("/api/sessions/image", post(get_session_image))
+        .route(
+            "/api/sessions/launch-terminal",
+            post(launch_session_terminal),
+        )
         .route("/api/sessions/delete-batch", post(delete_sessions))
         .route("/api/usage/summary", get(get_usage_summary))
         .route("/api/usage/trends", get(get_usage_trends))
         .route("/api/usage/provider-stats", get(get_usage_provider_stats))
         .route("/api/usage/model-stats", get(get_usage_model_stats))
-        .route("/api/usage/session-sync", post(sync_usage_session_logs))
+        .route(
+            "/api/usage/session-sync",
+            post(sync_usage_session_logs).get(last_session_scan),
+        )
         .route("/api/usage/codex/rebuild", post(rebuild_codex_usage))
         .route("/api/usage/data-sources", get(get_usage_data_sources))
         .route("/api/usage/request-logs", post(get_usage_request_logs))
@@ -4147,6 +4690,19 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         .route("/api/proxy/status", get(get_proxy_status))
         .route("/api/proxy/takeover-status", get(get_proxy_takeover_status))
         .route(
+            "/api/proxy/apps/:app/mode",
+            get(get_app_mode).put(set_app_mode),
+        )
+        .route(
+            "/api/proxy/apps/:app/aggregation/:id",
+            put(set_aggregation_member),
+        )
+        .route("/api/proxy/restart", post(restart_proxy_service))
+        .route(
+            "/api/proxy/codex/daemon/restart",
+            post(restart_codex_daemon),
+        )
+        .route(
             "/api/proxy/config",
             get(get_proxy_config).put(update_proxy_config),
         )
@@ -4166,10 +4722,7 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
             get(get_proxy_config_for_app).put(update_proxy_config_for_app),
         )
         .route("/api/proxy/running", get(is_proxy_running))
-        .route(
-            "/api/claude-desktop/status",
-            get(get_claude_desktop_status),
-        )
+        .route("/api/claude-desktop/status", get(get_claude_desktop_status))
         .route(
             "/api/claude-desktop/default-routes",
             get(get_claude_desktop_default_routes),
@@ -4190,10 +4743,6 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         .route(
             "/api/proxy/apps/:app/providers/:id/switch",
             post(switch_proxy_provider),
-        )
-        .route(
-            "/api/proxy/apps/:app/default-cost-multiplier",
-            get(get_default_cost_multiplier).put(set_default_cost_multiplier),
         )
         .route(
             "/api/proxy/apps/:app/pricing-model-source",
@@ -4262,7 +4811,36 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
     }
     println!("cc-switch web service listening on http://{bind_addr}");
 
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| format!("server error: {e}"))
+    crate::mode::controller::startup(&app_state).await;
+    crate::services::provider::codex_official_models::start_background_checks(
+        app_state.as_ref().clone(),
+    );
+    let mut listener = listener;
+    loop {
+        let result = axum::serve(listener, app.clone())
+            .with_graceful_shutdown(shutdown_signal())
+            .await;
+        // 请求排空后撤回客户端。失败时恢复 Web 入口和正在运行的路由，供修正配置后重试退出。
+        match crate::mode::controller::detach_all(&app_state).await {
+            Ok(()) => return result.map_err(|e| format!("server error: {e}")),
+            Err(error) => {
+                log::error!("退出已取消，撤回客户端配置失败: {error}；请修正配置后重试");
+                listener = tokio::net::TcpListener::bind(bind_addr)
+                    .await
+                    .map_err(|e| format!("恢复 Web 监听失败: {e}；客户端撤回失败: {error}"))?;
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "web_mode_tests.rs"]
+mod mode_tests;
+
+#[cfg(test)]
+#[path = "web_session_tests.rs"]
+mod session_tests;
+
+#[cfg(test)]
+#[path = "web_resource_tests.rs"]
+mod resource_tests;

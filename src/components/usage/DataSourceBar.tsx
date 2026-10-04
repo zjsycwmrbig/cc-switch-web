@@ -16,6 +16,7 @@ const DATA_SOURCE_ICONS: Record<string, ReactNode> = {
   codex_session: <FileText className="h-3.5 w-3.5" />,
   gemini_session: <FileText className="h-3.5 w-3.5" />,
   grok_session: <FileText className="h-3.5 w-3.5" />,
+  opencode_session: <Database className="h-3.5 w-3.5" />,
 };
 
 // 会话日志同步入口已迁到用量面板的"自动扫描会话记录"卡片（上游 cc-switch 5ff199b5）：

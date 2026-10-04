@@ -11,6 +11,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: 1750000000000 }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 

@@ -1,3 +1,5 @@
+import { WebSidebar } from "@/components/shell/WebSidebar";
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import {
   lazy,
   Suspense,
@@ -46,14 +48,14 @@ import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { cn } from "@/lib/utils";
-import { isWindows, isLinux } from "@/lib/platform";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
-import { ProxyToggle } from "@/components/proxy/ProxyToggle";
+import { AppModePanel } from "@/components/proxy/AppModePanel";
+import { useAppMode, supportsAppMode } from "@/hooks/useAppMode";
 import { RoutingActivationBrand } from "@/components/proxy/RoutingActivationBrand";
 import { FailoverToggle } from "@/components/proxy/FailoverToggle";
 import { McpIcon } from "@/components/BrandIcons";
@@ -127,7 +129,25 @@ const HermesMemoryPanel = lazy(
   () => import("@/components/hermes/HermesMemoryPanel"),
 );
 
+const AppsPage = lazy(() =>
+  import("@/components/apps/AppsPage").then((m) => ({ default: m.AppsPage })),
+);
+
+const AuthCenterPanel = lazy(() =>
+  import("@/components/settings/AuthCenterPanel").then((m) => ({
+    default: m.AuthCenterPanel,
+  })),
+);
+const UsageDashboard = lazy(() =>
+  import("@/components/usage/UsageDashboard").then((m) => ({
+    default: m.UsageDashboard,
+  })),
+);
+
 type View =
+  | "usage"
+  | "accounts"
+  | "apps"
   | "providers"
   | "settings"
   | "prompts"
@@ -142,17 +162,19 @@ type View =
   | "openclawAgents"
   | "hermesMemory";
 
-const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
+const DRAG_BAR_HEIGHT = 0; // px
 const HEADER_HEIGHT = 64; // px
 const STORAGE_KEY = "cc-switch-last-app";
 const VALID_APPS: AppId[] = [
   "claude",
+  "claude-desktop",
   "codex",
   "gemini",
   "grokbuild",
   "opencode",
   "openclaw",
   "hermes",
+  "pi",
   "mcode",
 ];
 
@@ -166,6 +188,9 @@ const getInitialApp = (): AppId => {
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
 const VALID_VIEWS: View[] = [
+  "usage",
+  "accounts",
+  "apps",
   "providers",
   "settings",
   "prompts",
@@ -238,35 +263,6 @@ function App() {
       setActiveApp(getFirstVisibleApp());
     }
   }, [visibleApps, activeApp]);
-
-  // Fallback from sessions view when switching to an app without session support
-  useEffect(() => {
-    if (
-      currentView === "sessions" &&
-      activeApp !== "claude" &&
-      activeApp !== "codex" &&
-      activeApp !== "grokbuild" &&
-      activeApp !== "opencode" &&
-      activeApp !== "openclaw" &&
-      activeApp !== "gemini" &&
-      activeApp !== "pi" &&
-      activeApp !== "mcode"
-    ) {
-      setCurrentView("providers");
-    }
-  }, [activeApp, currentView]);
-
-  useEffect(() => {
-    if (
-      activeApp === "hermes" &&
-      currentView !== "providers" &&
-      currentView !== "hermesMemory" &&
-      currentView !== "skills" &&
-      currentView !== "mcp"
-    ) {
-      setCurrentView("providers");
-    }
-  }, [activeApp, currentView]);
 
   useEffect(() => {
     if (currentView === "hermesMemory" && activeApp !== "hermes") {
@@ -349,6 +345,13 @@ function App() {
   const [showEnvBanner, setShowEnvBanner] = useState(false);
   const [envBannerHeight, setEnvBannerHeight] = useState(0);
 
+  useEffect(() => {
+    setIsAddOpen(false);
+    setEditingProvider(null);
+    setUsageProvider(null);
+    setConfirmAction(null);
+  }, [activeApp, currentView]);
+
   const effectiveEditingProvider = useLastValidValue(editingProvider);
   const effectiveUsageProvider = useLastValidValue(usageProvider);
   const mainScrollRef = useRef<HTMLElement>(null);
@@ -396,6 +399,7 @@ function App() {
   });
   const providers = useMemo(() => data?.providers ?? {}, [data]);
   const currentProviderId = data?.currentProviderId ?? "";
+  const appMode = useAppMode(activeApp);
   const isOpenClawView =
     activeApp === "openclaw" &&
     (currentView === "providers" ||
@@ -472,7 +476,13 @@ function App() {
   const isEnvBannerVisible = showEnvBanner && envConflicts.length > 0;
   const headerTopOffset =
     DRAG_BAR_HEIGHT + (isEnvBannerVisible ? envBannerHeight : 0);
-  const contentTopOffset = headerTopOffset + HEADER_HEIGHT;
+  const resourceToolbar = [
+    "skills",
+    "skillsDiscovery",
+    "mcp",
+    "prompts",
+    "universal",
+  ].includes(currentView);
   const [launchDashboardOpen, setLaunchDashboardOpen] = useState(false);
   const openHermesWebUI = useOpenHermesWebUI(() =>
     setLaunchDashboardOpen(true),
@@ -531,11 +541,13 @@ function App() {
   const handleEditProvider = async ({
     provider,
     originalId,
+    editorSave,
   }: {
     provider: Provider;
     originalId?: string;
+    editorSave?: ProviderEditorSave;
   }) => {
-    await updateProvider(provider, originalId);
+    await updateProvider(provider, originalId, editorSave);
     setEditingProvider(null);
   };
 
@@ -564,7 +576,9 @@ function App() {
           queryKey: hermesKeys.liveProviderIds,
         });
       } else if (activeApp === "pi") {
-        await queryClient.invalidateQueries({ queryKey: ["piLiveProviderIds"] });
+        await queryClient.invalidateQueries({
+          queryKey: ["piLiveProviderIds"],
+        });
         await queryClient.invalidateQueries({ queryKey: ["pi", "state"] });
       } else if (activeApp === "mcode") {
         // MiniMax Code 的“已添加”状态来自 meta.liveConfigManaged（上游 09c5d39d）。
@@ -602,8 +616,24 @@ function App() {
   };
 
   const handleDuplicateProvider = async (provider: Provider) => {
-    const newSortIndex =
-      provider.sortIndex !== undefined ? provider.sortIndex + 1 : undefined;
+    if (
+      activeApp === "opencode" &&
+      provider.category !== "omo" &&
+      provider.category !== "omo-slim"
+    ) {
+      const { npm, models } = provider.settingsConfig;
+      if (
+        typeof npm !== "string" ||
+        !npm.trim() ||
+        !models ||
+        typeof models !== "object" ||
+        Array.isArray(models) ||
+        Object.keys(models).length === 0
+      ) {
+        toast.error(t("opencode.duplicateRequiresDefinition"));
+        return;
+      }
+    }
 
     const duplicatedProvider: Omit<Provider, "id" | "createdAt"> & {
       providerKey?: string;
@@ -613,7 +643,6 @@ function App() {
       settingsConfig: JSON.parse(JSON.stringify(provider.settingsConfig)), // 深拷贝
       websiteUrl: provider.websiteUrl,
       category: provider.category,
-      sortIndex: newSortIndex, // 复制原 sortIndex + 1
       meta: provider.meta
         ? JSON.parse(JSON.stringify(provider.meta))
         : undefined, // 深拷贝
@@ -671,34 +700,12 @@ function App() {
         existingKeys,
       );
       duplicatedProvider.addToLive = false;
-    }
-
-    if (provider.sortIndex !== undefined) {
-      const updates = Object.values(providers)
-        .filter(
-          (p) =>
-            p.sortIndex !== undefined &&
-            p.sortIndex >= newSortIndex! &&
-            p.id !== provider.id,
-        )
-        .map((p) => ({
-          id: p.id,
-          sortIndex: p.sortIndex! + 1,
-        }));
-
-      if (updates.length > 0) {
-        try {
-          await providersApi.updateSortOrder(updates, activeApp);
-        } catch (error) {
-          console.error("[App] Failed to update sort order", error);
-          toast.error(
-            t("provider.sortUpdateFailed", {
-              defaultValue: "排序更新失败",
-            }),
-          );
-          return; // 如果排序更新失败，不继续添加
-        }
-      }
+    } else if (activeApp === "mcode") {
+      // The list includes live custom nodes; the backend also guards native account keys.
+      duplicatedProvider.providerKey = generateUniqueProviderCopyKey(
+        provider.id,
+        Object.keys(providers),
+      );
     }
 
     await addProvider(duplicatedProvider);
@@ -742,6 +749,20 @@ function App() {
   const renderContent = () => {
     const content = (() => {
       switch (currentView) {
+        case "accounts":
+          return (
+            <div className="px-6 py-4">
+              <AuthCenterPanel />
+            </div>
+          );
+        case "usage":
+          return (
+            <div className="px-3 md:px-6 py-4">
+              <UsageDashboard />
+            </div>
+          );
+        case "apps":
+          return <AppsPage />;
         case "settings":
           return (
             <SettingsPage
@@ -754,6 +775,7 @@ function App() {
         case "prompts":
           return (
             <PromptPanel
+              key={activeApp}
               ref={promptPanelRef}
               open={true}
               onOpenChange={() => setCurrentView("providers")}
@@ -779,6 +801,7 @@ function App() {
           return (
             <UnifiedMcpPanel
               ref={mcpPanelRef}
+              visibleApps={visibleApps}
               onOpenChange={() => setCurrentView("providers")}
             />
           );
@@ -817,7 +840,27 @@ function App() {
                     transition={{ duration: 0.15 }}
                     className="space-y-4"
                   >
+                    {supportsAppMode(activeApp) && (
+                      <AppModePanel
+                        key={activeApp}
+                        app={activeApp}
+                        providers={providers}
+                        state={appMode}
+                      />
+                    )}
                     <ProviderList
+                      modeView={appMode.data}
+                      modePending={appMode.pending}
+                      onAggregationMember={(id, enabled) => {
+                        void appMode
+                          .change({ kind: "member", id, enabled })
+                          .catch(() => {});
+                      }}
+                      onAggregationDefault={(id) => {
+                        void appMode
+                          .change({ kind: "route", id })
+                          .catch(() => {});
+                      }}
                       providers={providers}
                       currentProviderId={currentProviderId}
                       appId={activeApp}
@@ -893,8 +936,11 @@ function App() {
 
   return (
     <div
-      className="app-shell flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4"
-      style={{ overflowX: "hidden", paddingTop: contentTopOffset }}
+      className={`app-shell ${resourceToolbar ? "resource-toolbar-page" : ""} md:pl-14 flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4`}
+      style={{
+        overflowX: "hidden",
+        paddingTop: `calc(${headerTopOffset}px + var(--web-header-height, ${HEADER_HEIGHT}px))`,
+      }}
     >
       <div
         className="fixed top-0 left-0 right-0 z-[60]"
@@ -929,13 +975,16 @@ function App() {
       )}
 
       <header
-        className="fixed z-50 w-full transition-all duration-300 bg-background/80 backdrop-blur-md"
+        className="fixed inset-x-0 md:left-14 z-50 transition-colors duration-300 bg-background/80 backdrop-blur-md"
         style={{
           top: headerTopOffset,
-          height: HEADER_HEIGHT,
+          height: `var(--web-header-height, ${HEADER_HEIGHT}px)`,
         }}
       >
-        <div className="flex h-full items-center justify-between gap-2 px-6">
+        <div
+          data-page-toolbar
+          className="flex h-full items-center justify-between gap-2 px-6"
+        >
           <div className="flex items-center gap-1">
             {currentView !== "providers" ? (
               <div className="flex items-center gap-2">
@@ -955,6 +1004,9 @@ function App() {
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
                 <h1 className="text-lg font-semibold">
+                  {currentView === "usage" && t("nav.usage")}
+                  {currentView === "accounts" && t("settings.authCenter.title")}
+                  {currentView === "apps" && t("nav.apps")}
                   {currentView === "settings" && t("settings.title")}
                   {currentView === "prompts" &&
                     t("prompts.title", { appName: t(`apps.${activeApp}`) })}
@@ -1031,12 +1083,10 @@ function App() {
               activeApp !== "pi" &&
               activeApp !== "mcode" && (
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {settingsData?.enableLocalProxy && (
-                    <ProxyToggle activeApp={activeApp} />
-                  )}
-                  {settingsData?.enableFailoverToggle && (
-                    <FailoverToggle activeApp={activeApp} />
-                  )}
+                  {settingsData?.enableFailoverToggle &&
+                    appMode.data?.mode === "routing" && (
+                      <FailoverToggle activeApp={activeApp} />
+                    )}
                 </div>
               )}
             {currentView === "providers" &&
@@ -1047,7 +1097,7 @@ function App() {
                 </div>
               )}
             <div className="flex min-w-0 flex-1 items-center justify-end overflow-hidden">
-              {currentView === "providers" && (
+              {(currentView === "providers" || currentView === "prompts") && (
                 <AppSwitcher
                   activeApp={activeApp}
                   onSwitch={setActiveApp}
@@ -1454,6 +1504,17 @@ function App() {
           </div>
         </div>
       </header>
+
+      <WebSidebar
+        activeApp={activeApp}
+        currentView={currentView}
+        visibleApps={visibleApps}
+        onApp={(app) => {
+          setActiveApp(app);
+          setCurrentView("providers");
+        }}
+        onView={handleViewChange}
+      />
 
       <main
         ref={mainScrollRef}

@@ -1,8 +1,24 @@
+import { resyncWebSkills, resyncWebMcp, getWebSkillStoragePaths } from "./web";
+import type { AppMode } from "@/types/proxy";
 import { getDefaultAppProxyConfig } from "./defaults";
 import type { AppId } from "@/lib/api/types";
 import {
+  manageWebTools,
+  getWebAppMode,
+  setWebAppMode,
+  setWebAggregationMember,
+  restartWebProxyService,
+  restartWebCodexDaemon,
   addWebProviderToFailoverQueue,
   addWebProvider,
+  getWebClaudeEditorView,
+  getWebGeminiEditorView,
+  getWebCodexEditorView,
+  saveWebCodexEditor,
+  getWebGrokEditorView,
+  saveWebGrokEditor,
+  saveWebGeminiEditor,
+  saveWebClaudeEditor,
   extractWebCommonConfigSnippet,
   getWebCopilotModels,
   getWebCopilotModelsForAccount,
@@ -32,7 +48,6 @@ import {
   getWebCircuitBreakerConfig,
   getWebDefaultAppConfigDir,
   getWebDefaultConfigDir,
-  getWebDefaultCostMultiplier,
   getWebFailoverQueue,
   getWebGlobalProxyConfig,
   getWebGlobalProxyUrl,
@@ -95,6 +110,7 @@ import {
   getWebSkillBackups,
   getWebManagedAuthStatus,
   getWebXaiOauthModels,
+  getWebCodexOauthModels,
   getWebUnmanagedSkills,
   getWebOptimizerConfig,
   getWebUpstreamProxyStatus,
@@ -117,7 +133,6 @@ import {
   setWebAutoFailoverEnabled,
   setWebAppConfigDirOverride,
   setWebCommonConfigSnippet,
-  setWebDefaultCostMultiplier,
   setWebLogConfig,
   setWebManagedAuthDefaultAccount,
   setWebOptimizerConfig,
@@ -206,6 +221,7 @@ import {
   testWebUsageScript,
   toggleWebSkillApp,
   syncWebSessionUsage,
+  getWebLastSessionScan,
   rebuildWebCodexUsage,
   recordWebModelsDevSyncResult,
   applyWebProfile,
@@ -336,6 +352,13 @@ export async function invoke<T>(
         args?.app as AppId,
         args?.providerId as string,
       )) as T;
+    case "get_managed_tool_versions":
+      return manageWebTools<T>("versions", args ?? {});
+    case "probe_tool_installations":
+    case "list_tool_installations":
+      return manageWebTools<T>("installations", args ?? {});
+    case "run_tool_lifecycle_action":
+      return manageWebTools<T>("action", args ?? {});
     case "fetch_models_for_config":
       return (await fetchWebProviderModels(
         args?.baseUrl as string,
@@ -343,9 +366,15 @@ export async function invoke<T>(
         args?.isFullUrl as boolean | undefined,
         args?.modelsUrl as string | undefined,
         args?.customUserAgent as string | undefined,
+        args?.apiFormat as string | undefined,
+        args?.requestHeaders as Record<string, string> | undefined,
       )) as T;
     case "get_opencode_models":
       return (await getWebOpenCodeModels()) as T;
+    case "get_codex_oauth_models":
+      return (await getWebCodexOauthModels(
+        args?.accountId as string | null | undefined,
+      )) as T;
     case "get_xai_oauth_models":
       return (await getWebXaiOauthModels(
         args?.accountId as string | null | undefined,
@@ -425,6 +454,24 @@ export async function invoke<T>(
       const result = await getWebProviders(appId);
       return result.currentProviderId as T;
     }
+    case "get_codex_editor_view":
+      return (await getWebCodexEditorView(args)) as T;
+    case "save_codex_editor":
+      return (await saveWebCodexEditor(args)) as T;
+    case "get_grok_editor_view":
+      return (await getWebGrokEditorView(args)) as T;
+    case "save_grok_editor":
+      return (await saveWebGrokEditor(args)) as T;
+    case "get_gemini_editor_view":
+      return (await getWebGeminiEditorView(args)) as T;
+    case "save_gemini_editor":
+      return (await saveWebGeminiEditor(args)) as T;
+    case "get_claude_editor_view":
+      return (await getWebClaudeEditorView(
+        args?.settings as Record<string, unknown>,
+      )) as T;
+    case "save_claude_editor":
+      return (await saveWebClaudeEditor(args)) as T;
     case "add_provider":
       return (await addWebProvider(
         args?.app as AppId,
@@ -706,6 +753,12 @@ export async function invoke<T>(
       return (await getWebCurrentPromptFileContent(args?.app as AppId)) as T;
     case "get_installed_skills":
       return (await getWebInstalledSkills()) as T;
+    case "resync_mcp_to_apps":
+      return await resyncWebMcp(args?.apps as any) as T;
+    case "skill_storage_paths":
+      return await getWebSkillStoragePaths() as T;
+    case "resync_skills":
+      return await resyncWebSkills() as T;
     case "get_skill_backups":
       return (await getWebSkillBackups()) as T;
     case "discover_available_skills":
@@ -903,12 +956,34 @@ export async function invoke<T>(
         args?.providerId as string,
         args?.appType as string,
       )) as T;
+    case "get_last_session_scan":
+      return (await getWebLastSessionScan()) as T;
     case "sync_session_usage":
       return (await syncWebSessionUsage()) as T;
     case "rebuild_codex_usage":
       return (await rebuildWebCodexUsage()) as T;
     case "get_usage_data_sources":
       return (await getWebUsageDataSources()) as T;
+    case "get_app_mode":
+      return (await getWebAppMode(args?.appType as AppId)) as T;
+    case "restart_codex_daemon":
+      return (await restartWebCodexDaemon()) as T;
+    case "set_app_mode":
+      return (await setWebAppMode(
+        args?.appType as AppId,
+        args?.mode as AppMode,
+        args?.routeProviderId as string | undefined,
+      )) as T;
+    case "set_aggregation_member":
+      return (await setWebAggregationMember(
+        args?.appType as AppId,
+        args?.providerId as string,
+        Boolean(args?.enabled),
+      )) as T;
+    case "restart_proxy_service":
+      return (await restartWebProxyService(
+        args?.config as import("@/types/proxy").GlobalProxyConfig,
+      )) as T;
     case "start_proxy_server":
       return (await startWebProxyServer()) as T;
     case "stop_proxy_with_restore":
@@ -958,13 +1033,6 @@ export async function invoke<T>(
     }
     case "update_proxy_config_for_app":
       return (await updateWebProxyConfigForApp(args?.config as any)) as T;
-    case "get_default_cost_multiplier":
-      return (await getWebDefaultCostMultiplier(args?.appType as AppId)) as T;
-    case "set_default_cost_multiplier":
-      return (await setWebDefaultCostMultiplier(
-        args?.appType as AppId,
-        args?.value as string,
-      )) as T;
     case "get_pricing_model_source":
       return (await getWebPricingModelSource(args?.appType as AppId)) as T;
     case "set_pricing_model_source":

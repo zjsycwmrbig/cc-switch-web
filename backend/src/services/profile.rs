@@ -105,8 +105,7 @@ impl ProfilePayload {
             if let (Some(target), Some(source)) = (self.mcp.get_mut(app), other.mcp.get(app)) {
                 *target = source.clone();
             }
-            if let (Some(target), Some(source)) =
-                (self.skills.get_mut(app), other.skills.get(app))
+            if let (Some(target), Some(source)) = (self.skills.get_mut(app), other.skills.get(app))
             {
                 *target = source.clone();
             }
@@ -157,7 +156,11 @@ impl ProfileService {
 
         for app in scope.apps() {
             if let Some(slot) = payload.providers.get_mut(app) {
-                *slot = crate::settings::get_effective_current_provider(&state.db, app)?;
+                *slot = crate::mode::current::provider_for(
+                    &state.db,
+                    app,
+                    crate::mode::current::Purpose::InUse,
+                )?;
             }
             if let Some(slot) = payload.mcp.get_mut(app) {
                 *slot = Some(
@@ -307,9 +310,21 @@ impl ProfileService {
                         "[{app_str}] provider '{target_id}' no longer exists, skipped"
                     ));
                 } else {
-                    let current = crate::settings::get_effective_current_provider(&state.db, app)?;
+                    let current = crate::mode::current::provider_for(
+                        &state.db,
+                        app,
+                        crate::mode::current::Purpose::InUse,
+                    )?;
                     if current.as_deref() != Some(target_id) {
-                        match ProviderService::switch(state, app.clone(), target_id) {
+                        let switch_state = state.clone();
+                        let switch_app = app.clone();
+                        let switch_id = target_id.clone();
+                        let switched = tokio::task::spawn_blocking(move || {
+                            ProviderService::switch(&switch_state, switch_app, &switch_id)
+                        })
+                        .await
+                        .map_err(|e| AppError::Message(format!("切换供应商任务失败: {e}")))?;
+                        match switched {
                             Ok(result) => warnings.extend(result.warnings),
                             Err(error) => warnings.push(format!(
                                 "[{app_str}] switch provider '{target_id}' failed: {error}"

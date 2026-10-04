@@ -358,7 +358,7 @@ use crate::provider::ProviderManager;
 #[serde(rename_all = "lowercase")]
 pub enum AppType {
     Claude,
-    // C-Phase0 脚手架：claude-desktop 应用目标已建型，运行时尚未实现（不进 all()）
+    // Desktop 使用独立 profile，不参与通用 CLI 批量同步。
     #[serde(
         rename = "claude-desktop",
         alias = "claude_desktop",
@@ -403,7 +403,7 @@ impl AppType {
         )
     }
 
-    /// Return an iterator over all app types
+    /// 通用 CLI 同步目标；Desktop 使用独立的 profile 写入入口。
     pub fn all() -> impl Iterator<Item = AppType> {
         [
             AppType::Claude,
@@ -427,6 +427,7 @@ impl FromStr for AppType {
         let normalized = s.trim().to_lowercase();
         match normalized.as_str() {
             "claude" => Ok(AppType::Claude),
+            "claude-desktop" | "claude_desktop" | "claudedesktop" => Ok(AppType::ClaudeDesktop),
             "codex" => Ok(AppType::Codex),
             "gemini" => Ok(AppType::Gemini),
             "grokbuild" | "grok-build" | "grok_build" | "grok" => Ok(AppType::GrokBuild),
@@ -437,8 +438,8 @@ impl FromStr for AppType {
             "mcode" => Ok(AppType::Mcode),
             other => Err(AppError::localized(
                 "unsupported_app",
-                format!("不支持的应用标识: '{other}'。可选值: claude, codex, gemini, grokbuild, opencode, openclaw, hermes, pi。"),
-                format!("Unsupported app id: '{other}'. Allowed: claude, codex, gemini, grokbuild, opencode, openclaw, hermes, pi."),
+                format!("不支持的应用标识: '{other}'。可选值: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, mcode。"),
+                format!("Unsupported app id: '{other}'. Allowed: claude, claude-desktop, codex, gemini, grokbuild, opencode, openclaw, hermes, pi, mcode."),
             )),
         }
     }

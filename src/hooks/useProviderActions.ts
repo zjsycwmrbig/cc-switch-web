@@ -1,3 +1,4 @@
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -80,6 +81,7 @@ export function useProviderActions(
         addToLive?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
         ensureCodexOfficialSeed?: boolean;
+        editorSave?: ProviderEditorSave;
       },
     ) => {
       // 命中 Coding Plan 路由表的新供应商自动启用套餐用量查询（上游 cc-switch 270a4ff3）
@@ -137,8 +139,16 @@ export function useProviderActions(
 
   // 更新供应商
   const updateProvider = useCallback(
-    async (provider: Provider, originalId?: string) => {
-      await updateProviderMutation.mutateAsync({ provider, originalId });
+    async (
+      provider: Provider,
+      originalId?: string,
+      editorSave?: ProviderEditorSave,
+    ) => {
+      await updateProviderMutation.mutateAsync({
+        provider,
+        originalId,
+        ...(editorSave ? { editorSave } : {}),
+      });
     },
     [updateProviderMutation],
   );
@@ -258,6 +268,11 @@ export function useProviderActions(
       try {
         const result = await switchProviderMutation.mutateAsync(provider.id);
         await syncClaudePlugin(provider);
+        if (activeApp === "gemini")
+          toast.info(t("notifications.geminiRestart"), {
+            duration: 6000,
+            closeButton: true,
+          });
 
         // 按警告代码分别提示：auth 清理失败若显示为通用“回填失败”会误导用户。
         if (result?.warnings?.length) {

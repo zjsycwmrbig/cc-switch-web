@@ -1,5 +1,11 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef } from "react";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import {
+  render as rtlRender,
+  screen,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
@@ -26,6 +32,7 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@/hooks/useSkills", () => ({
+  useSkillRepoFailures: () => ({ data: [] }),
   useInstalledSkills: () => ({
     data: installedSkills,
     isLoading: false,
@@ -132,7 +139,7 @@ describe("UnifiedSkillsPanel", () => {
     });
   });
 
-  it("搜索过滤时批量开关仍作用于全部 Skill", async () => {
+  it("搜索过滤时批量开关只作用于匹配 Skill", async () => {
     installedSkills = [
       {
         id: "alpha",
@@ -159,9 +166,21 @@ describe("UnifiedSkillsPanel", () => {
     await userEvent.click(screen.getAllByRole("checkbox")[0]);
 
     expect(bulkToggleSkillAppMock).toHaveBeenCalledWith({
-      ids: ["alpha", "beta"],
+      ids: ["alpha"],
       app: "claude",
       enabled: true,
     });
   });
 });
+
+function render(ui: React.ReactElement) {
+  return rtlRender(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      {ui}
+    </QueryClientProvider>,
+  );
+}

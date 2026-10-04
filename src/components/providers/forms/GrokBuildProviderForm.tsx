@@ -42,7 +42,6 @@ import {
   extractCodexWireApi,
 } from "@/utils/providerConfigUtils";
 import {
-  buildGrokBuildConfig,
   GROK_BUILD_DEFAULT_API_BACKEND,
   parseGrokBuildConfig,
   updateGrokBuildConfig,
@@ -66,6 +65,7 @@ const grokPresetEntries: Array<{
 ];
 
 export function GrokBuildProviderForm({
+  providerLiveBase,
   providerId,
   submitLabel,
   onSubmit,
@@ -105,7 +105,13 @@ export function GrokBuildProviderForm({
     String(initialConfig.contextWindow),
   );
   const [rawConfig, setRawConfig] = useState(
-    initialConfigText ?? buildGrokBuildConfig(initialConfig),
+    initialConfigText ??
+      updateGrokBuildConfig(
+        typeof providerLiveBase?.config === "string"
+          ? providerLiveBase.config
+          : undefined,
+        initialConfig,
+      ),
   );
   const [apiFormat, setApiFormat] = useState<CodexApiFormat>(
     (initialData?.meta?.apiFormat as CodexApiFormat | undefined) ??
@@ -223,6 +229,9 @@ export function GrokBuildProviderForm({
       setIsPartner(false);
       setPartnerPromotionKey(undefined);
       setPresetEndpoints([]);
+      if (category === "official") {
+        syncStructuredConfig({});
+      }
       return;
     }
 
@@ -236,7 +245,11 @@ export function GrokBuildProviderForm({
       setIsPartner(false);
       setPartnerPromotionKey(undefined);
       setPresetEndpoints([]);
-      setRawConfig("");
+      setRawConfig(
+        typeof providerLiveBase?.config === "string"
+          ? providerLiveBase.config
+          : "",
+      );
       return;
     }
 
@@ -269,15 +282,20 @@ export function GrokBuildProviderForm({
     setApiFormat(presetApiFormat);
     setPresetEndpoints(preset.endpointCandidates ?? []);
     setRawConfig(
-      buildGrokBuildConfig({
-        model: profile,
-        upstreamModel: presetModel,
-        baseUrl: presetBaseUrl,
-        name: presetName,
-        apiKey: presetApiKey,
-        apiBackend: GROK_BUILD_DEFAULT_API_BACKEND,
-        contextWindow: Number.parseInt(contextWindow, 10),
-      }),
+      updateGrokBuildConfig(
+        typeof providerLiveBase?.config === "string"
+          ? providerLiveBase.config
+          : undefined,
+        {
+          model: profile,
+          upstreamModel: presetModel,
+          baseUrl: presetBaseUrl,
+          name: presetName,
+          apiKey: presetApiKey,
+          apiBackend: GROK_BUILD_DEFAULT_API_BACKEND,
+          contextWindow: Number.parseInt(contextWindow, 10),
+        },
+      ),
     );
   };
 
@@ -497,31 +515,33 @@ export function GrokBuildProviderForm({
                 }}
               />
             </FormItem>
-
-            <div className="space-y-2">
-              <FormLabel htmlFor="grokbuild-config-toml">
-                {t("grokBuild.rawConfig", { defaultValue: "config.toml" })}
-              </FormLabel>
-              <JsonEditor
-                value={rawConfig}
-                onChange={handleRawConfigChange}
-                placeholder=""
-                darkMode={isDarkMode}
-                rows={3}
-                showValidation={false}
-                language="javascript"
-              />
-              {rawConfigError && (
-                <p className="text-xs text-destructive">
-                  {t("grokBuild.invalidToml", {
-                    error: rawConfigError,
-                    defaultValue: `Invalid config.toml: ${rawConfigError}`,
-                  })}
-                </p>
-              )}
-            </div>
           </>
         )}
+        <div className="space-y-2">
+          <FormLabel htmlFor="grokbuild-config-toml">
+            {t("grokBuild.rawConfig", { defaultValue: "config.toml" })}
+          </FormLabel>
+          <p className="text-xs text-muted-foreground">
+            {t("grokBuild.keyFieldScope")}
+          </p>
+          <JsonEditor
+            value={rawConfig}
+            onChange={handleRawConfigChange}
+            placeholder=""
+            darkMode={isDarkMode}
+            rows={3}
+            showValidation={false}
+            language="javascript"
+          />
+          {category !== "official" && rawConfigError && (
+            <p className="text-xs text-destructive">
+              {t("grokBuild.invalidToml", {
+                error: rawConfigError,
+                defaultValue: `Invalid config.toml: ${rawConfigError}`,
+              })}
+            </p>
+          )}
+        </div>
 
         <FormField
           control={form.control}

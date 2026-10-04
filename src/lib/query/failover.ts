@@ -111,6 +111,7 @@ export function useAvailableProvidersForFailover(appType: string) {
  */
 export function useAddToFailoverQueue() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   return useMutation({
     mutationFn: ({
@@ -131,6 +132,13 @@ export function useAddToFailoverQueue() {
         queryKey: ["providers", variables.appType],
       });
     },
+    onError: (error: Error) => {
+      toast.error(
+        t("failover.queueAddFailed", {
+          detail: extractErrorMessage(error) || t("common.unknown"),
+        }),
+      );
+    },
   });
 }
 
@@ -139,6 +147,7 @@ export function useAddToFailoverQueue() {
  */
 export function useRemoveFromFailoverQueue() {
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
 
   return useMutation({
     mutationFn: ({
@@ -162,6 +171,21 @@ export function useRemoveFromFailoverQueue() {
       queryClient.invalidateQueries({
         queryKey: ["providerHealth", variables.providerId, variables.appType],
       });
+      // 清除该供应商的熔断器统计缓存
+      queryClient.invalidateQueries({
+        queryKey: [
+          "circuitBreakerStats",
+          variables.providerId,
+          variables.appType,
+        ],
+      });
+    },
+    onError: (error: Error) => {
+      toast.error(
+        t("failover.queueRemoveFailed", {
+          detail: extractErrorMessage(error) || t("common.unknown"),
+        }),
+      );
     },
   });
 }

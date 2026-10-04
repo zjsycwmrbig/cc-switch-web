@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -9,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Provider } from "@/types";
 
 const apiMocks = vi.hoisted(() => ({
+  getCodexEditorView: vi.fn(),
   getCurrent: vi.fn(),
   getLiveProviderSettings: vi.fn(),
   getOpenClawLiveProvider: vi.fn(),
@@ -27,6 +29,10 @@ vi.mock("@/lib/api", () => ({
   openclawApi: {
     getLiveProvider: apiMocks.getOpenClawLiveProvider,
   },
+}));
+
+vi.mock("@/lib/api/providers", () => ({
+  providersApi: { getCodexEditorView: apiMocks.getCodexEditorView },
 }));
 
 vi.mock("@/components/common/FullScreenPanel", () => ({
@@ -134,205 +140,63 @@ vi.mock("@/components/providers/AuthSettingsPanel", () => ({
 
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 
-describe("EditProviderDialog", () => {
+describe("Codex editor snapshots", () => {
   beforeEach(() => {
     mockFormReady = true;
-    mockCodexManagedAccountSelected = false;
-    submitReadyCallbacks = [];
-    apiMocks.getCurrent.mockReset();
+    apiMocks.getCodexEditorView.mockReset();
     apiMocks.getLiveProviderSettings.mockReset();
-    apiMocks.getOpenClawLiveProvider.mockReset();
   });
-
-  it("uses the current Codex live bearer with the stored provider auth template", async () => {
-    const provider: Provider = {
-      id: "provider-a",
-      name: "Provider A",
-      category: "custom",
-      settingsConfig: {
-        auth: {
-          OPENAI_API_KEY: "sk-db-stale",
-          provider_note: "keep-me",
-        },
-        config:
-          'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://proxy.example/v1"\n',
-      },
-    };
-    const liveSettings = {
-      // Shared auth.json belongs to another provider / official login cache.
-      auth: {
-        OPENAI_API_KEY: "sk-shared-other-provider",
-        tokens: { account_id: "shared-account" },
-      },
-      config:
-        'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://proxy.example/v1"\nexperimental_bearer_token = "sk-provider-a"\n',
-    };
-    const handleSubmit = vi.fn().mockResolvedValue(undefined);
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
-    render(
-      <EditProviderDialog
-        open
-        provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={handleSubmit}
-        appId="codex"
-      />,
-    );
-
-    const expectedSettings = {
-      ...liveSettings,
-      auth: {
-        OPENAI_API_KEY: "sk-provider-a",
-        provider_note: "keep-me",
-      },
-    };
-
-    await waitFor(() => {
-      expect(
-        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual(expectedSettings);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-
-    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
-      expectedSettings,
-    );
-  });
-
-  it.each([
-    { description: "missing auth.json", auth: {} },
-    { description: "a logout marker", auth: { auth_mode: "chatgpt" } },
-  ])(
-    "preserves $description for a category-less official Codex provider",
-    async ({ auth }) => {
-      const provider: Provider = {
-        id: "codex-official",
-        name: "OpenAI Official",
-        settingsConfig: {
-          auth: {
-            auth_mode: "chatgpt",
-            tokens: { refresh_token: "old-refresh-token" },
-          },
-          config: 'model = "old-model"\n',
-        },
-      };
-      const liveSettings = { auth, config: 'model = "live-model"\n' };
-      const handleSubmit = vi.fn().mockResolvedValue(undefined);
-      apiMocks.getCurrent.mockResolvedValue(provider.id);
-      apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
+  const provider: Provider = {
+    id: "provider-a",
+    name: "A",
+    category: "custom",
+    settingsConfig: {
+      auth: { OPENAI_API_KEY: "row-key" },
+      config: "model = 'row-model'\n",
+    },
+  };
+  const snapshot = {
+    settings: {
+      ...provider.settingsConfig,
+      config: "model = 'row-model'\napproval_policy = 'on-request'\n",
+    },
+    inactive: [],
+  };
+  it.each(["custom", "official"] as const)(
+    "uses the server projection for %s cards without reading shared auth",
+    async (category) => {
+      apiMocks.getCodexEditorView.mockResolvedValue(snapshot);
+      const submit = vi.fn().mockResolvedValue(undefined);
       render(
         <EditProviderDialog
           open
-          provider={provider}
+          provider={{ ...provider, category }}
           onOpenChange={vi.fn()}
-          onSubmit={handleSubmit}
+          onSubmit={submit}
           appId="codex"
         />,
       );
-
-      await waitFor(() => {
+      await waitFor(() =>
         expect(
           JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-        ).toEqual(liveSettings);
-      });
-
-      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-      await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-      expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
-        liveSettings,
+        ).toEqual(snapshot.settings),
       );
+      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      expect(submit.mock.calls[0][0].editorSave).toEqual({
+        base: snapshot.settings,
+        onConflict: "refuse",
+      });
+      expect(submit.mock.calls[0][0].provider.settingsConfig.auth).toEqual({
+        OPENAI_API_KEY: "row-key",
+      });
+      expect(apiMocks.getLiveProviderSettings).not.toHaveBeenCalled();
     },
   );
-
-  it.each([
-    { id: "header-auth", category: "custom" as const },
-    { id: "codex-official", category: undefined },
-  ])(
-    "keeps stored Codex auth for $id when Live has no auth.json",
-    async ({ id, category }) => {
-      // Repro of #7433: the provider table declares its own credential source
-      // (Authorization header), so a switch injects no bearer token into
-      // config.toml, and default mode deletes the shared auth.json. Live is then
-      // `{ auth: {}, config }` while the DB row holds the only copy of the key —
-      // opening the edit dialog and saving must not erase it. Live still owns
-      // the config text, so the two snapshots differ there.
-      const storedConfig =
-        'model_provider = "custom"\nmodel = "old-model"\n[model_providers.custom]\nname = "Custom"\nbase_url = "https://api.example.com/v1"\nhttp_headers = { Authorization = "Bearer sk-db-only" }\n';
-      const liveConfig = storedConfig.replace(
-        'model = "old-model"',
-        'model = "live-model"',
-      );
-      const provider: Provider = {
-        id,
-        name: "Header Auth",
-        category,
-        settingsConfig: {
-          auth: { OPENAI_API_KEY: "sk-db-only" },
-          config: storedConfig,
-        },
-      };
-      const liveSettings = { auth: {}, config: liveConfig };
-      const handleSubmit = vi.fn().mockResolvedValue(undefined);
-
-      apiMocks.getCurrent.mockResolvedValue(provider.id);
-      apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
-      render(
-        <EditProviderDialog
-          open
-          provider={provider}
-          onOpenChange={vi.fn()}
-          onSubmit={handleSubmit}
-          appId="codex"
-        />,
-      );
-
-      const expectedSettings = {
-        ...liveSettings,
-        auth: { OPENAI_API_KEY: "sk-db-only" },
-      };
-
-      await waitFor(() => {
-        expect(
-          JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-        ).toEqual(expectedSettings);
-      });
-
-      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-
-      await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-      expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
-        expectedSettings,
-      );
-    },
-  );
-
-  it("keeps the stored Codex auth when Live is only a logout marker", async () => {
-    // `{ auth_mode: "chatgpt" }` with no tokens is Codex's logged-out shape,
-    // not an authorization for the provider row to drop its own key.
-    const provider: Provider = {
-      id: "header-auth",
-      name: "Header Auth",
-      category: "custom",
-      settingsConfig: {
-        auth: { OPENAI_API_KEY: "sk-db-only" },
-        config: 'model_provider = "custom"\nmodel = "old-model"\n',
-      },
-    };
-    const liveSettings = {
-      auth: { auth_mode: "chatgpt" },
-      config: 'model_provider = "custom"\nmodel = "live-model"\n',
-    };
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
+  it("blocks saving when reading the client fails and allows retry", async () => {
+    apiMocks.getCodexEditorView
+      .mockRejectedValueOnce(new Error("broken TOML"))
+      .mockResolvedValue(snapshot);
     render(
       <EditProviderDialog
         open
@@ -342,95 +206,154 @@ describe("EditProviderDialog", () => {
         appId="codex"
       />,
     );
-
-    await waitFor(() => {
-      expect(
-        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual({
-        ...liveSettings,
-        auth: { OPENAI_API_KEY: "sk-db-only" },
+    await screen.findByRole("button", { name: "common.retry" });
+    expect(screen.getByRole("button", { name: "common.save" })).toBeDisabled();
+    expect(screen.queryByTestId("settings-config")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "common.retry" }));
+    await screen.findByTestId("settings-config");
+    expect(screen.getByRole("button", { name: "common.save" })).toBeEnabled();
+  });
+  it.each(["keepMine", "keepTheirs"] as const)(
+    "retries conflicts with %s and the same draft and base",
+    async (policy) => {
+      apiMocks.getCodexEditorView.mockResolvedValue(snapshot);
+      const submit = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            JSON.stringify({
+              code: "LIVE_EDIT_CONFLICT",
+              path: "config.toml",
+              keys: ["approval_policy"],
+            }),
+          ),
+        )
+        .mockResolvedValue(undefined);
+      const close = vi.fn();
+      render(
+        <EditProviderDialog
+          open
+          provider={provider}
+          onOpenChange={close}
+          onSubmit={submit}
+          appId="codex"
+        />,
+      );
+      await screen.findByTestId("settings-config");
+      fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+      await screen.findByRole("dialog");
+      expect(close).not.toHaveBeenCalled();
+      expect(screen.getByText("approval_policy")).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: `providerEditor.${policy}` }),
+      );
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+      expect(submit.mock.calls[1][0]).toEqual({
+        ...submit.mock.calls[0][0],
+        editorSave: { base: snapshot.settings, onConflict: policy },
       });
-    });
-  });
-
-  it("does not convert an OAuth-only Codex provider into an API-key provider", async () => {
-    const provider: Provider = {
-      id: "oauth-provider",
-      name: "OAuth Provider",
-      category: "custom",
-      settingsConfig: {
-        auth: {
-          auth_mode: "chatgpt",
-          tokens: { account_id: "stored-account" },
-        },
-        config: 'model_provider = "custom"\n',
-      },
-    };
-    const liveSettings = {
-      auth: {
-        auth_mode: "chatgpt",
-        tokens: { account_id: "live-account" },
-      },
-      config:
-        'model_provider = "custom"\nexperimental_bearer_token = "sk-route-only"\n',
-    };
-
-    apiMocks.getCurrent.mockResolvedValue(provider.id);
-    apiMocks.getLiveProviderSettings.mockResolvedValue(liveSettings);
-
+      await waitFor(() => expect(close).toHaveBeenCalledWith(false));
+    },
+  );
+  it("keeps the draft open when the user cancels conflict resolution", async () => {
+    apiMocks.getCodexEditorView.mockResolvedValue(snapshot);
+    const submit = vi.fn().mockRejectedValue(
+      new Error(
+        JSON.stringify({
+          code: "LIVE_EDIT_CONFLICT",
+          path: "config.toml",
+          keys: ["approval_policy"],
+        }),
+      ),
+    );
+    const close = vi.fn();
     render(
       <EditProviderDialog
         open
         provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={vi.fn()}
+        onOpenChange={close}
+        onSubmit={submit}
         appId="codex"
       />,
     );
-
-    await waitFor(() => {
-      expect(
-        JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-      ).toEqual(liveSettings);
-    });
-  });
-
-  it("does not let a stored bearer override a non-current Codex provider auth", async () => {
-    const provider: Provider = {
-      id: "provider-a",
-      name: "Provider A",
-      category: "custom",
-      settingsConfig: {
-        auth: { OPENAI_API_KEY: "sk-db-authoritative" },
-        config:
-          'model_provider = "custom"\nexperimental_bearer_token = "sk-leftover-live"\n',
-      },
-    };
-    const handleSubmit = vi.fn().mockResolvedValue(undefined);
-
-    apiMocks.getCurrent.mockResolvedValue("provider-b");
-
-    render(
-      <EditProviderDialog
-        open
-        provider={provider}
-        onOpenChange={vi.fn()}
-        onSubmit={handleSubmit}
-        appId="codex"
-      />,
-    );
-
-    await waitFor(() => expect(apiMocks.getCurrent).toHaveBeenCalledTimes(1));
-    expect(apiMocks.getLiveProviderSettings).not.toHaveBeenCalled();
-    expect(
-      JSON.parse(screen.getByTestId("settings-config").textContent ?? "{}"),
-    ).toEqual(provider.settingsConfig);
-
+    await screen.findByTestId("settings-config");
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
-
-    await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
-    expect(handleSubmit.mock.calls[0][0].provider.settingsConfig).toEqual(
-      provider.settingsConfig,
+    fireEvent.click(
+      await screen.findByRole("button", { name: "providerEditor.keepEditing" }),
     );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.getByTestId("settings-config")).toBeInTheDocument();
+  });
+  it("does not show a late conflict after closing and reopening", async () => {
+    apiMocks.getCodexEditorView.mockResolvedValue(snapshot);
+    let rejectSave!: (error: Error) => void;
+    const submit = vi.fn(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectSave = reject;
+        }),
+    );
+    const close = vi.fn();
+    const dialog = (open: boolean) => (
+      <EditProviderDialog
+        open={open}
+        provider={provider}
+        onOpenChange={close}
+        onSubmit={submit}
+        appId="codex"
+      />
+    );
+    const { rerender } = render(dialog(true));
+    await screen.findByTestId("settings-config");
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    rerender(dialog(false));
+    rerender(dialog(true));
+    await act(async () =>
+      rejectSave(
+        new Error(
+          JSON.stringify({
+            code: "LIVE_EDIT_CONFLICT",
+            path: "config.toml",
+            keys: ["approval_policy"],
+          }),
+        ),
+      ),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("does not close a reopened editor when an old save succeeds", async () => {
+    apiMocks.getCodexEditorView.mockResolvedValue(snapshot);
+    let finishSave!: () => void;
+    const submit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    const close = vi.fn();
+    const dialog = (open: boolean) => (
+      <EditProviderDialog
+        open={open}
+        provider={provider}
+        onOpenChange={close}
+        onSubmit={submit}
+        appId="codex"
+      />
+    );
+    const { rerender } = render(dialog(true));
+    await screen.findByTestId("settings-config");
+    fireEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    rerender(dialog(false));
+    rerender(dialog(true));
+    await act(async () => finishSave());
+    expect(close).not.toHaveBeenCalled();
   });
 });

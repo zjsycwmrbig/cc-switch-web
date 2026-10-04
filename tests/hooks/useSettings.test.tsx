@@ -75,6 +75,7 @@ const createDirectorySettingsMock = (
     codex: "/default/codex",
   },
   isLoading: false,
+  markAppConfigDirSaved: vi.fn(),
   initialAppConfigDir: undefined,
   updateDirectory: vi.fn(),
   updateAppConfigDir: vi.fn(),
@@ -152,7 +153,8 @@ describe("useSettings hook", () => {
 
     directorySettingsMock = createDirectorySettingsMock({
       appConfigDir: "  /override/app  ",
-      initialAppConfigDir: "/previous/app",
+      markAppConfigDirSaved: vi.fn(),
+  initialAppConfigDir: "/previous/app",
     });
 
     const { result } = renderHook(() => useSettings());
@@ -194,7 +196,8 @@ describe("useSettings hook", () => {
 
     directorySettingsMock = createDirectorySettingsMock({
       appConfigDir: undefined,
-      initialAppConfigDir: undefined,
+      markAppConfigDirSaved: vi.fn(),
+  initialAppConfigDir: undefined,
     });
 
     const { result } = renderHook(() => useSettings());
@@ -275,7 +278,8 @@ describe("useSettings hook", () => {
     settingsFormMock = createSettingsFormMock();
     directorySettingsMock = createDirectorySettingsMock({
       appConfigDir: "/override/app",
-      initialAppConfigDir: "/override/app",
+      markAppConfigDirSaved: vi.fn(),
+  initialAppConfigDir: "/override/app",
     });
     const rejection = new Error("save failed");
     mutateAsyncMock.mockRejectedValueOnce(rejection);

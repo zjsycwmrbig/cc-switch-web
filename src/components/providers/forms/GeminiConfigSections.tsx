@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import JsonEditor from "@/components/JsonEditor";
 
 interface GeminiEnvSectionProps {
+  keyFieldMode?: boolean;
   value: string;
   onChange: (value: string) => void;
   onBlur?: () => void;
@@ -17,6 +18,7 @@ interface GeminiEnvSectionProps {
  * GeminiEnvSection - .env editor section for Gemini environment variables
  */
 export const GeminiEnvSection: React.FC<GeminiEnvSectionProps> = ({
+  keyFieldMode = false,
   value,
   onChange,
   onBlur,
@@ -61,30 +63,38 @@ export const GeminiEnvSection: React.FC<GeminiEnvSectionProps> = ({
           {t("geminiConfig.envFile", { defaultValue: "环境变量 (.env)" })}
         </label>
 
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={useCommonConfig}
-            onChange={(e) => onCommonConfigToggle(e.target.checked)}
-            className="w-4 h-4 text-primary bg-white dark:bg-gray-800 border-border-default rounded focus:ring-ring focus:ring-2"
-          />
-          {t("geminiConfig.writeCommonConfig", {
-            defaultValue: "写入通用配置",
-          })}
-        </label>
+        {!keyFieldMode && (
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={useCommonConfig}
+              onChange={(e) => onCommonConfigToggle(e.target.checked)}
+              className="w-4 h-4 text-primary bg-white dark:bg-gray-800 border-border-default rounded focus:ring-ring focus:ring-2"
+            />
+            {t("geminiConfig.writeCommonConfig", {
+              defaultValue: "写入通用配置",
+            })}
+          </label>
+        )}
       </div>
-
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onEditCommonConfig}
-          className="text-xs text-primary hover:underline"
-        >
-          {t("geminiConfig.editCommonConfig", {
-            defaultValue: "编辑通用配置",
-          })}
-        </button>
-      </div>
+      {keyFieldMode && (
+        <p className="text-xs text-muted-foreground">
+          {t("geminiConfig.keyFieldScope")}
+        </p>
+      )}
+      {!keyFieldMode && (
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={onEditCommonConfig}
+            className="text-xs text-primary hover:underline"
+          >
+            {t("geminiConfig.editCommonConfig", {
+              defaultValue: "编辑通用配置",
+            })}
+          </button>
+        </div>
+      )}
 
       {commonConfigError && (
         <p className="text-xs text-red-500 dark:text-red-400 text-right">

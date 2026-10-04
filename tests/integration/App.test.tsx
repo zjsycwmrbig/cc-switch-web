@@ -4,7 +4,12 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { server } from "../msw/server";
-import { resetProviderState } from "../msw/state";
+import {
+  resetProviderState,
+  setProviders,
+  setCurrentProviderId,
+} from "../msw/state";
+import { providersApi } from "@/lib/api/providers";
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
@@ -167,6 +172,97 @@ describe("App integration with MSW", () => {
     toastErrorMock.mockReset();
   });
 
+  const mockOpenCodeProvider = (settingsConfig: Record<string, unknown>) => {
+    localStorage.setItem("cc-switch-last-app", "opencode");
+    server.use(
+      http.post("http://runtime.local/get_providers", () =>
+        HttpResponse.json({
+          custom: { id: "custom", name: "Custom OpenCode", settingsConfig },
+        }),
+      ),
+      http.post("http://runtime.local/get_current_provider", () =>
+        HttpResponse.json("custom"),
+      ),
+      http.post("http://runtime.local/get_opencode_live_provider_ids", () =>
+        HttpResponse.json(["custom", "custom-copy"]),
+      ),
+    );
+  };
+
+  it.each([
+    { options: { apiKey: "test-key" } },
+    { npm: "@ai-sdk/openai-compatible", models: {} },
+    { models: { "test-model": { name: "Test Model" } } },
+  ])(
+    "rejects copying an incomplete OpenCode definition: %j",
+    async (config) => {
+      mockOpenCodeProvider(config);
+      const addSpy = vi.spyOn(providersApi, "add");
+      try {
+        renderApp(App);
+        await waitFor(() =>
+          expect(screen.getByTestId("current-provider")).toHaveTextContent(
+            "custom",
+          ),
+        );
+        fireEvent.click(screen.getByText("duplicate"));
+        expect(toastErrorMock).toHaveBeenCalledWith(
+          "opencode.duplicateRequiresDefinition",
+        );
+        expect(addSpy).not.toHaveBeenCalled();
+      } finally {
+        addSpy.mockRestore();
+        localStorage.removeItem("cc-switch-last-app");
+      }
+    },
+  );
+
+  it("copies a complete OpenCode definition without overwriting a live key", async () => {
+    const config = {
+      npm: "@ai-sdk/openai-compatible",
+      models: { "test-model": { name: "Test Model" } },
+      env: ["CUSTOM_API_KEY"],
+      options: { apiKey: "test-key" },
+    };
+    mockOpenCodeProvider(config);
+    const addSpy = vi.spyOn(providersApi, "add");
+    try {
+      renderApp(App);
+      await waitFor(() =>
+        expect(screen.getByTestId("current-provider")).toHaveTextContent(
+          "custom",
+        ),
+      );
+      fireEvent.click(screen.getByText("duplicate"));
+      await waitFor(() =>
+        expect(addSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: "custom-copy-2",
+            name: "Custom OpenCode copy",
+            settingsConfig: config,
+          }),
+          "opencode",
+          false,
+        ),
+      );
+      await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+      expect(toastErrorMock).not.toHaveBeenCalled();
+    } finally {
+      addSpy.mockRestore();
+      localStorage.removeItem("cc-switch-last-app");
+    }
+  });
+
+  it("closes provider editors when navigating to another app", async () => {
+    renderApp(App);
+    await waitFor(() => expect(screen.getByTestId("provider-list")).toHaveTextContent("claude-1"));
+    fireEvent.click(screen.getByText("edit"));
+    expect(await screen.findByTestId("edit-provider-dialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("switch-codex"));
+    await waitFor(() => expect(screen.queryByTestId("edit-provider-dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("provider-list")).toHaveTextContent("codex-1"));
+  });
+
   // 模块加载已在收集阶段完成，默认超时只衡量实际交互流程。
   it("covers basic provider flows via real hooks", async () => {
     renderApp(App);
@@ -264,6 +360,32 @@ describe("App integration with MSW", () => {
   });
 
   // 上游 09c5d39d：MiniMax Code 从配置移除后需刷新供应商列表（成员关系来自 meta）。
+  it("duplicates MiniMax Code providers under a generated unused key", async () => {
+    localStorage.setItem("cc-switch-last-app", "mcode");
+    setProviders("mcode", {
+      kimi: { id: "kimi", name: "Kimi", settingsConfig: {} },
+      "kimi-copy": { id: "kimi-copy", name: "Kimi copy", settingsConfig: {} },
+    });
+    setCurrentProviderId("mcode", "kimi");
+    try {
+      renderApp(App);
+      await waitFor(() =>
+        expect(screen.getByTestId("provider-list")).toHaveTextContent(
+          "kimi-copy",
+        ),
+      );
+      fireEvent.click(screen.getByText("duplicate"));
+      await waitFor(() =>
+        expect(screen.getByTestId("provider-list")).toHaveTextContent(
+          "kimi-copy-2",
+        ),
+      );
+      expect(toastErrorMock).not.toHaveBeenCalled();
+    } finally {
+      localStorage.removeItem("cc-switch-last-app");
+    }
+  });
+
   it("refreshes MiniMax Code provider membership after removing it from live config", async () => {
     localStorage.setItem("cc-switch-last-app", "mcode");
     let liveConfigManaged = true;

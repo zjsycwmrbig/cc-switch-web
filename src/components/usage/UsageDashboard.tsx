@@ -1,3 +1,5 @@
+import { UsageHeatmap } from "./UsageHeatmap";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UsageSummaryCards } from "./UsageSummaryCards";
@@ -21,7 +23,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { usageApi } from "@/lib/api/usage";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usageKeys } from "@/lib/query/usage";
 import {
   Accordion,
@@ -57,6 +59,11 @@ export function UsageDashboard({
 }: UsageDashboardProps = {}) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const { data: lastSessionScan } = useQuery({
+    queryKey: [...usageKeys.all, "last-session-scan"],
+    queryFn: usageApi.getLastSessionScan,
+    refetchInterval: 30_000,
+  });
   const [syncingSession, setSyncingSession] = useState(false);
 
   // 手动触发一次会话日志同步：手动模式下是唯一的直连用量补录途径，
@@ -138,6 +145,9 @@ export function UsageDashboard({
               <button
                 key={type}
                 type="button"
+                aria-label={t(`usage.appFilter.${type}`)}
+                title={t(`usage.appFilter.${type}`)}
+                aria-pressed={appType === type}
                 onClick={() => setAppType(type)}
                 className={cn(
                   "px-4 py-1.5 rounded-lg text-sm font-medium transition-all",
@@ -146,7 +156,27 @@ export function UsageDashboard({
                     : "text-muted-foreground hover:text-primary hover:bg-muted/50 border border-transparent",
                 )}
               >
-                {t(`usage.appFilter.${type}`)}
+                {type === "all" ? (
+                  t(`usage.appFilter.${type}`)
+                ) : (
+                  <ProviderIcon
+                    name={t(`usage.appFilter.${type}`)}
+                    icon={
+                      (
+                        {
+                          claude: "claude",
+                          codex: "openai",
+                          gemini: "gemini",
+                          grokbuild: "grok",
+                          pi: "pi",
+                          mcode: "minimax",
+                          opencode: "opencode",
+                        } as Record<string, string>
+                      )[type]
+                    }
+                    size={20}
+                  />
+                )}
               </button>
             ))}
 
@@ -175,18 +205,29 @@ export function UsageDashboard({
 
       <DataSourceBar refreshIntervalMs={refreshIntervalMs} />
 
+      {lastSessionScan ? (
+        <p className="text-xs text-muted-foreground">
+          {t("usage.lastSessionScan", {
+            time: new Date(lastSessionScan).toLocaleString(i18n.language),
+          })}
+        </p>
+      ) : null}
       <UsageSummaryCards
         range={range}
         appType={appType}
         refreshIntervalMs={refreshIntervalMs}
       />
 
-      <UsageTrendChart
-        range={range}
-        rangeLabel={rangeLabel}
-        appType={appType}
-        refreshIntervalMs={refreshIntervalMs}
-      />
+      {range.preset === "all" ? (
+        <UsageHeatmap appType={appType} refreshIntervalMs={refreshIntervalMs} />
+      ) : (
+        <UsageTrendChart
+          range={range}
+          rangeLabel={rangeLabel}
+          appType={appType}
+          refreshIntervalMs={refreshIntervalMs}
+        />
+      )}
 
       <div className="space-y-4">
         <Tabs defaultValue="logs" className="w-full">

@@ -1,3 +1,8 @@
+import icon_tuzi from "@/icons/extracted/tuzi.png";
+import icon_dmxapi from "@/icons/extracted/dmxapi.png";
+import icon_bailing from "@/icons/extracted/bailing.png";
+import icon_astron from "@/icons/extracted/astron.png";
+import icon_88api from "@/icons/extracted/88api.png";
 import eflowcodeLogo from "@/assets/icons/eflowcode.png";
 import ddsLogo from "@/assets/icons/dds.png";
 import lemondataLogo from "@/assets/icons/lemondata.png";
@@ -18,6 +23,11 @@ import soshowLogo from "@/assets/icons/soshow.png";
 import sub2apiLogo from "@/assets/icons/sub2api.svg";
 
 const localIcons: Record<string, string> = {
+  tuzi: icon_tuzi,
+  dmxapi: icon_dmxapi,
+  bailing: icon_bailing,
+  astron: icon_astron,
+  "88api": icon_88api,
   a6api: a6apiLogo,
   dds: ddsLogo,
   eflowcode: eflowcodeLogo,

@@ -1,3 +1,4 @@
+import type { SkillRepoFailure } from "@/lib/api/skills";
 import {
   useMutation,
   useQuery,
@@ -69,9 +70,17 @@ export function useDeleteSkillBackup() {
  * 实现首次进入使用缓存，只有刷新时才重新获取
  */
 export function useDiscoverableSkills() {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["skills", "discoverable"],
-    queryFn: () => skillsApi.discoverAvailable(),
+    queryFn: async () => {
+      const report = await skillsApi.discoverReport();
+      queryClient.setQueryData(
+        ["skills", "discoverable-failures"],
+        report.failures,
+      );
+      return report.skills;
+    },
     staleTime: Infinity,
     placeholderData: keepPreviousData,
   });
@@ -194,9 +203,32 @@ export function useToggleSkillApp() {
       app: AppId;
       enabled: boolean;
     }) => skillsApi.toggleApp(id, app, enabled),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] });
+    // 乐观更新：点了格子立刻翻过来，不等写完再刷新；失败时回滚
+    onMutate: async ({ id, app, enabled }) => {
+      await queryClient.cancelQueries({ queryKey: ["skills", "installed"] });
+      const previous = queryClient.getQueryData<InstalledSkill[]>([
+        "skills",
+        "installed",
+      ]);
+      if (previous) {
+        queryClient.setQueryData<InstalledSkill[]>(
+          ["skills", "installed"],
+          previous.map((skill) =>
+            skill.id === id
+              ? { ...skill, apps: { ...skill.apps, [app]: enabled } }
+              : skill,
+          ),
+        );
+      }
+      return { previous };
     },
+    onError: (_error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["skills", "installed"], context.previous);
+      }
+    },
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
   });
 }
 
@@ -320,9 +352,14 @@ export function useInstallSkillArchives() {
  * 检查 Skills 更新（手动触发）
  */
 export function useCheckSkillUpdates() {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["skills", "updates"],
-    queryFn: () => skillsApi.checkUpdates(),
+    queryFn: async () => {
+      const report = await skillsApi.checkUpdatesReport();
+      queryClient.setQueryData(["skills", "updates-failures"], report.failures);
+      return report.updates;
+    },
     enabled: false,
     staleTime: 5 * 60 * 1000,
   });
@@ -385,3 +422,19 @@ export type {
   SkillsShSearchResult,
   AppId,
 };
+
+export function useSkillRepoFailures(kind: "discoverable" | "updates") {
+  return useQuery<SkillRepoFailure[]>({
+    queryKey: ["skills", `${kind}-failures`],
+    queryFn: async () => [],
+    enabled: false,
+  });
+}
+export function useResyncSkills() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => skillsApi.resync(),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["skills", "installed"] }),
+  });
+}

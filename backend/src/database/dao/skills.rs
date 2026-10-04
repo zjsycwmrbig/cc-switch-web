@@ -284,6 +284,7 @@ mod tests {
         Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
 
         let db = Database {
+            log_count_cache: std::sync::Mutex::new(None),
             conn: Mutex::new(conn),
         };
 

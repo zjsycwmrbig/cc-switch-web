@@ -1,9 +1,16 @@
-pub(crate) mod providers;
+pub mod cache;
+pub mod content;
+pub mod model;
+pub mod providers;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
 
-use providers::{claude, codex, gemini, grokbuild, mcode, openclaw, opencode, pi};
+// 其余模型类型从 `session_manager::model` 引用
+pub use model::SessionMessage;
+use providers::{claude, codex, gemini, grokbuild, hermes, mcode, openclaw, opencode, pi};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,15 +31,6 @@ pub struct SessionMeta {
     pub source_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_command: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionMessage {
-    pub role: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ts: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,9 +59,9 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
         let h3 = s.spawn(opencode::scan_sessions);
         let h4 = s.spawn(openclaw::scan_sessions);
         let h5 = s.spawn(gemini::scan_sessions);
-        let h6 = s.spawn(grokbuild::scan_sessions);
-        let h7 = s.spawn(pi::scan_sessions);
-        let h8 = s.spawn(mcode::scan_sessions);
+        let h6 = s.spawn(hermes::scan_sessions);
+        let h7 = s.spawn(grokbuild::scan_sessions);
+        let h8 = s.spawn(pi::scan_sessions);
         (
             h1.join().unwrap_or_default(),
             h2.join().unwrap_or_default(),
@@ -85,6 +83,7 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     sessions.extend(r6);
     sessions.extend(r7);
     sessions.extend(r8);
+    sessions.extend(mcode::scan_sessions());
 
     sessions.sort_by(|a, b| {
         let a_ts = a.last_active_at.or(a.created_at).unwrap_or(0);
@@ -95,17 +94,16 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     sessions
 }
 
-pub(crate) fn grokbuild_session_roots() -> Vec<PathBuf> {
-    grokbuild::session_roots()
-}
-
 pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<SessionMessage>, String> {
-    // OpenCode SQLite sessions use a "sqlite:" prefixed source_path
+    if provider_id == "mcode" {
+        return mcode::load_messages(source_path);
+    }
+    // SQLite sessions use a "sqlite:" prefixed source_path
     if provider_id == "opencode" && source_path.starts_with("sqlite:") {
         return opencode::load_messages_sqlite(source_path);
     }
-    if provider_id == "mcode" {
-        return mcode::load_messages(source_path);
+    if provider_id == "hermes" && source_path.starts_with("sqlite:") {
+        return hermes::load_messages_sqlite(source_path);
     }
 
     let path = Path::new(source_path);
@@ -116,26 +114,67 @@ pub fn load_messages(provider_id: &str, source_path: &str) -> Result<Vec<Session
         "openclaw" => openclaw::load_messages(path),
         "gemini" => gemini::load_messages(path),
         "grokbuild" => grokbuild::load_messages(path),
+        "hermes" => hermes::load_messages(path),
         "pi" => pi::load_messages(path),
         _ => Err(format!("Unsupported provider: {provider_id}")),
     }
 }
 
+/// 一次读取的结果：解析结果、是否命中缓存、耗时（含校验与指纹）
+pub struct LoadedTranscript {
+    pub transcript: Arc<cache::Transcript>,
+    pub cached: bool,
+    pub parse_ms: u64,
+}
+
+/// 校验 `source_path` 归属后读取会话，未变化的源直接用 [`cache::TranscriptCache`]。
+/// 解析仍走上面的 [`load_messages`] 分发。
+pub fn load_transcript(provider_id: &str, source_path: &str) -> Result<LoadedTranscript, String> {
+    let started = Instant::now();
+    let source = content::validate_source(provider_id, source_path)?;
+    let fingerprint = cache::source_fingerprint(&source)
+        .map_err(|e| format!("Failed to read session source: {e}"))?;
+    let key = (source.provider_id.clone(), source.raw.clone());
+    let (transcript, cached) = cache::global().get_or_load(key, fingerprint, || {
+        load_messages(&source.provider_id, &source.load_path()).map(cache::Transcript::new)
+    })?;
+    Ok(LoadedTranscript {
+        transcript,
+        cached,
+        parse_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// 删除成功后同时移除该会话的解析缓存（§5.2）
 pub fn delete_session(
     provider_id: &str,
     session_id: &str,
     source_path: &str,
 ) -> Result<bool, String> {
-    // OpenCode SQLite sessions bypass the file-based deletion path
-    if provider_id == "opencode" && source_path.starts_with("sqlite:") {
-        return opencode::delete_session_sqlite(session_id, source_path);
+    let deleted = delete_session_source(provider_id, session_id, source_path)?;
+    if deleted {
+        cache::global().remove(provider_id, source_path);
     }
-    // MCode 会话与其运行时状态耦合，只能在 MCode 内删除（上游 06082e18）。
+    Ok(deleted)
+}
+
+fn delete_session_source(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+) -> Result<bool, String> {
     if provider_id == "mcode" {
         return Err(
             "Delete this session in MCode so its runtime state and history are removed together"
                 .into(),
         );
+    }
+    // SQLite sessions bypass the file-based deletion path
+    if provider_id == "opencode" && source_path.starts_with("sqlite:") {
+        return opencode::delete_session_sqlite(session_id, source_path);
+    }
+    if provider_id == "hermes" && source_path.starts_with("sqlite:") {
+        return hermes::delete_session_sqlite(session_id, source_path);
     }
 
     let roots = provider_roots(provider_id)?;
@@ -158,66 +197,30 @@ fn delete_session_with_roots(
     source_path: &Path,
     roots: &[PathBuf],
 ) -> Result<bool, String> {
-    let validated_source = canonicalize_existing_path(source_path, "session source")?;
-
-    let mut saw_existing_root = false;
-    for root in roots {
-        if !root.exists() {
-            continue;
-        }
-
-        saw_existing_root = true;
-        let validated_root = canonicalize_existing_path(root, "session root")?;
-        if validated_source.starts_with(&validated_root) {
-            return match provider_id {
-                "codex" => codex::delete_session(&validated_root, &validated_source, session_id),
-                "claude" => claude::delete_session(&validated_root, &validated_source, session_id),
-                "opencode" => {
-                    opencode::delete_session(&validated_root, &validated_source, session_id)
-                }
-                "openclaw" => {
-                    openclaw::delete_session(&validated_root, &validated_source, session_id)
-                }
-                "gemini" => gemini::delete_session(&validated_root, &validated_source, session_id),
-                "grokbuild" => {
-                    grokbuild::delete_session(&validated_root, &validated_source, session_id)
-                }
-                "pi" => pi::delete_session(&validated_root, &validated_source, session_id),
-                _ => Err(format!("Unsupported provider: {provider_id}")),
-            };
-        }
+    let (validated_root, validated_source) =
+        content::resolve_under_roots(provider_id, source_path, roots)?;
+    match provider_id {
+        "codex" => codex::delete_session(&validated_root, &validated_source, session_id),
+        "claude" => claude::delete_session(&validated_root, &validated_source, session_id),
+        "opencode" => opencode::delete_session(&validated_root, &validated_source, session_id),
+        "openclaw" => openclaw::delete_session(&validated_root, &validated_source, session_id),
+        "gemini" => gemini::delete_session(&validated_root, &validated_source, session_id),
+        "grokbuild" => grokbuild::delete_session(&validated_root, &validated_source, session_id),
+        "hermes" => hermes::delete_session(&validated_root, &validated_source, session_id),
+        "pi" => pi::delete_session(&validated_root, &validated_source, session_id),
+        _ => Err(format!("Unsupported provider: {provider_id}")),
     }
-
-    if !saw_existing_root {
-        return Err(format!(
-            "Session root not found for provider {provider_id}: {}",
-            roots
-                .first()
-                .map(|root| root.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string())
-        ));
-    }
-
-    Err(format!(
-        "Session source path is outside provider roots: {}",
-        source_path.display()
-    ))
 }
 
 fn provider_roots(provider_id: &str) -> Result<Vec<PathBuf>, String> {
     let roots = match provider_id {
-        "codex" => {
-            let config_dir = crate::codex_config::get_codex_config_dir();
-            vec![
-                config_dir.join("sessions"),
-                config_dir.join("archived_sessions"),
-            ]
-        }
+        "codex" => codex::session_roots(),
         "claude" => vec![crate::config::get_claude_config_dir().join("projects")],
         "opencode" => vec![opencode::get_opencode_data_dir()],
         "openclaw" => vec![crate::openclaw_config::get_openclaw_dir().join("agents")],
         "gemini" => vec![crate::gemini_config::get_gemini_dir().join("tmp")],
         "grokbuild" => grokbuild::session_roots(),
+        "hermes" => vec![crate::hermes_config::get_hermes_dir().join("sessions")],
         "pi" => pi::session_roots(),
         _ => return Err(format!("Unsupported provider: {provider_id}")),
     };
@@ -274,23 +277,27 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn write_codex_session(path: &Path, session_id: &str) {
+        std::fs::write(
+            path,
+            format!(
+                "{{\"timestamp\":\"2026-03-06T21:50:12Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"/tmp/project\"}}}}\n\
+                 {{\"timestamp\":\"2026-03-06T21:50:13Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":\"hello\"}}}}\n",
+            ),
+        )
+        .expect("write source");
+    }
+
     #[test]
     fn accepts_source_path_under_any_allowed_provider_root() {
         let active_root = tempdir().expect("active root");
         let archived_root = tempdir().expect("archived root");
-        let session_id = "archived-session";
-        let session_dir = archived_root.path().join("project").join(session_id);
-        std::fs::create_dir_all(&session_dir).expect("create session directory");
-        let source = session_dir.join("summary.json");
-        std::fs::write(
-            &source,
-            format!(r#"{{"info":{{"id":"{session_id}"}}}}"#),
-        )
-        .expect("write summary");
+        let source = archived_root.path().join("session.jsonl");
+        write_codex_session(&source, "archived-session");
 
         let deleted = delete_session_with_roots(
-            "grokbuild",
-            session_id,
+            "codex",
+            "archived-session",
             &source,
             &[
                 active_root.path().to_path_buf(),
@@ -300,7 +307,7 @@ mod tests {
         .expect("delete archived session");
 
         assert!(deleted);
-        assert!(!session_dir.exists());
+        assert!(!source.exists());
     }
 
     #[test]
@@ -310,13 +317,9 @@ mod tests {
         let source = outside.path().join("session.jsonl");
         std::fs::write(&source, "{}").expect("write source");
 
-        let err = delete_session_with_roots(
-            "codex",
-            "session-1",
-            &source,
-            &[root.path().to_path_buf()],
-        )
-        .expect_err("expected outside-root path to be rejected");
+        let err =
+            delete_session_with_roots("codex", "session-1", &source, &[root.path().to_path_buf()])
+                .expect_err("expected outside-root path to be rejected");
 
         assert!(err.contains("outside provider roots"));
     }
@@ -326,13 +329,9 @@ mod tests {
         let root = tempdir().expect("tempdir");
         let missing = root.path().join("missing.jsonl");
 
-        let err = delete_session_with_roots(
-            "codex",
-            "session-1",
-            &missing,
-            &[root.path().to_path_buf()],
-        )
-        .expect_err("expected missing source path to fail");
+        let err =
+            delete_session_with_roots("codex", "session-1", &missing, &[root.path().to_path_buf()])
+                .expect_err("expected missing source path to fail");
 
         assert!(err.contains("session source not found"));
     }
@@ -377,3 +376,5 @@ mod tests {
         );
     }
 }
+
+pub(crate) fn grokbuild_session_roots() -> Vec<PathBuf> { grokbuild::session_roots() }

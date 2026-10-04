@@ -304,6 +304,10 @@ impl ProxyServer {
             // 健康检查
             .route("/health", get(handlers::health_check))
             .route("/status", get(handlers::get_status))
+            .route("/v1/models", get(handlers::handle_models))
+            .route("/models", get(handlers::handle_models))
+            .route("/codex/v1/models", get(handlers::handle_models))
+            .route("/claude/v1/models", get(handlers::handle_models))
             // Claude API (支持带前缀和不带前缀两种格式)
             .route("/v1/messages", post(handlers::handle_messages))
             .route("/claude/v1/messages", post(handlers::handle_messages))
@@ -331,10 +335,22 @@ impl ProxyServer {
                 post(handlers::handle_chat_completions),
             )
             // OpenAI Responses API (Codex CLI，支持带前缀和不带前缀)
-            .route("/responses", post(handlers::handle_responses))
-            .route("/v1/responses", post(handlers::handle_responses))
-            .route("/v1/v1/responses", post(handlers::handle_responses))
-            .route("/codex/v1/responses", post(handlers::handle_responses))
+            .route(
+                "/responses",
+                post(handlers::handle_responses).get(handlers::handle_responses_websocket),
+            )
+            .route(
+                "/v1/responses",
+                post(handlers::handle_responses).get(handlers::handle_responses_websocket),
+            )
+            .route(
+                "/v1/v1/responses",
+                post(handlers::handle_responses).get(handlers::handle_responses_websocket),
+            )
+            .route(
+                "/codex/v1/responses",
+                post(handlers::handle_responses).get(handlers::handle_responses_websocket),
+            )
             .route(
                 "/grokbuild/v1/responses",
                 post(handlers::handle_grokbuild_responses),
@@ -453,6 +469,39 @@ mod tests {
             Arc::new(RwLock::new(CodexOAuthManager::new(data_dir.join("codex")))),
             Arc::new(RwLock::new(XaiOAuthManager::new(data_dir.join("xai")))),
         )
+    }
+
+    /// Codex 内置的 openai 先用 WebSocket 连 Responses：握手回 426 它才立刻改走 HTTP。
+    #[tokio::test]
+    async fn responses_websocket_handshake_is_answered_with_upgrade_required() {
+        let db = Arc::new(Database::memory().expect("memory database"));
+        let proxy = new_test_proxy(
+            ProxyConfig {
+                listen_port: 0,
+                ..ProxyConfig::default()
+            },
+            db,
+        );
+        let proxy_info = proxy.start().await.expect("start test proxy");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for path in [
+            "/responses",
+            "/v1/responses",
+            "/v1/v1/responses",
+            "/codex/v1/responses",
+        ] {
+            let response = client
+                .get(format!("http://127.0.0.1:{}{path}", proxy_info.port))
+                .header(header::CONNECTION, "Upgrade")
+                .header(header::UPGRADE, "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .send()
+                .await
+                .expect("websocket handshake");
+            assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED, "{path}");
+        }
+        proxy.stop().await.expect("stop test proxy");
     }
 
     /// A base URL pasted as a complete endpoint with the full-URL switch left off
@@ -1236,5 +1285,20 @@ mod tests {
             full_url_request.body["commands"]["search_query"][0]["q"],
             "full URL"
         );
+    }
+}
+
+#[cfg(test)]
+impl ProxyState {
+    pub(crate) fn for_test(db: Arc<Database>) -> Self {
+        let app = crate::store::AppState::new(db.clone());
+        ProxyServer::new(
+            ProxyConfig::default(),
+            db,
+            app.copilot_auth_state,
+            app.codex_oauth_state,
+            app.xai_oauth_state,
+        )
+        .state
     }
 }

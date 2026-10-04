@@ -86,11 +86,13 @@ describe("AddProviderDialog", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "common.add",
-      }),
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled(),
     );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
@@ -122,11 +124,13 @@ describe("AddProviderDialog", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "common.add",
-      }),
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled(),
     );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
 
@@ -168,6 +172,9 @@ context_window = 500000
         onSubmit={handleSubmit}
       />,
     );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 
     await waitFor(() => expect(handleSubmit).toHaveBeenCalledTimes(1));
@@ -197,6 +204,9 @@ context_window = 500000
         appId="grokbuild"
         onSubmit={handleSubmit}
       />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "common.add" })).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: "common.add" }));
 

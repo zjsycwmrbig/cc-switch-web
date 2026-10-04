@@ -1,8 +1,8 @@
-import {
-  useQuery,
-  type UseQueryResult,
-  keepPreviousData,
-} from "@tanstack/react-query";
+import { useRef } from "react";
+import { resolveDisplayUsage, type LastGoodUsage } from "./usageDisplay";
+import { extractErrorMessage } from "@/utils/errorUtils";
+import { sortProvidersByName } from "@/utils/providerSort";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import {
   providersApi,
   settingsApi,
@@ -10,33 +10,14 @@ import {
   sessionsApi,
   type AppId,
 } from "@/lib/api";
-import type {
-  Provider,
-  Settings,
-  UsageResult,
-  SessionMeta,
-  SessionMessage,
-} from "@/types";
+import type { Provider, Settings, UsageResult, SessionMeta } from "@/types";
 
 const sortProviders = (
   providers: Record<string, Provider>,
 ): Record<string, Provider> => {
-  const sortedEntries = Object.values(providers)
-    .sort((a, b) => {
-      const indexA = a.sortIndex ?? Number.MAX_SAFE_INTEGER;
-      const indexB = b.sortIndex ?? Number.MAX_SAFE_INTEGER;
-      if (indexA !== indexB) {
-        return indexA - indexB;
-      }
-
-      const timeA = a.createdAt ?? 0;
-      const timeB = b.createdAt ?? 0;
-      if (timeA === timeB) {
-        return a.name.localeCompare(b.name, "zh-CN");
-      }
-      return timeA - timeB;
-    })
-    .map((provider) => [provider.id, provider] as const);
+  const sortedEntries = sortProvidersByName(Object.values(providers)).map(
+    (provider) => [provider.id, provider] as const,
+  );
 
   return Object.fromEntries(sortedEntries);
 };
@@ -59,7 +40,6 @@ export const useProvidersQuery = (
 
   return useQuery({
     queryKey: ["providers", appId],
-    placeholderData: keepPreviousData,
     enabled,
     // 当代理服务运行时，每 10 秒刷新一次供应商列表
     // 这样可以自动反映后端熔断器自动禁用代理目标的变更
@@ -129,9 +109,32 @@ export const useUsageQuery = (
     gcTime: 10 * 60 * 1000, // 缓存保留 10 分钟（组件卸载后）
   });
 
+  const scopeKey = `${appId}:${providerId}`;
+  const lastGoodRef = useRef<{ key: string; snapshot: LastGoodUsage | null }>({
+    key: scopeKey,
+    snapshot: null,
+  });
+  if (lastGoodRef.current.key !== scopeKey)
+    lastGoodRef.current = { key: scopeKey, snapshot: null };
+  const { data, lastQueriedAt, lastGood } = resolveDisplayUsage(
+    query.data,
+    query.dataUpdatedAt,
+    lastGoodRef.current.snapshot,
+    Date.now(),
+    { rejected: query.isError },
+  );
+  lastGoodRef.current.snapshot = lastGood;
   return {
     ...query,
-    lastQueriedAt: query.dataUpdatedAt || null,
+    data:
+      data ??
+      (query.isError
+        ? {
+            success: false,
+            error: extractErrorMessage(query.error) || undefined,
+          }
+        : undefined),
+    lastQueriedAt,
   };
 };
 
@@ -143,14 +146,4 @@ export const useSessionsQuery = () => {
   });
 };
 
-export const useSessionMessagesQuery = (
-  providerId?: string,
-  sourcePath?: string,
-) => {
-  return useQuery<SessionMessage[]>({
-    queryKey: ["sessionMessages", providerId, sourcePath],
-    queryFn: async () => sessionsApi.getMessages(providerId!, sourcePath!),
-    enabled: Boolean(providerId && sourcePath),
-    staleTime: 30 * 1000,
-  });
-};
+export { useSessionMessagesQuery } from "./sessions";

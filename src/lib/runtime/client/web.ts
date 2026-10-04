@@ -1,3 +1,5 @@
+import type { SkillDiscoveryResult, SkillUpdateCheckResult, SkillAppSyncOutcome } from "@/lib/api/skills";
+import type { AppMode, AppModeView } from "@/types/proxy";
 import type { Settings } from "@/types";
 import type {
   CustomEndpoint,
@@ -64,7 +66,6 @@ import type {
   SkillRepo,
   SkillsShSearchResult,
   SkillUninstallResult,
-  SkillUpdateInfo,
   UnmanagedSkill,
 } from "@/lib/api/skills";
 import type { SwitchResult } from "@/lib/api/providers";
@@ -632,6 +633,13 @@ export async function getWebManagedAuthStatus(
   return requestJson(`/api/auth/${encodeURIComponent(authProvider)}/status`);
 }
 
+export async function getWebCodexOauthModels(
+  accountId?: string | null,
+): Promise<import("@/lib/api/model-fetch").FetchedModel[]> {
+  const query = accountId ? `?accountId=${encodeURIComponent(accountId)}` : "";
+  return requestJson(`/api/auth/codex_oauth/models${query}`);
+}
+
 export async function getWebXaiOauthModels(
   accountId?: string | null,
 ): Promise<import("@/lib/api/model-fetch").FetchedModel[]> {
@@ -858,6 +866,8 @@ export async function fetchWebProviderModels(
   isFullUrl?: boolean,
   modelsUrl?: string,
   customUserAgent?: string,
+  apiFormat?: string,
+  requestHeaders?: Record<string, string>,
 ): Promise<import("@/lib/api/model-fetch").FetchedModel[]> {
   return requestWithBody<import("@/lib/api/model-fetch").FetchedModel[]>(
     "/api/providers/models/fetch",
@@ -868,6 +878,8 @@ export async function fetchWebProviderModels(
       isFullUrl,
       modelsUrl,
       customUserAgent,
+      apiFormat,
+      requestHeaders,
     },
   );
 }
@@ -1218,25 +1230,6 @@ export async function updateWebProxyConfigForApp(
   );
 }
 
-export async function getWebDefaultCostMultiplier(
-  appId: AppId,
-): Promise<string> {
-  return requestJson<string>(
-    `/api/proxy/apps/${appId}/default-cost-multiplier`,
-  );
-}
-
-export async function setWebDefaultCostMultiplier(
-  appId: AppId,
-  value: string,
-): Promise<void> {
-  return requestWithBody<void>(
-    `/api/proxy/apps/${appId}/default-cost-multiplier`,
-    "PUT",
-    { value },
-  );
-}
-
 export async function getWebPricingModelSource(appId: AppId): Promise<string> {
   return requestJson<string>(`/api/proxy/apps/${appId}/pricing-model-source`);
 }
@@ -1580,6 +1573,65 @@ export async function deleteWebDbBackup(filename: string): Promise<void> {
   );
 }
 
+export async function getWebCodexEditorView(payload: unknown) {
+  return requestWithBody<import("@/lib/api/providers").ProviderEditorView>(
+    "/api/providers/codex/editor/view",
+    "POST",
+    payload,
+  );
+}
+export async function saveWebCodexEditor(payload: unknown) {
+  return requestWithBody<boolean>(
+    "/api/providers/codex/editor/save",
+    "POST",
+    payload,
+  );
+}
+export async function getWebGrokEditorView(payload: unknown) {
+  return requestWithBody<import("@/lib/api/providers").ProviderEditorView>(
+    "/api/providers/grokbuild/editor/view",
+    "POST",
+    payload,
+  );
+}
+export async function saveWebGrokEditor(payload: unknown) {
+  return requestWithBody<boolean>(
+    "/api/providers/grokbuild/editor/save",
+    "POST",
+    payload,
+  );
+}
+export async function getWebGeminiEditorView(payload: unknown) {
+  return requestWithBody<import("@/lib/api/providers").ProviderEditorView>(
+    "/api/providers/gemini/editor/view",
+    "POST",
+    payload,
+  );
+}
+export async function saveWebGeminiEditor(payload: unknown) {
+  return requestWithBody<boolean>(
+    "/api/providers/gemini/editor/save",
+    "POST",
+    payload,
+  );
+}
+export async function getWebClaudeEditorView(
+  settings: Record<string, unknown>,
+) {
+  return requestWithBody<import("@/lib/api/providers").ProviderEditorView>(
+    "/api/providers/claude/editor/view",
+    "POST",
+    settings,
+  );
+}
+export async function saveWebClaudeEditor(payload: unknown) {
+  return requestWithBody<boolean>(
+    "/api/providers/claude/editor/save",
+    "POST",
+    payload,
+  );
+}
+
 export async function addWebProvider(
   appId: AppId,
   provider: Provider,
@@ -1816,32 +1868,15 @@ export async function removeWebSkillRepo(
   );
 }
 
-export async function discoverWebAvailableSkills(): Promise<
-  DiscoverableSkill[]
-> {
-  try {
-    return await requestJson<DiscoverableSkill[]>("/api/skills/discover");
-  } catch (error) {
-    console.warn(
-      "[runtime:web] failed to discover skills from local service",
-      error,
-    );
-    return [];
-  }
+export async function discoverWebAvailableSkills(): Promise<SkillDiscoveryResult> {
+ return requestJson<SkillDiscoveryResult>("/api/skills/discover");
 }
-
-export async function checkWebSkillUpdates(): Promise<SkillUpdateInfo[]> {
-  try {
-    return await requestJson<SkillUpdateInfo[]>("/api/skills/updates");
-  } catch (error) {
-    console.warn(
-      "[runtime:web] failed to check skill updates from local service",
-      error,
-    );
-    return [];
-  }
+export async function checkWebSkillUpdates(): Promise<SkillUpdateCheckResult> {
+ return requestJson<SkillUpdateCheckResult>("/api/skills/updates");
 }
-
+export async function resyncWebSkills(): Promise<SkillAppSyncOutcome[]> {
+ return requestWithBody<SkillAppSyncOutcome[]>("/api/skills/resync", "POST");
+}
 export async function installWebSkillUnified(
   skill: DiscoverableSkill,
   currentApp: AppId,
@@ -2232,11 +2267,10 @@ export const saveWebPiPromptFile = (
   expectedRevision: string,
   content: string,
 ): Promise<PiPromptFileSnapshot> =>
-  requestWithBody<PiPromptFileSnapshot>(
-    `/api/pi/prompt-files/${kind}`,
-    "PUT",
-    { expectedRevision, content },
-  );
+  requestWithBody<PiPromptFileSnapshot>(`/api/pi/prompt-files/${kind}`, "PUT", {
+    expectedRevision,
+    content,
+  });
 
 export const deleteWebPiPromptFile = (
   kind: PiPromptFileKind,
@@ -2425,6 +2459,10 @@ export async function getWebProviderLimits(
   );
 }
 
+export async function getWebLastSessionScan(): Promise<number | null> {
+  return requestJson<number | null>("/api/usage/session-sync");
+}
+
 export async function syncWebSessionUsage(): Promise<SessionSyncResult> {
   return requestWithBody<SessionSyncResult>("/api/usage/session-sync", "POST");
 }
@@ -2485,3 +2523,88 @@ export async function clearWebCurrentProfile(
 export async function getWebUsageDataSources(): Promise<DataSourceSummary[]> {
   return requestJson<DataSourceSummary[]>("/api/usage/data-sources");
 }
+
+export async function getWebAppMode(appId: AppId): Promise<AppModeView> {
+  return requestJson<AppModeView>(`/api/proxy/apps/${appId}/mode`);
+}
+export async function setWebAppMode(
+  appId: AppId,
+  mode: AppMode,
+  routeProviderId?: string,
+): Promise<void> {
+  return requestWithBody<void>(`/api/proxy/apps/${appId}/mode`, "PUT", {
+    mode,
+    routeProviderId,
+  });
+}
+
+export async function restartWebCodexDaemon(): Promise<
+  "restarted" | "notRunning"
+> {
+  return requestWithBody("/api/proxy/codex/daemon/restart", "POST");
+}
+export async function setWebAggregationMember(
+  appId: AppId,
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  return requestWithBody<void>(
+    `/api/proxy/apps/${appId}/aggregation/${encodeURIComponent(id)}`,
+    "PUT",
+    { enabled },
+  );
+}
+export async function restartWebProxyService(
+  config: GlobalProxyConfig,
+): Promise<void> {
+  return requestWithBody<void>("/api/proxy/restart", "POST", config);
+}
+
+export const manageWebTools = <T>(path: "versions" | "installations" | "action", payload: Record<string, unknown>): Promise<T> => requestWithBody<T>(`/api/tools/${path}`, "POST", payload);
+
+/** Stream and image bytes bypass debug body logging. */
+export async function streamWebSession(providerId: string, sourcePath: string, onChunk: (chunk: import("@/types").TranscriptChunk) => void): Promise<void> {
+  const query = new URLSearchParams({ providerId, sourcePath });
+  const response = await fetch(`${getWebApiBase()}/api/sessions/stream?${query}`, { headers: webRequestHeaders("application/x-ndjson") });
+  handleUnauthorized(response);
+  if (!response.ok) throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
+  if (!response.body) throw new Error("Missing transcript stream");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let done = false;
+  const accept = (line: string) => {
+    if (!line.trim()) return;
+    const chunk = JSON.parse(line) as import("@/types").TranscriptChunk;
+    onChunk(chunk);
+    if (chunk.type === "error") throw new Error(chunk.message);
+    if (chunk.type === "done") done = true;
+  };
+  try {
+    while (true) {
+      const next = await reader.read();
+      pending += decoder.decode(next.value, { stream: !next.done });
+      let newline: number;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
+      }
+      if (pending.length > 64 * 1024 * 1024) throw new Error("Transcript chunk too large");
+      if (next.done) break;
+    }
+    accept(pending);
+    if (!done) throw new Error("Incomplete transcript stream");
+  } finally { await reader.cancel(); reader.releaseLock(); }
+}
+export async function getWebSessionImage(payload: unknown): Promise<ArrayBuffer> {
+  const response = await fetch(`${getWebApiBase()}/api/sessions/image`, { method: "POST", headers: { ...webRequestHeaders("application/octet-stream"), "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  handleUnauthorized(response);
+  if (!response.ok) throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
+  return response.arrayBuffer();
+}
+export const getWebSessionContent = (payload: unknown): Promise<import("@/lib/api/sessions").BlockContent> => requestWithBody("/api/sessions/content", "POST", payload);
+
+export const getWebSessionUsage = (appType: string, sessionId: string): Promise<import("@/types/usage").UsageSummary> => requestJson(`/api/sessions/usage?${new URLSearchParams({appType, sessionId})}`);
+
+export function resyncWebMcp(apps?: AppId[]): Promise<import("@/lib/api/mcp").McpAppSyncOutcome[]> { return requestWithBody("/api/mcp/resync", "POST", { apps }); }
+
+export function getWebSkillStoragePaths(): Promise<{ ccSwitch: string; unified: string }> { return requestJson("/api/skills/storage-paths"); }

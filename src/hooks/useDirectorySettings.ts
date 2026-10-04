@@ -43,6 +43,7 @@ export interface UseDirectorySettingsResult {
   resolvedDirs: ResolvedDirectories;
   isLoading: boolean;
   initialAppConfigDir?: string;
+  markAppConfigDirSaved: (value?: string) => void;
   updateDirectory: (app: AppId, value?: string) => void;
   updateAppConfigDir: (value?: string) => void;
   browseDirectory: (app: AppId) => Promise<void>;
@@ -222,11 +223,11 @@ export function useDirectorySettings({
                   ? { grokConfigDir: sanitized }
                   : key === "opencode"
                     ? { opencodeConfigDir: sanitized }
-                  : key === "openclaw"
-                    ? { openclawConfigDir: sanitized }
-                    : key === "hermes"
-                      ? { hermesConfigDir: sanitized }
-                      : { piConfigDir: sanitized },
+                    : key === "openclaw"
+                      ? { openclawConfigDir: sanitized }
+                      : key === "hermes"
+                        ? { hermesConfigDir: sanitized }
+                        : { piConfigDir: sanitized },
         );
       }
 
@@ -301,11 +302,11 @@ export function useDirectorySettings({
                 ? "grokbuild"
                 : app === "opencode"
                   ? "opencode"
-                : app === "openclaw"
-                  ? "openclaw"
-                  : app === "hermes"
-                    ? "hermes"
-                    : "pi";
+                  : app === "openclaw"
+                    ? "openclaw"
+                    : app === "hermes"
+                      ? "hermes"
+                      : "pi";
       if (!defaultsRef.current[key]) {
         try {
           const fallback = await settingsApi.getDefaultConfigDir(app);
@@ -371,11 +372,16 @@ export function useDirectorySettings({
     [],
   );
 
+  const markAppConfigDirSaved = useCallback((value?: string) => {
+    initialAppConfigDirRef.current = value;
+  }, []);
+
   return {
     appConfigDir,
     resolvedDirs,
     isLoading,
     initialAppConfigDir: initialAppConfigDirRef.current,
+    markAppConfigDirSaved,
     updateDirectory,
     updateAppConfigDir,
     browseDirectory,

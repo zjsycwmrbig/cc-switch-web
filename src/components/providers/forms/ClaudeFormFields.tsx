@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { ClaudeAggregationModels } from "./ClaudeAggregationModels";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,6 +42,8 @@ import {
 import type { CopilotModel } from "@/lib/api/copilot";
 import {
   fetchModelsForConfig,
+  fetchCodexOauthModels,
+  fetchXaiOauthModels,
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
@@ -67,6 +70,10 @@ interface EndpointCandidate {
 }
 
 interface ClaudeFormFieldsProps {
+  aggregationModels?: import("@/types").ClaudeStackModel[];
+  onAggregationModelsChange?: (
+    models: import("@/types").ClaudeStackModel[] | undefined,
+  ) => void;
   providerId?: string;
   // API Key
   shouldShowApiKey: boolean;
@@ -152,6 +159,8 @@ interface ClaudeFormFieldsProps {
 }
 
 export function ClaudeFormFields({
+  aggregationModels,
+  onAggregationModelsChange,
   providerId,
   shouldShowApiKey,
   apiKey,
@@ -243,8 +252,24 @@ export function ClaudeFormFields({
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
 
+  const modelFetchGeneration = useRef(0);
+  useEffect(() => {
+    modelFetchGeneration.current++;
+    setFetchedModels([]);
+    setIsFetchingModels(false);
+    return () => {
+      modelFetchGeneration.current++;
+    };
+  }, [
+    baseUrl,
+    apiKey,
+    isCodexOauthPreset,
+    isXaiOauthPreset,
+    selectedCodexAccountId,
+    selectedXaiAccountId,
+  ]);
   const handleFetchModels = useCallback(() => {
-    if (!baseUrl || !apiKey) {
+    if (!isCodexOauthPreset && !isXaiOauthPreset && (!baseUrl || !apiKey)) {
       showFetchModelsError(null, t, {
         hasApiKey: !!apiKey,
         hasBaseUrl: !!baseUrl,
@@ -258,9 +283,22 @@ export function ClaudeFormFields({
       return env?.ANTHROPIC_BASE_URL === baseUrl;
     })?.modelsUrl;
 
+    const generation = ++modelFetchGeneration.current;
     setIsFetchingModels(true);
-    fetchModelsForConfig(baseUrl, apiKey, isFullUrl, modelsUrl, customUserAgent)
+    (isCodexOauthPreset
+      ? fetchCodexOauthModels(selectedCodexAccountId)
+      : isXaiOauthPreset
+        ? fetchXaiOauthModels(selectedXaiAccountId)
+        : fetchModelsForConfig(
+            baseUrl,
+            apiKey,
+            isFullUrl,
+            modelsUrl,
+            customUserAgent,
+          )
+    )
       .then((models) => {
+        if (generation !== modelFetchGeneration.current) return;
         setFetchedModels(models);
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
@@ -271,11 +309,25 @@ export function ClaudeFormFields({
         }
       })
       .catch((error) => {
+        if (generation !== modelFetchGeneration.current) return;
         console.warn("[ModelFetch] Failed:", error);
         showFetchModelsError(error, t);
       })
-      .finally(() => setIsFetchingModels(false));
-  }, [apiKey, baseUrl, customUserAgent, isFullUrl, t]);
+      .finally(() => {
+        if (generation === modelFetchGeneration.current)
+          setIsFetchingModels(false);
+      });
+  }, [
+    apiKey,
+    baseUrl,
+    customUserAgent,
+    isFullUrl,
+    isCodexOauthPreset,
+    isXaiOauthPreset,
+    selectedCodexAccountId,
+    selectedXaiAccountId,
+    t,
+  ]);
 
   // 当 Copilot 预设且已认证时，加载可用模型
   useEffect(() => {
@@ -468,6 +520,7 @@ export function ClaudeFormFields({
       {/* GitHub Copilot OAuth 认证 */}
       {isCopilotPreset && (
         <CopilotAuthSection
+          mode="select"
           selectedAccountId={selectedGitHubAccountId}
           onAccountSelect={onGitHubAccountSelect}
         />
@@ -475,6 +528,7 @@ export function ClaudeFormFields({
 
       {isCodexOauthPreset && (
         <CodexOAuthSection
+          mode="select"
           selectedAccountId={selectedCodexAccountId}
           onAccountSelect={onCodexAccountSelect}
         />
@@ -490,6 +544,7 @@ export function ClaudeFormFields({
       {/* API Key 输入框（非 OAuth 预设时显示） */}
       {shouldShowApiKey && !usesOAuth && (
         <ApiKeySection
+          required
           value={apiKey}
           onChange={onApiKeyChange}
           category={category}
@@ -913,6 +968,19 @@ export function ClaudeFormFields({
             </div>
           </CollapsibleContent>
         </Collapsible>
+      )}
+      {onAggregationModelsChange && (
+        <ClaudeAggregationModels
+          value={aggregationModels}
+          onChange={onAggregationModelsChange}
+          fetchedModels={
+            isCopilotPreset
+              ? copilotModels.map((model) => ({ id: model.id, ownedBy: null }))
+              : fetchedModels
+          }
+          onFetchModels={isCopilotPreset ? undefined : handleFetchModels}
+          isFetching={isFetchingModels || modelsLoading}
+        />
       )}
     </>
   );

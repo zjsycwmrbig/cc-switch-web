@@ -12,6 +12,7 @@ const GEMINI_COMMON_ENV_FORBIDDEN_KEYS = [
 type GeminiForbiddenEnvKey = (typeof GEMINI_COMMON_ENV_FORBIDDEN_KEYS)[number];
 
 interface UseGeminiCommonConfigProps {
+  enabled?: boolean;
   envValue: string;
   onEnvChange: (env: string) => void;
   envStringToObj: (envString: string) => Record<string, string>;
@@ -39,6 +40,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * - GEMINI_API_KEY
  */
 export function useGeminiCommonConfig({
+  enabled = true,
   envValue,
   onEnvChange,
   envStringToObj,
@@ -65,9 +67,10 @@ export function useGeminiCommonConfig({
 
   // 当预设变化时，重置初始化标记，使新预设能够重新触发初始化逻辑
   useEffect(() => {
+    if (!enabled) return;
     hasInitializedNewMode.current = false;
     hasInitializedEditMode.current = false;
-  }, [selectedPresetId, initialEnabled]);
+  }, [enabled, selectedPresetId, initialEnabled]);
 
   const parseSnippetEnv = useCallback(
     (
@@ -157,6 +160,7 @@ export function useGeminiCommonConfig({
 
   // 初始化：从统一配置存储加载
   useEffect(() => {
+    if (!enabled) return;
     let mounted = true;
 
     const loadSnippet = async () => {
@@ -207,10 +211,11 @@ export function useGeminiCommonConfig({
     return () => {
       mounted = false;
     };
-  }, [parseSnippetEnv]);
+  }, [enabled, parseSnippetEnv]);
 
   // 初始化时检查通用配置片段（编辑模式）
   useEffect(() => {
+    if (!enabled) return;
     if (
       !initialData?.settingsConfig ||
       isLoading ||
@@ -262,6 +267,7 @@ export function useGeminiCommonConfig({
       // ignore parse error
     }
   }, [
+    enabled,
     applySnippetToEnv,
     commonConfigSnippet,
     envObjToString,
@@ -277,6 +283,7 @@ export function useGeminiCommonConfig({
 
   // 新建模式：如果通用配置片段存在且有效，默认启用
   useEffect(() => {
+    if (!enabled) return;
     if (initialData || isLoading || hasInitializedNewMode.current) {
       return;
     }
@@ -306,6 +313,7 @@ export function useGeminiCommonConfig({
       isUpdatingFromCommonConfig.current = false;
     }, 0);
   }, [
+    enabled,
     initialData,
     isLoading,
     commonConfigSnippet,
@@ -454,6 +462,7 @@ export function useGeminiCommonConfig({
 
   // 当 env 变化时检查是否包含通用配置（但避免在通过通用配置更新时检查）
   useEffect(() => {
+    if (!enabled) return;
     if (isUpdatingFromCommonConfig.current || isLoading) {
       return;
     }
@@ -464,6 +473,7 @@ export function useGeminiCommonConfig({
       hasEnvCommonConfigSnippet(envObj, parsed.env as Record<string, string>),
     );
   }, [
+    enabled,
     envValue,
     commonConfigSnippet,
     envStringToObj,
@@ -509,11 +519,11 @@ export function useGeminiCommonConfig({
     } finally {
       setIsExtracting(false);
     }
-  }, [envStringToObj, envValue, parseSnippetEnv, t]);
+  }, [enabled, envStringToObj, envValue, parseSnippetEnv, t]);
 
   const clearCommonConfigError = useCallback(() => {
     setCommonConfigError("");
-  }, []);
+  }, [enabled]);
 
   return {
     useCommonConfig,

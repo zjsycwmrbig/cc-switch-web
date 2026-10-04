@@ -47,7 +47,8 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder ?? t("apiKeyInput.placeholder")}
           disabled={disabled}
-          required={required}
+          // 由保存流程处理空 Key 确认，避免浏览器原生校验提前阻止提交。
+          aria-required={required || undefined}
           autoComplete="off"
           className={inputClass}
         />

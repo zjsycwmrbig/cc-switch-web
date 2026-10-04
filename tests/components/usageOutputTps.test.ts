@@ -16,7 +16,7 @@ describe("usage output TPS helpers", () => {
     ).toBe(20);
   });
 
-  it("prefers explicit durationMs for output TPS", () => {
+  it("uses semantic generation window rather than an unrelated durationMs", () => {
     expect(
       getOutputTokensPerSecond({
         outputTokens: 120,
@@ -24,16 +24,16 @@ describe("usage output TPS helpers", () => {
         firstTokenMs: 4_000,
         durationMs: 3_000,
       }),
-    ).toBe(40);
+    ).toBe(20);
   });
 
-  it("falls back to full latency when first token timing is missing", () => {
+  it("does not label full latency as precise output speed", () => {
     expect(
       getOutputTokensPerSecond({
         outputTokens: 120,
         latencyMs: 10_000,
       }),
-    ).toBe(12);
+    ).toBeNull();
   });
 
   it("does not show TPS without positive tokens or duration", () => {
@@ -57,12 +57,14 @@ describe("usage output TPS helpers", () => {
       formatOutputTokensPerSecond({
         outputTokens: 121,
         latencyMs: 10_000,
+        firstTokenMs: 0,
       }),
     ).toBe("12");
     expect(
       formatOutputTokensPerSecond({
-        outputTokens: 1,
-        latencyMs: 4_000,
+        outputTokens: 100,
+        latencyMs: 400_000,
+        firstTokenMs: 0,
       }),
     ).toBe("0.3");
   });

@@ -53,7 +53,7 @@ struct GithubLatestReleaseResponse {
 
 const WEB_GITHUB_REPO: &str = "zuoliangyu/cc-switch-web";
 
-const VALID_TOOLS: [&str; 4] = ["claude", "codex", "gemini", "opencode"];
+const VALID_TOOLS: [&str; 5] = ["claude", "codex", "gemini", "mcode", "opencode"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -168,6 +168,7 @@ async fn get_single_tool_version_impl(
         "claude" => fetch_npm_latest_version(&client, "@anthropic-ai/claude-code").await,
         "codex" => fetch_npm_latest_version(&client, "@openai/codex").await,
         "gemini" => fetch_npm_latest_version(&client, "@google/gemini-cli").await,
+        "mcode" => fetch_npm_latest_version(&client, "@minimax-ai/code").await,
         "opencode" => fetch_github_latest_version(&client, "anomalyco/opencode").await,
         _ => None,
     };
@@ -317,7 +318,7 @@ fn extract_version(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-fn decode_command_output(bytes: &[u8]) -> String {
+pub(crate) fn decode_command_output(bytes: &[u8]) -> String {
     #[cfg(target_os = "windows")]
     {
         decode_windows_command_output(bytes)
@@ -581,6 +582,25 @@ fn opencode_extra_search_paths(
     paths
 }
 
+/// MiniMax's installer uses the root on Windows and its bin directory on POSIX.
+fn mcode_extra_search_paths(home: &Path, install_dir: Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    let launcher_dir = |root: PathBuf| {
+        if cfg!(target_os = "windows") {
+            root
+        } else {
+            root.join("bin")
+        }
+    };
+    let mut paths = Vec::new();
+    if let Some(root) = install_dir.filter(|value| !value.is_empty()) {
+        push_unique_path(&mut paths, launcher_dir(PathBuf::from(root)));
+    }
+    if !home.as_os_str().is_empty() {
+        push_unique_path(&mut paths, launcher_dir(home.join(".minimax-code")));
+    }
+    paths
+}
+
 fn tool_executable_candidates(tool: &str, dir: &Path) -> Vec<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -748,6 +768,12 @@ fn windows_standalone_search_paths(
 fn build_tool_search_paths(tool: &str) -> Vec<std::path::PathBuf> {
     let home = get_home_dir();
     let mut search_paths = Vec::new();
+
+    if tool == "mcode" {
+        for path in mcode_extra_search_paths(&home, std::env::var_os("MCODE_INSTALL_DIR")) {
+            push_unique_path(&mut search_paths, path);
+        }
+    }
 
     if !home.as_os_str().is_empty() {
         push_unique_path(&mut search_paths, home.join(".local/bin"));
@@ -1930,13 +1956,22 @@ fn macos_otty_cli_candidates() -> Vec<std::path::PathBuf> {
     candidates
 }
 
-#[cfg(target_os = "macos")]
 fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    path.metadata()
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2051,6 +2086,34 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcode_installer_search_paths_preserve_override_priority_and_deduplicate() {
+        use super::*;
+        let home = PathBuf::from("test-home");
+        let root = PathBuf::from("custom-mcode");
+        let launcher = |path: PathBuf| {
+            if cfg!(target_os = "windows") {
+                path
+            } else {
+                path.join("bin")
+            }
+        };
+        let default = launcher(home.join(".minimax-code"));
+        assert_eq!(
+            mcode_extra_search_paths(&home, Some(root.clone().into_os_string())),
+            vec![launcher(root), default.clone()]
+        );
+        assert_eq!(
+            mcode_extra_search_paths(&home, Some(home.join(".minimax-code").into_os_string())),
+            vec![default.clone()]
+        );
+        assert_eq!(
+            mcode_extra_search_paths(&home, Some(std::ffi::OsString::new())),
+            vec![default]
+        );
+        assert!(mcode_extra_search_paths(Path::new(""), None).is_empty());
+        assert!(VALID_TOOLS.contains(&"mcode"));
+    }
     use super::*;
     use std::path::PathBuf;
 
@@ -2394,4 +2457,116 @@ mod tests {
         assert!(!is_newer_version("0.1.3", "0.1.3"));
         assert!(!is_newer_version("0.2.0", "0.1.3"));
     }
+}
+
+/// 在服务端已探测的 CLI 上执行固定参数命令；复用路径探测和进程树超时清理。
+/// 不经过登录 shell，也不枚举运行所有候选工具。
+pub(crate) fn run_detected_tool_command_with_timeout(
+    tool: &str,
+    args: &[&str],
+    timeout: Option<std::time::Duration>,
+    extra_env: &[(&str, String)],
+    working_dir: &Path,
+) -> Result<std::process::Output, String> {
+    use std::process::{Command, Stdio};
+    if !VALID_TOOLS.contains(&tool) {
+        return Err(format!("Unsupported tool: {tool}"));
+    }
+    if args.iter().any(|arg| {
+        arg.is_empty()
+            || !arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    }) {
+        return Err("Invalid tool command arguments".to_string());
+    }
+    let started = std::time::Instant::now();
+    #[cfg(target_os = "windows")]
+    let default_path = resolve_windows_path_default(tool)?;
+    #[cfg(not(target_os = "windows"))]
+    let default_path = effective_path_os().and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(tool))
+            .find(|path| is_executable_file(path))
+    });
+    let tool_path = default_path
+        .or_else(|| {
+            build_tool_search_paths(tool)
+                .iter()
+                .flat_map(|dir| tool_executable_candidates(tool, dir))
+                .find(|path| is_executable_file(path))
+        })
+        .ok_or_else(|| format!("{tool} is not installed or not executable"))?;
+    let dir = tool_path
+        .parent()
+        .ok_or_else(|| format!("Invalid {tool} executable path"))?;
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let new_path = format!("{};{}", dir.display(), effective_path_string());
+        let mut command = if tool_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("cmd") || s.eq_ignore_ascii_case("bat"))
+        {
+            let shell_path = windows_shell_compatible_path(&tool_path);
+            let escaped = shell_path.to_string_lossy().replace('%', "%%%%");
+            let mut command = Command::new(windows_system_executable("cmd.exe"));
+            command
+                .args(["/D", "/S", "/C"])
+                .raw_arg(format!("call \"{escaped}\" {}", args.join(" ")));
+            command
+        } else {
+            let mut command = Command::new(&tool_path);
+            command.args(args);
+            command
+        };
+        command
+            .env("PATH", new_path)
+            .creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut command = {
+        let mut command = Command::new(&tool_path);
+        command.args(args).env(
+            "PATH",
+            prepend_search_dir_to_path(dir, &effective_path_os().unwrap_or_default()),
+        );
+        isolate_child_process_group(&mut command);
+        command
+    };
+    let remaining = timeout
+        .map(|limit| {
+            limit
+                .checked_sub(started.elapsed())
+                .ok_or_else(|| "Tool lookup timed out".to_string())
+        })
+        .transpose()?;
+    command
+        .current_dir(working_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Failed to run {tool}: {error}"))?;
+    wait_child_output(child, remaining)
+}
+
+pub(crate) fn local_tool_version(tool: &str) -> Option<String> {
+    let output = run_detected_tool_command_with_timeout(
+        tool,
+        &["--version"],
+        Some(CLI_PROBE_TIMEOUT),
+        &[],
+        &crate::config::get_home_dir(),
+    )
+    .ok()?;
+    output
+        .status
+        .success()
+        .then(|| extract_version(&decode_command_output(&output.stdout)))
 }

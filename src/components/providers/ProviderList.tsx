@@ -1,17 +1,5 @@
-import { CSS } from "@dnd-kit/utilities";
-import { DndContext, closestCenter } from "@dnd-kit/core";
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import type { AppModeView } from "@/types/proxy";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, Plus, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -22,7 +10,7 @@ import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { claudeDesktopApi } from "@/lib/api/claudeDesktop";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { useDragSort } from "@/hooks/useDragSort";
+import { sortProvidersByName } from "@/utils/providerSort";
 import {
   useOpenClawLiveProviderIds,
   useOpenClawDefaultModel,
@@ -52,6 +40,10 @@ import { settingsApi } from "@/lib/api/settings";
 import { invalidatePiProviderCaches } from "@/lib/query/pi";
 
 interface ProviderListProps {
+  modeView?: AppModeView;
+  modePending?: boolean;
+  onAggregationMember?: (id: string, enabled: boolean) => void;
+  onAggregationDefault?: (id: string) => void;
   providers: Record<string, Provider>;
   currentProviderId: string;
   appId: AppId;
@@ -74,6 +66,10 @@ interface ProviderListProps {
 }
 
 export function ProviderList({
+  modeView,
+  modePending,
+  onAggregationMember,
+  onAggregationDefault,
   providers,
   currentProviderId,
   appId,
@@ -96,29 +92,29 @@ export function ProviderList({
 }: ProviderListProps) {
   const { t } = useTranslation();
   const { checkProvider, isChecking } = useStreamCheck(appId);
-  const { sortedProviders, sensors, handleDragEnd } = useDragSort(
-    providers,
-    appId,
+  const sortedProviders = useMemo(
+    () => sortProvidersByName(Object.values(providers)),
+    [providers],
   );
 
-  const { data: opencodeLiveIds } = useQuery({
+  const { data: opencodeLiveIds, isPending: opencodeLivePending } = useQuery({
     queryKey: ["opencodeLiveProviderIds"],
     queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
     enabled: appId === "opencode",
   });
 
-  const { data: piLiveIds } = useQuery({
+  const { data: piLiveIds, isPending: piLivePending } = useQuery({
     queryKey: ["piLiveProviderIds"],
     queryFn: () => providersApi.getPiLiveProviderIds(),
     enabled: appId === "pi",
   });
 
   // OpenClaw: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
-  const { data: openclawLiveIds } = useOpenClawLiveProviderIds(
+  const { data: openclawLiveIds, isPending: openclawLivePending } = useOpenClawLiveProviderIds(
     appId === "openclaw",
   );
 
-  const { data: hermesLiveIds } = useHermesLiveProviderIds(appId === "hermes");
+  const { data: hermesLiveIds, isPending: hermesLivePending } = useHermesLiveProviderIds(appId === "hermes");
   const { data: hermesModelConfig } = useHermesModelConfig(appId === "hermes");
   const hermesCurrentProviderId = hermesModelConfig?.provider;
 
@@ -165,12 +161,9 @@ export function ProviderList({
   );
 
   // 故障转移相关
-  const supportsFailover = ![
-    "opencode",
-    "openclaw",
-    "hermes",
-    "pi",
-  ].includes(appId);
+  const supportsFailover = !["opencode", "openclaw", "hermes", "pi"].includes(
+    appId,
+  );
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(
     appId,
     supportsFailover,
@@ -180,7 +173,9 @@ export function ProviderList({
   const removeFromQueue = useRemoveFromFailoverQueue();
 
   const isFailoverModeActive =
-    isProxyTakeover === true && isAutoFailoverEnabled === true;
+    modeView?.mode !== "aggregation" &&
+    isProxyTakeover === true &&
+    isAutoFailoverEnabled === true;
 
   const isOpenCode = appId === "opencode";
   const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
@@ -372,7 +367,8 @@ export function ProviderList({
     return messages;
   }, [appId, claudeDesktopStatus, t]);
 
-  if (isLoading) {
+  const membershipPending = (appId === "opencode" && opencodeLivePending) || (appId === "openclaw" && openclawLivePending) || (appId === "hermes" && hermesLivePending) || (appId === "pi" && piLivePending);
+  if (isLoading || (membershipPending && sortedProviders.length > 0)) {
     return (
       <div className="space-y-3">
         {[0, 1, 2].map((index) => (
@@ -390,84 +386,97 @@ export function ProviderList({
       <ProviderEmptyState
         appId={appId}
         onCreate={onCreate}
-        onImport={
-          appId === "mcode" ? undefined : () => importMutation.mutate()
-        }
+        onImport={appId === "mcode" ? undefined : () => importMutation.mutate()}
       />
     );
   }
 
   const renderProviderList = () => (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={handleDragEnd}
-    >
-      <SortableContext
-        items={filteredProviders.map((provider) => provider.id)}
-        strategy={verticalListSortingStrategy}
-      >
-        <div className="space-y-4">
-          {filteredProviders.map((provider) => {
-            const isOmo = provider.category === "omo";
-            const isOmoSlim = provider.category === "omo-slim";
-            const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
-            const isOmoSlimCurrent =
-              isOmoSlim && provider.id === (currentOmoSlimId || "");
-            const isHermesCurrent =
-              appId === "hermes" && hermesCurrentProviderId === provider.id;
-            return (
-              <SortableProviderCard
-                key={provider.id}
-                provider={provider}
-                isCurrent={
-                  isOmo
-                    ? isOmoCurrent
-                    : isOmoSlim
-                      ? isOmoSlimCurrent
-                      : appId === "hermes"
-                        ? isHermesCurrent
-                        : provider.id === currentProviderId
-                }
-                appId={appId}
-                isInConfig={isProviderInConfig(provider.id)}
-                isOmo={isOmo}
-                isOmoSlim={isOmoSlim}
-                onSwitch={onSwitch}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                onRemoveFromConfig={onRemoveFromConfig}
-                onDisableOmo={onDisableOmo}
-                onDisableOmoSlim={onDisableOmoSlim}
-                onDuplicate={onDuplicate}
-                onConfigureUsage={onConfigureUsage}
-                onOpenWebsite={onOpenWebsite}
-                onOpenTerminal={onOpenTerminal}
-                onTest={handleTest}
-                isTesting={isChecking(provider.id)}
-                isProxyRunning={isProxyRunning}
-                isProxyTakeover={isProxyTakeover}
-                isAutoFailoverEnabled={isFailoverModeActive}
-                failoverPriority={getFailoverPriority(provider.id)}
-                isInFailoverQueue={isInFailoverQueue(provider.id)}
-                onToggleFailover={(enabled) =>
-                  handleToggleFailover(provider.id, enabled)
-                }
-                activeProviderId={activeProviderId}
-                isDefaultModel={
-                  appId === "hermes"
+    <div className="space-y-4">
+      {filteredProviders.map((provider) => {
+        const isOmo = provider.category === "omo";
+        const isOmoSlim = provider.category === "omo-slim";
+        const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
+        const isOmoSlimCurrent =
+          isOmoSlim && provider.id === (currentOmoSlimId || "");
+        const isHermesCurrent =
+          appId === "hermes" && hermesCurrentProviderId === provider.id;
+        return (
+          <ProviderCard
+            key={provider.id}
+            provider={provider}
+            isCurrent={
+              isOmo
+                ? isOmoCurrent
+                : isOmoSlim
+                  ? isOmoSlimCurrent
+                  : appId === "hermes"
                     ? isHermesCurrent
-                    : isProviderDefaultModel(provider.id)
-                }
-                onSetAsDefault={
-                  onSetAsDefault ? () => onSetAsDefault(provider) : undefined
-                }
-              />
-            );
-          })}
-        </div>
-      </SortableContext>
-    </DndContext>
+                    : provider.id === currentProviderId
+            }
+            appId={appId}
+            isInConfig={isProviderInConfig(provider.id)}
+            isOmo={isOmo}
+            isOmoSlim={isOmoSlim}
+            onSwitch={onSwitch}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            onRemoveFromConfig={onRemoveFromConfig}
+            onDisableOmo={onDisableOmo}
+            onDisableOmoSlim={onDisableOmoSlim}
+            onDuplicate={onDuplicate}
+            onConfigureUsage={onConfigureUsage ?? (() => undefined)}
+            onOpenWebsite={onOpenWebsite}
+            onOpenTerminal={onOpenTerminal}
+            onTest={handleTest}
+            isTesting={isChecking(provider.id)}
+            isProxyRunning={isProxyRunning}
+            isProxyTakeover={isProxyTakeover}
+            deleteDisabled={
+              provider.id === modeView?.directProviderId ||
+              (provider.id === modeView?.routeProviderId &&
+                modeView?.mode !== "direct")
+            }
+            aggregation={
+              modeView?.mode === "aggregation"
+                ? {
+                    member: modeView.aggregation.members.some(
+                      (m) => m.providerId === provider.id,
+                    ),
+                    default: provider.id === modeView.routeProviderId,
+                    disabled:
+                      modePending ||
+                      !modeView.eligibleProviderIds.includes(provider.id),
+                    onToggle: () =>
+                      onAggregationMember?.(
+                        provider.id,
+                        !modeView.aggregation.members.some(
+                          (m) => m.providerId === provider.id,
+                        ),
+                      ),
+                    onDefault: () => onAggregationDefault?.(provider.id),
+                  }
+                : undefined
+            }
+            isAutoFailoverEnabled={isFailoverModeActive}
+            failoverPriority={getFailoverPriority(provider.id)}
+            isInFailoverQueue={isInFailoverQueue(provider.id)}
+            onToggleFailover={(enabled) =>
+              handleToggleFailover(provider.id, enabled)
+            }
+            activeProviderId={activeProviderId}
+            isDefaultModel={
+              appId === "hermes"
+                ? isHermesCurrent
+                : isProviderDefaultModel(provider.id)
+            }
+            onSetAsDefault={
+              onSetAsDefault ? () => onSetAsDefault(provider) : undefined
+            }
+          />
+        );
+      })}
+    </div>
   );
 
   return (
@@ -675,123 +684,6 @@ export function ProviderList({
           setShowStreamCheckConfirm(false);
           setPendingTestProvider(null);
         }}
-      />
-    </div>
-  );
-}
-
-interface SortableProviderCardProps {
-  provider: Provider;
-  isCurrent: boolean;
-  appId: AppId;
-  isInConfig: boolean;
-  isOmo: boolean;
-  isOmoSlim: boolean;
-  onSwitch: (provider: Provider) => void;
-  onEdit: (provider: Provider) => void;
-  onDelete: (provider: Provider) => void;
-  onRemoveFromConfig?: (provider: Provider) => void;
-  onDisableOmo?: () => void;
-  onDisableOmoSlim?: () => void;
-  onDuplicate: (provider: Provider) => void;
-  onConfigureUsage?: (provider: Provider) => void;
-  onOpenWebsite: (url: string) => void;
-  onOpenTerminal?: (provider: Provider) => void;
-  onTest?: (provider: Provider) => void;
-  isTesting: boolean;
-  isProxyRunning: boolean;
-  isProxyTakeover: boolean;
-  isAutoFailoverEnabled: boolean;
-  failoverPriority?: number;
-  isInFailoverQueue: boolean;
-  onToggleFailover: (enabled: boolean) => void;
-  activeProviderId?: string;
-  // OpenClaw: default model
-  isDefaultModel?: boolean;
-  onSetAsDefault?: () => void;
-}
-
-function SortableProviderCard({
-  provider,
-  isCurrent,
-  appId,
-  isInConfig,
-  isOmo,
-  isOmoSlim,
-  onSwitch,
-  onEdit,
-  onDelete,
-  onRemoveFromConfig,
-  onDisableOmo,
-  onDisableOmoSlim,
-  onDuplicate,
-  onConfigureUsage,
-  onOpenWebsite,
-  onOpenTerminal,
-  onTest,
-  isTesting,
-  isProxyRunning,
-  isProxyTakeover,
-  isAutoFailoverEnabled,
-  failoverPriority,
-  isInFailoverQueue,
-  onToggleFailover,
-  activeProviderId,
-  isDefaultModel,
-  onSetAsDefault,
-}: SortableProviderCardProps) {
-  const {
-    setNodeRef,
-    attributes,
-    listeners,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: provider.id });
-
-  const style: CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      <ProviderCard
-        provider={provider}
-        isCurrent={isCurrent}
-        appId={appId}
-        isInConfig={isInConfig}
-        isOmo={isOmo}
-        isOmoSlim={isOmoSlim}
-        onSwitch={onSwitch}
-        onEdit={onEdit}
-        onDelete={onDelete}
-        onRemoveFromConfig={onRemoveFromConfig}
-        onDisableOmo={onDisableOmo}
-        onDisableOmoSlim={onDisableOmoSlim}
-        onDuplicate={onDuplicate}
-        onConfigureUsage={
-          onConfigureUsage ? (item) => onConfigureUsage(item) : () => undefined
-        }
-        onOpenWebsite={onOpenWebsite}
-        onOpenTerminal={onOpenTerminal}
-        onTest={onTest}
-        isTesting={isTesting}
-        isProxyRunning={isProxyRunning}
-        isProxyTakeover={isProxyTakeover}
-        dragHandleProps={{
-          attributes,
-          listeners,
-          isDragging,
-        }}
-        isAutoFailoverEnabled={isAutoFailoverEnabled}
-        failoverPriority={failoverPriority}
-        isInFailoverQueue={isInFailoverQueue}
-        onToggleFailover={onToggleFailover}
-        activeProviderId={activeProviderId}
-        // OpenClaw: default model
-        isDefaultModel={isDefaultModel}
-        onSetAsDefault={onSetAsDefault}
       />
     </div>
   );

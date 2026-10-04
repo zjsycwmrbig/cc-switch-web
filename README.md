@@ -6,6 +6,8 @@
 
 CC Switch Web 是 [cc-switch](https://github.com/farion1231/cc-switch) 的 Web 分支仓库，用于承载 CC Switch 的 Web 方向实现与分支定制。
 
+CC Switch Web 不展示供应商的赞助商或合作伙伴标签、徽章、星标、心形或特殊高亮，也不因身份置顶。供应商和预设列表统一按显示名称 A–Z 排序（忽略大小写），不提供手动拖拽排名；故障转移队列仍按实际路由优先级执行。
+
 架构与定位：
 
 - 前端：Web
@@ -86,6 +88,22 @@ docker run -d --name cc-switch-web \
 ## 当前版本
 
 当前仓库版本为 `2.2.0`。本版本新增 MiniMax Code 应用与 Claude 按角色的模型映射，完成会话用量增量扫描与订阅用量、Codex OAuth 共享 workspace 账号隔离，并同步上游最新 Provider 预设与代理协议修复。逐版变更明细和本轮上游迁移记录见 `CHANGELOG.md` 与 `docs-dev/web-parity-post-fd14f9c4-2026-09.md`。
+
+本工作树已完成上游 `f8788719..a189980f`（v4.0.0）适用内容的迁移，尚未发布，仓库版本仍为 `2.2.0`。195 项提交中，176 项已迁移或按 Web 实现适配，19 项属于桌面、发行、文档布局或与 Web 约束不适用的内容。处置与定向验证记录见 [迁移台账](docs-dev/web-parity-post-f8788719-2026-10.md)。
+
+全局侧栏提供 MCP、Skills、提示词、统一供应商、会话、用量、账号、应用及设置入口；展开不会挤压正文，手机使用抽屉。账号中心显示 Copilot、ChatGPT 和 xAI 的账号、额度及引用关系，删除前列出受影响供应商。托管 ChatGPT 模型可直接拉取；Copilot Enterprise 域名登录仍不支持。Hermes 记忆页为两个文件分别保留草稿。操作说明及 API 见 [全局页面与资源管理](docs/web-global-resources-guide-zh.md)。
+
+Claude Code、Codex、Gemini、Grok Build 使用关键字段写入与三方冲突编辑器；切换保留全局设置，编辑全局字段保存后立即生效。旧通用片段不再合并或整份回填。Codex 配置、登录暂存、模型目录和账号标记共同提交；Gemini 双文件共同提交且不改 OAuth 文件；Grok 按写入记录清理旧模型表。Claude Desktop 使用独立 profile，仅修改网关字段。状态与首写备份位于 Web 数据目录（默认 `~/.cc-switch-web`）；JSON 首写可能规范化空白和转义，TOML/dotenv 保留未改部分的格式和注释。
+
+浏览器支持直连、路由及 Claude/Codex 聚合。直连指针与代理默认路由独立，正常退出恢复客户端直连、下次启动恢复模式。Codex 官方路由保持原会话桶，支持压缩摘要回放、有界状态重试和目录刷新；Gemini 切换后提示重启。详见 [路由说明](docs/claude-codex-routing-guide-zh.md)。
+
+用量页支持热力图、20 条分页、精确/估算速度和最近扫描时间；订阅额度显示剩余量、重置倒计时及刷新反馈，ChatGPT 显示保存的限额重置次数和到期日。新请求不再应用费用倍率，历史账单保持原口径；models.dev 默认自动同步价格，并保留已保存的关闭设置。
+
+MCP 编辑器支持结构化字段、密文掩码和多服务器粘贴；MCP/Skills 批量开关只影响筛选结果并提供撤销，重新同步逐应用报告结果。Skills 展示逐仓库失败和 ZIP 跳过原因，区分自动/符号链接/复制同步，长列表按需渲染。提示词可复制为其他应用的独立未启用记录。
+
+应用页支持九种 CLI 的安装/升级、来源冲突确认及跨页任务状态；操作作用于服务主机。会话阅读器支持九来源的结构化轮次、工具、Diff、按需图片/输出、全文检索、Markdown 下载及 Token/费用汇总。浏览器中的路径属于服务主机。
+
+同步 88API、Tu-zi、Command Code 等预设与 GPT-6.1 Sol 定价。MiniMax Code 支持自选标识并拒绝覆盖重名；Pi 支持结构化模型编辑和能力补全。多应用模型参数按 API 地址匹配预设与 models.dev，只填空缺；OpenCode JSONC 编辑保留注释、未知字段并检测外部改动。
 
 仓库以 `0.1.0` 作为 Web 分支的初始发布基线，此前继承的历史发布记录已移除，更早历史请以上游项目为准。
 

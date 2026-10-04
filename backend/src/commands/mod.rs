@@ -9,6 +9,7 @@ mod hermes;
 mod import_export;
 mod mcp;
 mod misc;
+pub(crate) mod tool_management;
 mod model_fetch;
 mod omo;
 mod openclaw;

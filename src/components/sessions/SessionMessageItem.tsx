@@ -36,16 +36,16 @@ export const SessionMessageItem = memo(function SessionMessageItem({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
-  const isLong = message.content.length > COLLAPSE_THRESHOLD;
+  const isLong = (message.content ?? "").length > COLLAPSE_THRESHOLD;
   const hasSearchMatch =
     isLong &&
     !expanded &&
     !!searchQuery &&
-    message.content.toLowerCase().includes(searchQuery.toLowerCase());
+    (message.content ?? "").toLowerCase().includes(searchQuery.toLowerCase());
   const collapsed = isLong && !expanded && !hasSearchMatch;
   const displayContent = collapsed
-    ? `${message.content.slice(0, COLLAPSED_LENGTH)}...`
-    : message.content;
+    ? `${(message.content ?? "").slice(0, COLLAPSED_LENGTH)}...`
+    : (message.content ?? "");
 
   return (
     <div
@@ -65,7 +65,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
             variant="ghost"
             size="icon"
             className="absolute top-2 right-2 size-7 rounded-xl opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
-            onClick={() => onCopy(message.content)}
+            onClick={() => onCopy((message.content ?? ""))}
           >
             <Copy className="size-3" />
           </Button>
@@ -117,7 +117,7 @@ export const SessionMessageItem = memo(function SessionMessageItem({
                 defaultValue: "展开完整内容",
               })}
               <span className="text-muted-foreground/60">
-                ({Math.round(message.content.length / 1000)}k)
+                ({Math.round((message.content ?? "").length / 1000)}k)
               </span>
             </>
           )}

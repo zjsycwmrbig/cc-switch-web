@@ -4,7 +4,7 @@
  * 与后端 `backend/src/services/coding_plan.rs::detect_provider` 保持一致：
  * 后端靠 `url.contains(...)` 做子串判断（MiniMax 例外，按 host 标签匹配），
  * 前端这里用 RegExp 做同效匹配。Web 后端目前支持 Kimi / 智谱 / MiniMax /
- * OpenCode Go 四类，新增供应商时改这一处即可（UsageScriptModal 下拉 +
+ * OpenCode Go / Command Code 五类，新增供应商时改这一处即可（UsageScriptModal 下拉 +
  * useProviderActions 新建自动注入复用）。
  */
 import type { UsageScript } from "@/types";
@@ -13,7 +13,7 @@ import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 
 export interface CodingPlanProviderEntry {
   /** 与 `meta.usage_script.codingPlanProvider` 取值对齐 */
-  id: "kimi" | "zhipu" | "minimax" | "opencode_go";
+  id: "kimi" | "zhipu" | "minimax" | "opencode_go" | "command_code";
   /** UsageScriptModal 下拉显示用 */
   label: string;
   /** base_url 匹配规则 */
@@ -42,6 +42,11 @@ export const CODING_PLAN_PROVIDERS: readonly CodingPlanProviderEntry[] = [
     id: "opencode_go",
     label: "OpenCode Go",
     pattern: /opencode\.ai\/zen\/go/i,
+  },
+  {
+    id: "command_code",
+    label: "Command Code",
+    pattern: /api\.commandcode\.ai\/provider(?:[/?#]|$)/i,
   },
 ] as const;
 
@@ -97,7 +102,7 @@ export function extractBaseUrlForUsageDetection(
  *
  * - 仅在 `meta.usage_script` 完全缺失时注入，不覆盖已有配置
  * - Claude app 命中任意 Coding Plan 供应商都注入；其余 app
- *   （claude-desktop/codex/opencode/pi）仅对 OpenCode Go 注入
+ *   仅对 OpenCode Go 注入，Codex 额外支持 Command Code
  * - code 置空：后端走专用 `coding_plan::get_coding_plan_quota`，不执行 JS 脚本
  */
 export function injectCodingPlanUsageScript<
@@ -114,7 +119,11 @@ export function injectCodingPlanUsageScript<
   );
   const codingPlanProvider = detectCodingPlanProvider(baseUrl);
   if (!codingPlanProvider) return provider;
-  if (appId !== "claude" && codingPlanProvider !== "opencode_go") {
+  if (
+    appId !== "claude" &&
+    codingPlanProvider !== "opencode_go" &&
+    !(appId === "codex" && codingPlanProvider === "command_code")
+  ) {
     return provider;
   }
 

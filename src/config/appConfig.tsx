@@ -44,6 +44,9 @@ export const SKILLS_APP_IDS = [
   "pi",
 ] as const satisfies readonly AppId[];
 
+export const MCP_APP_IDS = MCP_SKILLS_APP_IDS;
+export type McpAppId = (typeof MCP_APP_IDS)[number];
+
 export function getAppLabel(appId: string): string {
   return APP_ICON_MAP[appId as AppId]?.label ?? appId;
 }
@@ -124,3 +127,5 @@ export const APP_ICON_MAP: Record<AppId, AppConfig> = {
     badgeClass: "theme-chip-primary border-0 gap-1.5",
   },
 };
+
+export const DEFAULT_VISIBLE_APPS: import("@/types").VisibleApps = { claude: true, "claude-desktop": true, codex: true, gemini: true, grokbuild: true, opencode: true, openclaw: true, hermes: true, pi: true, mcode: true };

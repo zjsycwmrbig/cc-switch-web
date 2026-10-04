@@ -87,6 +87,7 @@ export const CodexAuthSection: React.FC<CodexAuthSectionProps> = ({
 };
 
 interface CodexConfigSectionProps {
+  keyFieldMode?: boolean;
   value: string;
   onChange: (value: string) => void;
   useCommonConfig: boolean;
@@ -100,6 +101,7 @@ interface CodexConfigSectionProps {
  * CodexConfigSection - Config TOML editor section
  */
 export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
+  keyFieldMode = false,
   value,
   onChange,
   useCommonConfig,
@@ -222,27 +224,36 @@ export const CodexConfigSection: React.FC<CodexConfigSectionProps> = ({
           {t("codexConfig.configToml")}
         </label>
 
-        <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-          <input
-            type="checkbox"
-            checked={useCommonConfig}
-            onChange={(e) => onCommonConfigToggle(e.target.checked)}
-            className="w-4 h-4 text-primary bg-white dark:bg-gray-800 border-border-default rounded focus:ring-ring focus:ring-2"
-          />
-          {t("codexConfig.writeCommonConfig")}
-        </label>
+        {!keyFieldMode && (
+          <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={useCommonConfig}
+              onChange={(e) => onCommonConfigToggle(e.target.checked)}
+              className="w-4 h-4 text-primary bg-white dark:bg-gray-800 border-border-default rounded focus:ring-ring focus:ring-2"
+            />
+            {t("codexConfig.writeCommonConfig")}
+          </label>
+        )}
       </div>
 
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onEditCommonConfig}
-          className="text-xs text-primary hover:underline"
-        >
-          {t("codexConfig.editCommonConfig")}
-        </button>
-      </div>
+      {!keyFieldMode && (
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={onEditCommonConfig}
+            className="text-xs text-primary hover:underline"
+          >
+            {t("codexConfig.editCommonConfig")}
+          </button>
+        </div>
+      )}
 
+      {keyFieldMode && (
+        <p className="text-xs text-muted-foreground">
+          {t("codexConfig.keyFieldScope")}
+        </p>
+      )}
       {commonConfigError && (
         <p className="text-xs text-red-500 dark:text-red-400 text-right">
           {commonConfigError}

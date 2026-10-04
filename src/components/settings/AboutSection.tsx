@@ -35,7 +35,7 @@ interface ToolVersion {
   wsl_distro: string | null;
 }
 
-const TOOL_NAMES = ["claude", "codex", "gemini", "opencode"] as const;
+const TOOL_NAMES = ["claude", "codex", "gemini", "mcode", "opencode"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
 
 type WslShellPreference = {
@@ -75,6 +75,8 @@ curl -fsSL https://claude.ai/install.sh | bash
 npm i -g @openai/codex@latest
 # Gemini CLI
 npm i -g @google/gemini-cli@latest
+# MiniMax Code
+npm i -g @minimax-ai/code@latest --ignore-scripts=false --include=optional "--allow-scripts=@minimax-ai/code,better-sqlite3"
 # OpenCode
 curl -fsSL https://opencode.ai/install | bash`;
 
@@ -379,9 +381,13 @@ export function AboutSection() {
               className="h-8 gap-1.5 text-xs"
             >
               <RefreshCw
-                className={isChecking ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+                className={
+                  isChecking ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"
+                }
               />
-              {isChecking ? t("settings.checking") : t("settings.checkLatestRelease")}
+              {isChecking
+                ? t("settings.checking")
+                : t("settings.checkLatestRelease")}
             </Button>
             <Button
               type="button"
@@ -455,7 +461,9 @@ export function AboutSection() {
               const displayName =
                 toolName === "opencode"
                   ? "OpenCode"
-                  : toolName.charAt(0).toUpperCase() + toolName.slice(1);
+                  : toolName === "mcode"
+                    ? "MiniMax Code"
+                    : toolName.charAt(0).toUpperCase() + toolName.slice(1);
               const title = tool?.version || tool?.error || t("common.unknown");
 
               return (

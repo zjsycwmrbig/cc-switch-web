@@ -14,6 +14,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: 1750000000000 }),
   useQueryClient: () => ({ invalidateQueries }),
 }));
 
@@ -66,6 +67,7 @@ describe("UsageDashboard 会话扫描模式", () => {
     );
 
     expect(screen.queryByText("usage.sessionSync.syncNow")).toBeNull();
+    expect(screen.getByText("usage.lastSessionScan")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("switch", { name: "usage.sessionSync.title" }),
     );

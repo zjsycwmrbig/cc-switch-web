@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { renderHook } from "@testing-library/react";
 import { useCodexOauthQuotaByAccountId } from "@/lib/query/subscription";
 
 const useQuery = vi.hoisted(() => vi.fn((options: unknown) => options));
@@ -14,10 +15,12 @@ describe("useCodexOauthQuotaByAccountId", () => {
   });
 
   it("按配置分钟数设置自动轮询和缓存时效", () => {
-    useCodexOauthQuotaByAccountId("account-1", {
-      autoQuery: true,
-      autoQueryIntervalMinutes: 12,
-    });
+    renderHook(() =>
+      useCodexOauthQuotaByAccountId("account-1", {
+        autoQuery: true,
+        autoQueryIntervalMinutes: 12,
+      }),
+    );
 
     expect(useQuery).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -30,10 +33,12 @@ describe("useCodexOauthQuotaByAccountId", () => {
   });
 
   it("间隔为 0 时关闭自动轮询和窗口聚焦刷新", () => {
-    useCodexOauthQuotaByAccountId("account-1", {
-      autoQuery: true,
-      autoQueryIntervalMinutes: 0,
-    });
+    renderHook(() =>
+      useCodexOauthQuotaByAccountId("account-1", {
+        autoQuery: true,
+        autoQueryIntervalMinutes: 0,
+      }),
+    );
 
     expect(useQuery).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -45,10 +50,12 @@ describe("useCodexOauthQuotaByAccountId", () => {
   });
 
   it("正数间隔最小按 1 分钟处理", () => {
-    useCodexOauthQuotaByAccountId("account-1", {
-      autoQuery: true,
-      autoQueryIntervalMinutes: 0.5,
-    });
+    renderHook(() =>
+      useCodexOauthQuotaByAccountId("account-1", {
+        autoQuery: true,
+        autoQueryIntervalMinutes: 0.5,
+      }),
+    );
 
     expect(useQuery).toHaveBeenCalledWith(
       expect.objectContaining({

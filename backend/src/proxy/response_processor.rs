@@ -4,11 +4,11 @@
 
 use super::{
     content_encoding::{decompress_body_with_limit, get_content_encoding, DecompressError},
-    handler_config::UsageParserConfig,
+    handler_config::{StreamUsageEventFilter, UsageParserConfig},
     handler_context::{RequestContext, StreamingTimeoutConfig},
     hyper_client::{ProxyResponse, MAX_RESPONSE_BODY_BYTES},
     server::ProxyState,
-    sse::strip_sse_field,
+    sse::{strip_sse_field, take_sse_block},
     usage::parser::TokenUsage,
     ProxyError,
 };
@@ -20,7 +20,7 @@ use serde_json::Value;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -97,10 +97,13 @@ pub(crate) async fn read_decoded_body(
 // 公共接口
 // ============================================================================
 
-/// 检测响应是否为 SSE 流式响应
+/// 优先尊重上游声明的类型；仅对成功且缺类型头的流式请求补判为 SSE。
 #[inline]
-pub fn is_sse_response(response: &ProxyResponse) -> bool {
+pub fn is_sse_response(response: &ProxyResponse, request_is_stream: bool) -> bool {
     response.is_sse()
+        || (request_is_stream
+            && response.status().is_success()
+            && response.content_type().is_none())
 }
 
 /// 处理流式响应
@@ -259,8 +262,9 @@ pub async fn process_response(
     ctx: &RequestContext,
     state: &ProxyState,
     parser_config: &UsageParserConfig,
+    request_is_stream: bool,
 ) -> Result<Response, ProxyError> {
-    if is_sse_response(&response) {
+    if is_sse_response(&response, request_is_stream) {
         Ok(handle_streaming(response, ctx, state, parser_config).await)
     } else {
         handle_non_streaming(response, ctx, state, parser_config).await
@@ -281,39 +285,56 @@ pub struct SseUsageCollector {
 
 struct SseUsageCollectorInner {
     events: Mutex<Vec<Value>>,
-    first_event_time: Mutex<Option<std::time::Instant>>,
+    first_output_time: OnceLock<std::time::Instant>,
     start_time: std::time::Instant,
     on_complete: UsageCallbackWithTiming,
+    should_collect: Option<StreamUsageEventFilter>,
     finished: AtomicBool,
 }
 
 impl SseUsageCollector {
-    /// 创建新的使用量收集器
+    /// 创建使用量收集器；`should_collect` 用来在 hot path 跳过与 usage 无关的事件。
     pub fn new(
         start_time: std::time::Instant,
+        should_collect: Option<StreamUsageEventFilter>,
         callback: impl Fn(Vec<Value>, Option<u64>) + Send + Sync + 'static,
     ) -> Self {
         let on_complete: UsageCallbackWithTiming = Arc::new(callback);
         Self {
             inner: Arc::new(SseUsageCollectorInner {
                 events: Mutex::new(Vec::new()),
-                first_event_time: Mutex::new(None),
+                first_output_time: OnceLock::new(),
                 start_time,
                 on_complete,
+                should_collect,
                 finished: AtomicBool::new(false),
             }),
         }
     }
 
+    pub fn should_collect(&self, data: &str) -> bool {
+        self.inner
+            .should_collect
+            .map(|filter| filter(data))
+            .unwrap_or(true)
+    }
+
+    /// 观察一行 SSE data，记下首个输出事件的时间（`first_token_ms`）。
+    ///
+    /// 必须对每一行 data 调用，不能只看 usage 过滤器收下的事件：过滤器只挑带
+    /// usage 的事件，上游的开头事件不带 usage 时，首个被收下的就是结尾的
+    /// completed，生成时长被压到几毫秒，TPS 随之虚高。
+    pub fn observe_data(&self, event_name: Option<&str>, data: &str) {
+        if self.inner.first_output_time.get().is_some() {
+            return;
+        }
+        if sse_data_starts_output(event_name, data) {
+            let _ = self.inner.first_output_time.set(std::time::Instant::now());
+        }
+    }
+
     /// 推送 SSE 事件
     pub async fn push(&self, event: Value) {
-        // 记录首个事件时间
-        {
-            let mut first_time = self.inner.first_event_time.lock().await;
-            if first_time.is_none() {
-                *first_time = Some(std::time::Instant::now());
-            }
-        }
         let mut events = self.inner.events.lock().await;
         events.push(event);
     }
@@ -329,12 +350,64 @@ impl SseUsageCollector {
             std::mem::take(&mut *guard)
         };
 
-        let first_token_ms = {
-            let first_time = self.inner.first_event_time.lock().await;
-            first_time.map(|t| (t - self.inner.start_time).as_millis() as u64)
-        };
+        let first_token_ms = self
+            .inner
+            .first_output_time
+            .get()
+            .map(|t| (*t - self.inner.start_time).as_millis() as u64);
 
         (self.inner.on_complete)(events, first_token_ms);
+    }
+}
+
+/// 判断一行 SSE data 是否标志着模型开始输出（口径同 Sub2API 的 semantic TTFT）：
+/// 跳过只宣告响应开始或保活的元数据事件，其余非空事件都算。Chat Completions /
+/// Gemini 的分块没有事件类型，一律算。
+fn sse_data_starts_output(event_name: Option<&str>, data: &str) -> bool {
+    let data = data.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return false;
+    }
+    let event_type = match event_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => name.to_string(),
+        None => serde_json::from_str::<Value>(data)
+            .ok()
+            .and_then(|value| value.get("type")?.as_str().map(str::to_string))
+            .unwrap_or_default(),
+    };
+    !matches!(
+        event_type.as_str(),
+        "response.created" | "response.in_progress" | "ping" | "keepalive"
+    )
+}
+
+struct SseUsageFinishGuard {
+    collector: Option<SseUsageCollector>,
+}
+
+impl SseUsageFinishGuard {
+    fn new(collector: SseUsageCollector) -> Self {
+        Self {
+            collector: Some(collector),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.collector = None;
+    }
+}
+
+impl Drop for SseUsageFinishGuard {
+    fn drop(&mut self) {
+        if let Some(collector) = self.collector.take() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    collector.finish().await;
+                });
+            } else {
+                log::warn!("SSE 用量收尾保护触发时 Tokio runtime 不可用，跳过异步 finish");
+            }
+        }
     }
 }
 
@@ -364,62 +437,66 @@ pub(crate) fn create_usage_collector(
     let model_extractor = parser_config.model_extractor;
     let session_id = ctx.session_id.clone();
 
-    SseUsageCollector::new(start_time, move |events, first_token_ms| {
-        if !logging_enabled {
-            return;
-        }
-        if let Some(usage) = stream_parser(&events) {
-            let model = model_extractor(&events, &request_model);
-            let latency_ms = start_time.elapsed().as_millis() as u64;
+    SseUsageCollector::new(
+        start_time,
+        parser_config.stream_event_filter,
+        move |events, first_token_ms| {
+            if !logging_enabled {
+                return;
+            }
+            if let Some(usage) = stream_parser(&events) {
+                let model = model_extractor(&events, &request_model);
+                let latency_ms = start_time.elapsed().as_millis() as u64;
 
-            let state = state.clone();
-            let provider_id = provider_id.clone();
-            let session_id = session_id.clone();
-            let request_model = request_model.clone();
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let session_id = session_id.clone();
+                let request_model = request_model.clone();
 
-            tokio::spawn(async move {
-                log_usage_internal(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    usage,
-                    latency_ms,
-                    first_token_ms,
-                    true, // is_streaming
-                    status_code,
-                    Some(session_id),
-                )
-                .await;
-            });
-        } else {
-            let model = model_extractor(&events, &request_model);
-            let latency_ms = start_time.elapsed().as_millis() as u64;
-            let state = state.clone();
-            let provider_id = provider_id.clone();
-            let session_id = session_id.clone();
-            let request_model = request_model.clone();
+                tokio::spawn(async move {
+                    log_usage_internal(
+                        &state,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        usage,
+                        latency_ms,
+                        first_token_ms,
+                        true, // is_streaming
+                        status_code,
+                        Some(session_id),
+                    )
+                    .await;
+                });
+            } else {
+                let model = model_extractor(&events, &request_model);
+                let latency_ms = start_time.elapsed().as_millis() as u64;
+                let state = state.clone();
+                let provider_id = provider_id.clone();
+                let session_id = session_id.clone();
+                let request_model = request_model.clone();
 
-            tokio::spawn(async move {
-                log_usage_internal(
-                    &state,
-                    &provider_id,
-                    app_type_str,
-                    &model,
-                    &request_model,
-                    TokenUsage::default(),
-                    latency_ms,
-                    first_token_ms,
-                    true, // is_streaming
-                    status_code,
-                    Some(session_id),
-                )
-                .await;
-            });
-            log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
-        }
-    })
+                tokio::spawn(async move {
+                    log_usage_internal(
+                        &state,
+                        &provider_id,
+                        app_type_str,
+                        &model,
+                        &request_model,
+                        TokenUsage::default(),
+                        latency_ms,
+                        first_token_ms,
+                        true, // is_streaming
+                        status_code,
+                        Some(session_id),
+                    )
+                    .await;
+                });
+                log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
+            }
+        },
+    )
 }
 
 /// 异步记录使用量
@@ -483,8 +560,7 @@ async fn log_usage_internal(
     use super::usage::logger::UsageLogger;
 
     let logger = UsageLogger::new(&state.db);
-    let (multiplier, pricing_model_source) =
-        logger.resolve_pricing_config(provider_id, app_type).await;
+    let pricing_model_source = logger.resolve_pricing_config(app_type).await;
     let pricing_model = if pricing_model_source == "request" {
         request_model
     } else {
@@ -511,7 +587,6 @@ async fn log_usage_internal(
         request_model.to_string(),
         pricing_model.to_string(),
         usage,
-        multiplier,
         latency_ms,
         first_token_ms,
         status_code,
@@ -532,7 +607,11 @@ pub fn create_logged_passthrough_stream(
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let mut buffer = String::new();
+        let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
+        let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
+        let inspect_sse_events =
+            collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
 
         // 超时配置
@@ -583,29 +662,41 @@ pub fn create_logged_passthrough_stream(
                         );
                     }
                     is_first_chunk = false;
-                    let text = String::from_utf8_lossy(&bytes);
-                    buffer.push_str(&text);
+                    if inspect_sse_events {
+                        crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
-                    // 尝试解析并记录完整的 SSE 事件
-                    while let Some(pos) = buffer.find("\n\n") {
-                        let event_text = buffer[..pos].to_string();
-                        buffer = buffer[pos + 2..].to_string();
-
-                        if !event_text.trim().is_empty() {
-                            // 提取 data 部分并尝试解析为 JSON
-                            for line in event_text.lines() {
-                                if let Some(data) = strip_sse_field(line, "data") {
-                                    if data.trim() != "[DONE]" {
-                                        if let Ok(json_value) = serde_json::from_str::<Value>(data) {
-                                            if let Some(c) = &collector {
-                                                c.push(json_value.clone()).await;
-                                            }
-                                            log::debug!("[{tag}] <<< SSE 事件: {data}");
-                                        } else {
-                                            log::debug!("[{tag}] <<< SSE 数据: {data}");
+                        // 尝试解析并记录完整的 SSE 事件
+                        while let Some(event_text) = take_sse_block(&mut buffer) {
+                            if !event_text.trim().is_empty() {
+                                let event_name = event_text
+                                    .lines()
+                                    .find_map(|line| strip_sse_field(line, "event"));
+                                // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
+                                for line in event_text.lines() {
+                                    if let Some(data) = strip_sse_field(line, "data") {
+                                        if let Some(c) = &collector {
+                                            c.observe_data(event_name, data);
                                         }
-                                    } else {
-                                        log::debug!("[{tag}] <<< SSE: [DONE]");
+                                        if data.trim() != "[DONE]" {
+                                            let collected = match &collector {
+                                                Some(c) if c.should_collect(data) => {
+                                                    match serde_json::from_str::<Value>(data) {
+                                                        Ok(json_value) => {
+                                                            c.push(json_value).await;
+                                                            true
+                                                        }
+                                                        Err(_) => false,
+                                                    }
+                                                }
+                                                _ => false,
+                                            };
+                                            log::trace!(
+                                                "[{tag}] <<< SSE data: bytes={}, usage_collected={collected} (content omitted)",
+                                                data.len()
+                                            );
+                                        } else {
+                                            log::debug!("[{tag}] <<< SSE: [DONE]");
+                                        }
                                     }
                                 }
                             }
@@ -628,6 +719,9 @@ pub fn create_logged_passthrough_stream(
 
         if let Some(c) = collector.take() {
             c.finish().await;
+        }
+        if let Some(guard) = &mut finish_guard {
+            guard.disarm();
         }
     }
 }
@@ -657,6 +751,130 @@ mod tests {
     use std::str::FromStr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[test]
+    fn sse_data_starts_output_skips_metadata_events() {
+        assert!(!sse_data_starts_output(
+            Some("response.created"),
+            r#"{"type":"response.created"}"#
+        ));
+        assert!(!sse_data_starts_output(
+            None,
+            r#"{"type":"response.in_progress","response":{}}"#
+        ));
+        assert!(!sse_data_starts_output(Some("ping"), r#"{"type":"ping"}"#));
+        assert!(!sse_data_starts_output(None, "[DONE]"));
+        assert!(!sse_data_starts_output(None, "  "));
+
+        assert!(sse_data_starts_output(
+            Some("response.output_text.delta"),
+            r#"{"type":"response.output_text.delta","delta":"hi"}"#
+        ));
+        assert!(sse_data_starts_output(
+            Some("message_start"),
+            r#"{"type":"message_start"}"#
+        ));
+        // Chat Completions / Gemini 分块没有事件类型
+        assert!(sse_data_starts_output(
+            None,
+            r#"{"choices":[{"delta":{"content":"hi"}}]}"#
+        ));
+    }
+
+    /// 回归：上游 response.created 不带 usage 时，首个被 usage 过滤器收下的是
+    /// 结尾的 completed；首 token 时间必须仍落在首个输出事件上。
+    #[tokio::test]
+    async fn first_token_ms_tracks_first_output_not_first_usage_event() {
+        let start = std::time::Instant::now();
+        let recorded = Arc::new(std::sync::Mutex::new(None));
+        let recorded_in_cb = recorded.clone();
+        let collector = SseUsageCollector::new(
+            start,
+            Some(super::super::handler_config::codex_stream_usage_event_filter),
+            move |events, first_token_ms| {
+                *recorded_in_cb.lock().unwrap() = Some((
+                    events.len(),
+                    first_token_ms,
+                    start.elapsed().as_millis() as u64,
+                ));
+            },
+        );
+
+        let upstream = async_stream::stream! {
+            yield Ok::<_, std::io::Error>(Bytes::from(
+                "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{}}\n\n",
+            ));
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            yield Ok(Bytes::from(
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            ));
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            yield Ok(Bytes::from(
+                "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+            ));
+        };
+        let stream = create_logged_passthrough_stream(
+            upstream,
+            "test",
+            Some(collector),
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+        );
+        futures::pin_mut!(stream);
+        while stream.next().await.is_some() {}
+
+        let (collected, first_token_ms, latency_ms) =
+            recorded.lock().unwrap().expect("collector finished");
+        assert_eq!(collected, 1, "only the completed event carries usage");
+        let first_token_ms = first_token_ms.expect("first output recorded");
+        assert!(first_token_ms >= 50, "first_token_ms={first_token_ms}");
+        assert!(
+            latency_ms >= first_token_ms + 50,
+            "first_token_ms={first_token_ms}, latency_ms={latency_ms}"
+        );
+    }
+
+    fn response_with_content_type(
+        status: http::StatusCode,
+        content_type: Option<&'static str>,
+    ) -> ProxyResponse {
+        let mut headers = HeaderMap::new();
+        if let Some(content_type) = content_type {
+            headers.insert("content-type", content_type.parse().unwrap());
+        }
+        ProxyResponse::buffered(status, headers, Bytes::new())
+    }
+
+    #[test]
+    fn stream_request_without_content_type_is_treated_as_sse() {
+        // chatgpt.com 的 Codex Responses 回包不带 Content-Type。
+        let response = response_with_content_type(http::StatusCode::OK, None);
+        assert!(is_sse_response(&response, true));
+        assert!(!is_sse_response(&response, false));
+    }
+
+    #[test]
+    fn declared_content_type_wins_over_stream_flag() {
+        let sse = response_with_content_type(
+            http::StatusCode::OK,
+            Some("text/event-stream;charset=utf-8"),
+        );
+        assert!(is_sse_response(&sse, false));
+
+        // 网关忽略 stream: true 时回的 JSON（无论标成什么）仍按整包解析用量。
+        for content_type in ["application/json", "text/plain"] {
+            let response = response_with_content_type(http::StatusCode::OK, Some(content_type));
+            assert!(!is_sse_response(&response, true), "{content_type}");
+        }
+    }
+
+    #[test]
+    fn stream_request_error_without_content_type_stays_buffered() {
+        let response = response_with_content_type(http::StatusCode::BAD_REQUEST, None);
+        assert!(!is_sse_response(&response, true));
+    }
 
     #[test]
     fn test_strip_sse_field_accepts_optional_space() {
@@ -745,11 +963,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_log_usage_uses_provider_override_config() -> Result<(), AppError> {
+    async fn test_log_usage_ignores_legacy_provider_pricing_overrides() -> Result<(), AppError> {
         let db = Arc::new(Database::memory()?);
         let app_type = "claude";
 
-        db.set_default_cost_multiplier(app_type, "1.5").await?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "UPDATE proxy_config SET default_cost_multiplier = '1.5' WHERE app_type = ?1",
+                [app_type],
+            )
+            .unwrap();
+        }
         db.set_pricing_model_source(app_type, "response").await?;
         seed_pricing(&db)?;
 
@@ -795,14 +1020,8 @@ mod tests {
 
         assert_eq!(model, "resp-model");
         assert_eq!(request_model, "req-model");
-        assert_eq!(
-            Decimal::from_str(&cost_multiplier).unwrap(),
-            Decimal::from_str("2").unwrap()
-        );
-        assert_eq!(
-            Decimal::from_str(&total_cost).unwrap(),
-            Decimal::from_str("4").unwrap()
-        );
+        assert_eq!(Decimal::from_str(&cost_multiplier).unwrap(), Decimal::ONE);
+        assert_eq!(Decimal::from_str(&total_cost).unwrap(), Decimal::ONE);
         Ok(())
     }
 
@@ -811,7 +1030,14 @@ mod tests {
         let db = Arc::new(Database::memory()?);
         let app_type = "claude";
 
-        db.set_default_cost_multiplier(app_type, "1.5").await?;
+        {
+            let conn = crate::database::lock_conn!(db.conn);
+            conn.execute(
+                "UPDATE proxy_config SET default_cost_multiplier = '1.5' WHERE app_type = ?1",
+                [app_type],
+            )
+            .unwrap();
+        }
         db.set_pricing_model_source(app_type, "response").await?;
         seed_pricing(&db)?;
 
@@ -853,14 +1079,8 @@ mod tests {
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        assert_eq!(
-            Decimal::from_str(&cost_multiplier).unwrap(),
-            Decimal::from_str("1.5").unwrap()
-        );
-        assert_eq!(
-            Decimal::from_str(&total_cost).unwrap(),
-            Decimal::from_str("1.5").unwrap()
-        );
+        assert_eq!(Decimal::from_str(&cost_multiplier).unwrap(), Decimal::ONE);
+        assert_eq!(Decimal::from_str(&total_cost).unwrap(), Decimal::ONE);
         Ok(())
     }
 }

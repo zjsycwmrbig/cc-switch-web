@@ -873,6 +873,7 @@ export function ClaudeDesktopProviderForm({
               </div>
             ) : (
               <ApiKeySection
+                required
                 value={apiKey}
                 onChange={setApiKey}
                 category={apiKeyLinkCategory}

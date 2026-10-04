@@ -26,7 +26,19 @@ import {
   Trash2,
 } from "lucide-react";
 import EndpointSpeedTest from "./EndpointSpeedTest";
-import { ApiKeySection, EndpointField, ModelInputWithFetch } from "./shared";
+import {
+  ApiKeySection,
+  EndpointField,
+  ModelInputWithFetch,
+  ModelDropdown,
+} from "./shared";
+import { useCommittableRef } from "@/hooks/useLatestRef";
+import { useModelMetadataFill } from "@/hooks/useModelMetadataFill";
+import { codexPresetModelSources } from "@/config/presetModelMetadata";
+import {
+  fillCodexCatalogModel,
+  metadataFilledAnything,
+} from "./modelMetadataFill";
 import { XaiOAuthSection } from "./XaiOAuthSection";
 import {
   fetchModelsForConfig,
@@ -271,16 +283,70 @@ export function CodexFormFields({
     !!trimmedModelName &&
     !catalogRows.some((row) => row.model.trim() === trimmedModelName);
 
+  const fillModelMetadata = useModelMetadataFill({
+    baseUrl: codexBaseUrl,
+    presets: codexPresetModelSources,
+    prefetch: fetchedModels.length > 0,
+  });
+  const [catalogRowsRef, commitCatalogRows] = useCommittableRef(
+    catalogRows,
+    setCatalogRows,
+  );
+  const fillCatalogRowMetadata = useCallback(
+    (rowId: string, modelId: string) => {
+      fillModelMetadata(modelId, (metadata) => {
+        const rows = catalogRowsRef.current;
+        const current = rows.find((row) => row.rowId === rowId);
+        if (current?.model.trim() !== modelId) return false;
+        const filled = fillCodexCatalogModel(current, metadata, [
+          "none",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+        ]);
+        if (!metadataFilledAnything(current, filled)) return false;
+        commitCatalogRows(
+          rows.map((row) => (row.rowId === rowId ? filled : row)),
+        );
+        return true;
+      });
+    },
+    [catalogRowsRef, commitCatalogRows, fillModelMetadata],
+  );
+
+  const selectFetchedCatalogModel = (rowId: string, modelId: string) => {
+    commitCatalogRows(
+      catalogRowsRef.current.map((row) =>
+        row.rowId === rowId
+          ? {
+              ...row,
+              model: modelId,
+              displayName: row.displayName?.trim() ? row.displayName : modelId,
+            }
+          : row,
+      ),
+    );
+    fillCatalogRowMetadata(rowId, modelId);
+  };
+
   const handleAddModelToCatalog = useCallback(() => {
     if (!onCatalogModelsChange || !trimmedModelName) return;
-    setCatalogRows((current) => [
-      ...current,
-      createCatalogRow({
-        model: trimmedModelName,
-        displayName: trimmedModelName,
-      }),
-    ]);
-  }, [onCatalogModelsChange, trimmedModelName]);
+    const row = createCatalogRow({
+      model: trimmedModelName,
+      displayName: trimmedModelName,
+    });
+    commitCatalogRows([...catalogRowsRef.current, row]);
+    fillCatalogRowMetadata(row.rowId, trimmedModelName);
+  }, [
+    catalogRowsRef,
+    commitCatalogRows,
+    fillCatalogRowMetadata,
+    onCatalogModelsChange,
+    trimmedModelName,
+  ]);
 
   const supportsThinking =
     codexChatReasoning.supportsThinking === true ||
@@ -403,6 +469,7 @@ export function CodexFormFields({
       {/* Codex API Key 输入框 */}
       {!isXaiOauthPreset && (
         <ApiKeySection
+          required
           id="codexApiKey"
           label="API Key"
           value={codexApiKey}
@@ -703,20 +770,30 @@ export function CodexFormFields({
                       )}
                       aria-label={t("codexConfig.catalogColumnDisplay")}
                     />
-                    <Input
-                      value={row.model}
-                      onChange={(event) =>
-                        setCatalogRows((current) =>
-                          current.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, model: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      placeholder={t("codexConfig.catalogModelPlaceholder")}
-                      aria-label={t("codexConfig.catalogColumnModel")}
-                    />
+                    <div className="flex gap-1">
+                      <Input
+                        value={row.model}
+                        onChange={(event) =>
+                          setCatalogRows((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, model: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        placeholder={t("codexConfig.catalogModelPlaceholder")}
+                        aria-label={t("codexConfig.catalogColumnModel")}
+                      />
+                      {fetchedModels.length > 0 && (
+                        <ModelDropdown
+                          models={fetchedModels}
+                          onSelect={(id) =>
+                            selectFetchedCatalogModel(row.rowId, id)
+                          }
+                        />
+                      )}
+                    </div>
                     <Input
                       type="number"
                       min={1}

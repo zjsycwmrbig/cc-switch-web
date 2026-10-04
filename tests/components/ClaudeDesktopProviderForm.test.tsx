@@ -98,7 +98,7 @@ describe("ClaudeDesktopProviderForm", () => {
     expect(screen.getByDisplayValue("claude-haiku-4-5")).toBeInTheDocument();
 
     await user.clear(screen.getByDisplayValue("claude-sonnet-5"));
-    await user.type(screen.getByLabelText("API Key"), "sk-test");
+    await user.type(screen.getByLabelText("API Key *"), "sk-test");
     await user.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());

@@ -1,4 +1,10 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { getWebSessionUsage } from "@/lib/runtime/client/web";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
 import { usageApi } from "@/lib/api/usage";
 import { resolveUsageRange } from "@/lib/usageRange";
 import type { LogFilters, UsageRangeSelection } from "@/types/usage";
@@ -119,13 +125,14 @@ export function useUsageSummary(
     queryKey: usageKeys.summary(
       range.preset,
       range.customStartDate,
-      range.customEndDate,
+      range.liveEndTime ? undefined : range.customEndDate,
       appType,
     ),
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getUsageSummary(startDate, endDate, effectiveAppType);
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -141,13 +148,14 @@ export function useUsageTrends(
     queryKey: usageKeys.trends(
       range.preset,
       range.customStartDate,
-      range.customEndDate,
+      range.liveEndTime ? undefined : range.customEndDate,
       appType,
     ),
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getUsageTrends(startDate, endDate, effectiveAppType);
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -163,13 +171,14 @@ export function useProviderStats(
     queryKey: usageKeys.providerStats(
       range.preset,
       range.customStartDate,
-      range.customEndDate,
+      range.liveEndTime ? undefined : range.customEndDate,
       appType,
     ),
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getProviderStats(startDate, endDate, effectiveAppType);
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -185,13 +194,14 @@ export function useModelStats(
     queryKey: usageKeys.modelStats(
       range.preset,
       range.customStartDate,
-      range.customEndDate,
+      range.liveEndTime ? undefined : range.customEndDate,
       appType,
     ),
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getModelStats(startDate, endDate, effectiveAppType);
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -207,7 +217,7 @@ export function useRequestLogs({
   const key: RequestLogsKey = {
     preset: range.preset,
     customStartDate: range.customStartDate,
-    customEndDate: range.customEndDate,
+    customEndDate: range.liveEndTime ? undefined : range.customEndDate,
     appType: filters.appType,
     providerName: filters.providerName,
     model: filters.model,
@@ -220,6 +230,7 @@ export function useRequestLogs({
       const effectiveFilters = { ...filters, ...resolveUsageRange(range) };
       return usageApi.getRequestLogs(effectiveFilters, page, pageSize);
     },
+    placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });
@@ -284,3 +295,5 @@ export function useDeleteModelPricing() {
     },
   });
 }
+
+export function useSessionUsageSummary(appType: string, sessionId: string) { return useQuery({ queryKey: ["sessionUsage", appType, sessionId], queryFn: () => getWebSessionUsage(appType, sessionId), refetchInterval: 60_000 }); }

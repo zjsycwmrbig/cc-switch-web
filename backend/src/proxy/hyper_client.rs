@@ -60,7 +60,8 @@ fn global_hyper_client() -> &'static HyperClient {
     static CLIENT: OnceLock<HyperClient> = OnceLock::new();
     CLIENT.get_or_init(|| {
         let connector = HttpsConnectorBuilder::new()
-            .with_webpki_roots()
+            .with_provider_and_webpki_roots(rustls::crypto::ring::default_provider())
+            .expect("ring supports default TLS protocol versions")
             .https_or_http()
             .enable_http1()
             .build();
@@ -544,7 +545,9 @@ fn global_tls_connector() -> &'static tokio_rustls::TlsConnector {
         let native = rustls_native_certs::load_native_certs();
         let (added, _errors) = root_store.add_parsable_certificates(native.certs);
         log::debug!("[HyperClient] TLS root store: webpki + {added} native certs");
-        let config = rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("ring supports default TLS protocol versions")
             .with_root_certificates(root_store)
             .with_no_client_auth();
         tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))

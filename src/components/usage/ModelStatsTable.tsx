@@ -1,3 +1,4 @@
+import { TablePagination, useClientPagination } from "./TablePagination";
 import { useTranslation } from "react-i18next";
 import {
   Table,
@@ -26,6 +27,11 @@ export function ModelStatsTable({
   const { data: stats, isLoading } = useModelStats(range, appType, {
     refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
   });
+
+  const pagination = useClientPagination(
+    stats ?? [],
+    JSON.stringify([range, appType]),
+  );
 
   if (isLoading) {
     return <div className="h-[400px] animate-pulse rounded bg-gray-100" />;
@@ -62,7 +68,7 @@ export function ModelStatsTable({
               </TableCell>
             </TableRow>
           ) : (
-            stats?.map((stat) => (
+            pagination.pageRows.map((stat) => (
               <TableRow key={stat.model}>
                 <TableCell className="font-mono text-sm">
                   {stat.model}
@@ -84,6 +90,7 @@ export function ModelStatsTable({
           )}
         </TableBody>
       </Table>
+      <TablePagination {...pagination} onPageChange={pagination.setPage} />
     </div>
   );
 }

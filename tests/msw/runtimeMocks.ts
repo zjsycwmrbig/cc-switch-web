@@ -1,8 +1,11 @@
-import "cross-fetch/polyfill";
+import fetchPolyfill, { Request } from "cross-fetch";
 import { vi } from "vitest";
 import { server } from "./server";
 
 const RUNTIME_ENDPOINT = "http://runtime.local";
+
+// Keep jsdom's AbortSignal for DOM events and use a compatible fetch implementation.
+Object.assign(globalThis, { fetch: fetchPolyfill, Request });
 
 vi.mock("@/lib/runtime/client/core", () => ({
   invoke: async (command: string, payload: Record<string, unknown> = {}) => {

@@ -8,12 +8,14 @@ import type { Provider } from "@/types";
 const importDefaultMock = vi.hoisted(() => vi.fn());
 const getAllMock = vi.hoisted(() => vi.fn());
 const addMock = vi.hoisted(() => vi.fn());
+const updateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/api", () => ({
   providersApi: {
     importDefault: (...args: unknown[]) => importDefaultMock(...args),
     getAll: (...args: unknown[]) => getAllMock(...args),
     add: (...args: unknown[]) => addMock(...args),
+    update: (...args: unknown[]) => updateMock(...args),
   },
 }));
 
@@ -33,12 +35,36 @@ const officialProvider: Provider = {
 };
 
 describe("useAddProviderMutation", () => {
+  it("passes Claude editor context separately from the stored provider", async () => {
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useAddProviderMutation("claude"), {
+      wrapper,
+    });
+    const editorSave = { base: { hooks: {} }, onConflict: "refuse" as const };
+    await act(async () => {
+      await result.current.mutateAsync({
+        name: "Claude",
+        settingsConfig: { env: {} },
+        editorSave,
+      });
+    });
+    const [row, app, , context] = addMock.mock.calls[0];
+    expect(row).not.toHaveProperty("editorSave");
+    expect(app).toBe("claude");
+    expect(context).toEqual(editorSave);
+  });
   beforeEach(() => {
     importDefaultMock.mockReset().mockResolvedValue(true);
     getAllMock.mockReset().mockResolvedValue({
       "grokbuild-official": officialProvider,
     });
     addMock.mockReset();
+    updateMock.mockReset().mockResolvedValue(true);
   });
 
   it("官方 Grok 预设复用 import-default seed，不创建随机 Provider", async () => {
@@ -68,32 +94,70 @@ describe("useAddProviderMutation", () => {
     expect(created).toEqual(officialProvider);
   });
 
-  it("Hermes 使用 providerKey 作为 Provider ID", async () => {
-    addMock.mockResolvedValue(undefined);
-    const queryClient = new QueryClient({
+  it("official Grok creation saves global edits with the resolved stable row", async () => {
+    const client = new QueryClient({
       defaultOptions: { mutations: { retry: false } },
     });
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
     );
-    const { result } = renderHook(() => useAddProviderMutation("hermes"), {
+    const { result } = renderHook(() => useAddProviderMutation("grokbuild"), {
       wrapper,
     });
-
+    const editorSave = { base: { config: "" }, onConflict: "refuse" as const };
     await act(async () => {
       await result.current.mutateAsync({
-        name: "Hermes Demo",
-        settingsConfig: { base_url: "https://api.example.com/v1" },
-        providerKey: "hermes-demo",
+        name: "Grok",
+        category: "official",
+        settingsConfig: { config: "[ui]\ntheme = 'light'\n" },
+        ensureGrokBuildOfficialSeed: true,
+        editorSave,
       });
     });
-
-    expect(addMock).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "hermes-demo" }),
-      "hermes",
+    expect(updateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "grokbuild-official",
+        settingsConfig: { config: "[ui]\ntheme = 'light'\n" },
+      }),
+      "grokbuild",
       undefined,
+      editorSave,
     );
+    expect(updateMock.mock.calls[0][0]).not.toHaveProperty("editorSave");
+    expect(addMock).not.toHaveBeenCalled();
   });
+
+  it.each(["hermes", "mcode"] as const)(
+    "%s 使用 providerKey 作为 Provider ID",
+    async (appId) => {
+      addMock.mockResolvedValue(undefined);
+      const queryClient = new QueryClient({
+        defaultOptions: { mutations: { retry: false } },
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      );
+      const { result } = renderHook(() => useAddProviderMutation(appId), {
+        wrapper,
+      });
+
+      await act(async () => {
+        await result.current.mutateAsync({
+          name: "Hermes Demo",
+          settingsConfig: { base_url: "https://api.example.com/v1" },
+          providerKey: "hermes-demo",
+        });
+      });
+
+      expect(addMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "hermes-demo" }),
+        appId,
+        undefined,
+      );
+    },
+  );
 
   it("Codex 官方预设使用稳定 Provider ID", async () => {
     addMock.mockResolvedValue(undefined);

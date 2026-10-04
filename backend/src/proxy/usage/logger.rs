@@ -8,7 +8,7 @@ use crate::services::usage_stats::find_model_pricing_row;
 use rusqlite::OptionalExtension;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
-use std::{str::FromStr, time::SystemTime};
+use std::time::SystemTime;
 
 #[derive(Debug, PartialEq, Eq)]
 struct UsageSemantic {
@@ -324,86 +324,12 @@ impl<'a> UsageLogger<'a> {
         }
     }
 
-    /// 获取有效的倍率与计费模式来源（供应商优先，未配置则回退全局默认）
-    pub async fn resolve_pricing_config(
-        &self,
-        provider_id: &str,
-        app_type: &str,
-    ) -> (Decimal, String) {
-        let default_multiplier_raw = match self.db.get_default_cost_multiplier(app_type).await {
-            Ok(value) => value,
-            Err(e) => {
-                log::warn!("[USG-003] 获取默认倍率失败 (app_type={app_type}): {e}");
-                "1".to_string()
-            }
-        };
-        let default_multiplier = match Decimal::from_str(&default_multiplier_raw) {
-            Ok(value) => value,
-            Err(e) => {
-                log::warn!(
-                    "[USG-003] 默认倍率解析失败 (app_type={app_type}): {default_multiplier_raw} - {e}"
-                );
-                Decimal::from(1)
-            }
-        };
-
-        let default_pricing_source_raw = match self.db.get_pricing_model_source(app_type).await {
-            Ok(value) => value,
-            Err(e) => {
-                log::warn!("[USG-003] 获取默认计费模式失败 (app_type={app_type}): {e}");
-                "response".to_string()
-            }
-        };
-        let default_pricing_source =
-            if matches!(default_pricing_source_raw.as_str(), "response" | "request") {
-                default_pricing_source_raw
-            } else {
-                log::warn!(
-                "[USG-003] 默认计费模式无效 (app_type={app_type}): {default_pricing_source_raw}"
-            );
-                "response".to_string()
-            };
-
-        let provider = self
-            .db
-            .get_provider_by_id(provider_id, app_type)
-            .ok()
-            .flatten();
-
-        let (provider_multiplier, provider_pricing_source) = provider
-            .as_ref()
-            .and_then(|p| p.meta.as_ref())
-            .map(|meta| {
-                (
-                    meta.cost_multiplier.as_deref(),
-                    meta.pricing_model_source.as_deref(),
-                )
-            })
-            .unwrap_or((None, None));
-
-        let cost_multiplier = match provider_multiplier {
-            Some(value) => match Decimal::from_str(value) {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    log::warn!(
-                        "[USG-003] 供应商倍率解析失败 (provider_id={provider_id}): {value} - {e}"
-                    );
-                    default_multiplier
-                }
-            },
-            None => default_multiplier,
-        };
-
-        let pricing_model_source = match provider_pricing_source {
-            Some(value) if matches!(value, "response" | "request") => value.to_string(),
-            Some(value) => {
-                log::warn!("[USG-003] 供应商计费模式无效 (provider_id={provider_id}): {value}");
-                default_pricing_source.clone()
-            }
-            None => default_pricing_source.clone(),
-        };
-
-        (cost_multiplier, pricing_model_source)
+    /// 只读取应用级计费模型来源；旧供应商倍率和来源字段仅保留兼容。
+    pub async fn resolve_pricing_config(&self, app_type: &str) -> String {
+        match self.db.get_pricing_model_source(app_type).await {
+            Ok(source) if matches!(source.as_str(), "request" | "response") => source,
+            _ => "response".to_string(),
+        }
     }
 
     /// 计算并记录请求
@@ -417,7 +343,6 @@ impl<'a> UsageLogger<'a> {
         request_model: String,
         pricing_model: String,
         usage: TokenUsage,
-        cost_multiplier: Decimal,
         latency_ms: u64,
         first_token_ms: Option<u64>,
         status_code: u16,
@@ -435,7 +360,7 @@ impl<'a> UsageLogger<'a> {
             &app_type,
             &usage,
             pricing.as_ref(),
-            cost_multiplier,
+            Decimal::ONE,
         );
 
         let log = RequestLog {
@@ -453,7 +378,7 @@ impl<'a> UsageLogger<'a> {
             session_id,
             provider_type,
             is_streaming,
-            cost_multiplier: cost_multiplier.to_string(),
+            cost_multiplier: "1".to_string(),
         };
 
         self.log_request(&log)
@@ -525,7 +450,6 @@ mod tests {
             "req-model".to_string(),
             "test-model".to_string(),
             usage,
-            Decimal::from(1),
             100,
             None,
             200,

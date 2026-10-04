@@ -139,3 +139,17 @@ export function useUpdateAppProxyConfig() {
     },
   });
 }
+
+export function useRestartProxyService() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (config: GlobalProxyConfig) => proxyApi.restartService(config),
+    onSettled: async () => {
+      await Promise.all(
+        ["globalProxyConfig", "proxyStatus", "appMode"].map((key) =>
+          client.invalidateQueries({ queryKey: [key] }),
+        ),
+      );
+    },
+  });
+}

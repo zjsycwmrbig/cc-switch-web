@@ -1,4 +1,45 @@
-# Claude → Codex 路由的联网搜索说明
+# 本地路由、聚合与联网搜索
+
+## 模式与服务
+
+供应商页支持直连和路由；Claude Code、Codex 另支持聚合。切换页签只查看模式说明，点击启用并确认默认供应商才会修改客户端配置。退出路由或聚合时恢复之前的直连供应商，路由选择不会覆盖直连选择。
+
+聚合模式中，卡片上的加入／已加入按钮管理成员，更多菜单设置默认供应商，默认成员不能移除。全部供应商仍按显示名称 A–Z 排列；没有赞助／合作标签、星标或身份优先级。Claude 编辑表单可手填或批选远端模型，列表首项为默认模型；关闭自定义列表沿用模型映射，显式空列表不发布模型。Codex 合并各成员的模型目录，按供应商保留上下文窗口；未知或已删除的聚合模型 ID 会被拒绝，不回退到其他供应商。
+
+模式保存和供应商编辑仅更新关键字段，并保留客户端全局设置。全局编辑发生并发冲突时可选择保留客户端或自己的值。Codex 模型目录／登录暂存与模式随同一份操作日志恢复。不要手工修改 Web 数据目录内的 `live-state.json` 或 pending 文件。
+
+设置页可保存监听地址并重启服务；端口绑定失败时恢复原监听和客户端地址，不改每应用的重试和超时。正常关闭 Web 服务会先排空 HTTP 请求，再撤回四类 CLI 的代理地址，并保留模式供下次启动恢复。撤回失败时取消退出、恢复 Web 入口，修正配置后可重试。强制终止进程不能执行正常退出逻辑。
+
+Claude Desktop 使用独立 profile。进入模型映射卡启动路由服务，切离映射卡且没有其他应用接管时停止。Codex、Gemini、Grok 客户端需要重新启动以读取新配置；Codex 的目录提示会说明自定义目录覆盖、官方列表暂不可用或客户端仍持有旧列表等状态。
+
+Codex 跨供应商续聊支持 V2 远程压缩：第三方生成的摘要包装后交还客户端，下次请求解回文字；截断或没有摘要时不替换历史。原生上游签发的未知密文先原样发送，仅在明确拒绝后对同一家清理重试一次；第三方原生 Responses 携带未知压缩条目且返回 400/422 时允许仅压缩条目回退。工具调用的 `call_id` 保持不变。
+
+Codex 旧目录提示中可确认重启托管守护进程，等待任务收尾可能需要数分钟；桌面版和编辑器插件需手动退出重开。Windows 沿用上游限制，不提供进程表探测。模式启动恢复失败会显示错误，修正配置后重新启用目标模式；成功后清除该错误。
+
+### Codex 官方会话与模型
+
+官方路由使用与直连相同的会话桶：关闭统一历史时保留内置 `openai`，通过顶层 `openai_base_url` 指向本地代理；开启时使用 `custom` 官方镜像表。切换统一历史设置会重写当前契约，不再创建 `cc-switch-official` 历史桶。GET `/responses`、`/v1/responses`、`/v1/v1/responses`、`/codex/v1/responses` 返回 426，让 Codex 立即回退 HTTP/SSE。发往第三方的请求移除 Codex `version` 指纹头。
+
+第三方预设使用原生 Responses 协议；供应商没有 API Key、却设置 `requires_openai_auth = true` 时会使 Codex 回退到本机登录，因此可以保存为草稿，但不能切换、加入路由或覆盖当前配置。不要为第三方复用官方登录。官方或代理注入 OAuth 的供应商使用各自认证规则。
+
+Claude 表单可拉取托管 ChatGPT 模型，接口为 `GET /api/auth/codex_oauth/models?accountId=...`；账号省略时用默认账号。此接口与生成请求共享 0.159.0 身份。原生官方目录镜像则使用本机 Codex 的实际版本。两套账号与版本来源不可混用。
+
+### Web API
+
+这些接口沿用现有访问密钥保护：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/proxy/apps/:app/mode` | 模式、直连选择、路由、可用供应商、聚合成员与 startupError |
+| `PUT /api/proxy/apps/:app/mode` | `{mode: "direct" / "routing" / "aggregation", routeProviderId?: string}` |
+| `POST /api/proxy/apps/:app/providers/:id/switch` | 预选或切换路由；直连时不启动服务、不改客户端配置 |
+| `PUT /api/proxy/apps/:app/aggregation/:id` | `{enabled: boolean}`，增减聚合成员 |
+| `POST /api/proxy/codex/daemon/restart` | 确认后重启 Codex 托管守护进程；返回 `restarted` / `notRunning` |
+| `POST /api/proxy/restart` | 保存全局监听／日志配置并重启；请求字段与 global-config 相同 |
+
+旧 takeover/start/stop 接口兼容保留，内部调用新模式控制器。模式支持 `claude`、`codex`、`gemini`、`grokbuild`，聚合只支持前两者。`claude-desktop` 使用供应商 CRUD／切换入口。
+
+## Claude → Codex 联网搜索
 
 CC Switch Web 的本地路由可以把 Claude Code 的托管 WebSearch 工具转换为 OpenAI Responses API 的托管 `web_search` 工具。该能力适用于 Codex OAuth，以及实现了对应 Responses 工具协议的兼容网关。本地执行的 WebFetch 不受影响。
 
@@ -33,3 +74,12 @@ CC Switch Web 的本地路由可以把 Claude Code 的托管 WebSearch 工具转
 请求复用 Provider 选择、模型映射、认证、重试、故障转移和日志链路，不转换为 Chat Completions 或 Anthropic Messages。
 
 如果 Provider 启用了“完整 URL”，路由只会从以 `/responses` 或 `/responses/compact` 结尾的 URL 推导同级 Alpha Search 端点，并保留原 URL 与请求中的查询参数。其他不透明完整 URL 会直接报配置错误，防止把搜索载荷发送到错误端点。
+
+
+## 用量与计费
+
+用量默认显示当天，趋势默认显示 Token，可切换请求数或费用。“全部”范围统计所有记录，并以最近 53 周的热力图替换趋势图。四类表格每页 20 条；供应商统计按名称 A–Z，刷新减少记录时页码收回有效范围。点击请求时间打开详情，查询失败会显示错误并提供重试。
+
+代理输出速度按首个有效输出到结束的时间计算，仅计入至少 100 个输出 Token、生成时间至少 100ms 的样本。Claude/Codex 会话日志没有精确首 Token 时间，按事件估算时长；至少 200 个输出 Token、时长至少 1 秒才显示估算速度，请求明细以 `≈` 区分，供应商统计分列展示。没有逐条计时的历史汇总不参与速度计算。
+
+新代理请求不再读取供应商或全局费用倍率；计费模型来源只使用应用级设置，且只影响经本地路由的请求。旧供应商倍率字段仅保留兼容，历史日志保存的倍率与金额不被批量改写。缺失价格补算使用日志记录的倍率。默认开启 models.dev 价格同步，已明确关闭的设置仍然保留。旧 `/api/proxy/apps/:app/default-cost-multiplier` 接口已移除。

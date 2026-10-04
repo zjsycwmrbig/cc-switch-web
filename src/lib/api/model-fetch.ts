@@ -22,6 +22,7 @@ export async function fetchModelsForConfig(
   isFullUrl?: boolean,
   modelsUrlOverride?: string,
   customUserAgent?: string,
+  options?: { apiFormat?: string; requestHeaders?: Record<string, string> },
 ): Promise<FetchedModel[]> {
   return invoke<FetchedModel[]>("fetch_models_for_config", {
     baseUrl,
@@ -29,6 +30,7 @@ export async function fetchModelsForConfig(
     isFullUrl,
     modelsUrl: modelsUrlOverride,
     customUserAgent,
+    ...options,
   });
 }
 
@@ -81,3 +83,5 @@ export function showFetchModelsError(
 
   toast.error(t("providerForm.fetchModelsFailed"));
 }
+
+export async function fetchCodexOauthModels(accountId?: string | null): Promise<FetchedModel[]> { return invoke("get_codex_oauth_models", { accountId: accountId || null }); }

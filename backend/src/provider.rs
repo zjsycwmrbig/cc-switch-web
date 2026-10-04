@@ -557,6 +557,19 @@ pub struct ProviderMeta {
     /// 用于多账号支持，关联到特定的 GitHub 账号
     #[serde(rename = "githubAccountId", skip_serializing_if = "Option::is_none")]
     pub github_account_id: Option<String>,
+    /// 聚合模式发布的 Claude 模型；None 跟随模型映射，空列表表示不发布。
+    #[serde(rename = "stackModels", skip_serializing_if = "Option::is_none")]
+    pub stack_models: Option<Vec<ClaudeStackModel>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeStackModel {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub one_m: bool,
 }
 
 /// 解析 Provider 级自定义 User-Agent；空白视为未设置，非法 header 交由调用方静默忽略。
@@ -910,6 +923,8 @@ requires_openai_auth = true"#
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenCodeProviderConfig {
     /// AI SDK 包名，如 "@ai-sdk/openai-compatible", "@ai-sdk/anthropic"
+    /// 内置供应商可以省略，沿用 OpenCode 的包和模型定义。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub npm: String,
 
     /// 供应商名称（可选，用于显示）
@@ -961,6 +976,7 @@ pub struct OpenCodeProviderOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenCodeModel {
     /// 模型显示名称
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
 
     /// 模型限制（上下文和输出 token 数）

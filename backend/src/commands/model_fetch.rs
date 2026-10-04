@@ -48,7 +48,9 @@ pub(crate) async fn get_opencode_models_internal() -> Result<Vec<OpenCodeModelRe
         });
     }
 
-    Ok(parse_opencode_models(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_opencode_models(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 fn parse_opencode_models(output: &str) -> Vec<OpenCodeModelRef> {
@@ -84,6 +86,8 @@ pub(crate) async fn fetch_models_for_config_internal(
     is_full_url: Option<bool>,
     models_url_override: Option<String>,
     custom_user_agent: Option<String>,
+    api_format: Option<String>,
+    request_headers: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<Vec<FetchedModel>, String> {
     let user_agent = crate::provider::parse_custom_user_agent(custom_user_agent.as_deref())
         .ok()
@@ -94,6 +98,8 @@ pub(crate) async fn fetch_models_for_config_internal(
         is_full_url.unwrap_or(false),
         models_url_override.as_deref(),
         user_agent,
+        api_format.as_deref(),
+        request_headers.as_ref(),
     )
     .await
 }
@@ -103,7 +109,11 @@ pub(crate) async fn fetch_xai_oauth_models_internal(
     state: &Arc<RwLock<crate::proxy::providers::xai_oauth_auth::XaiOAuthManager>>,
 ) -> Result<Vec<FetchedModel>, String> {
     let manager = state.read().await;
-    let account_id = match account_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+    let account_id = match account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
         Some(id) => id.to_string(),
         None => manager
             .default_account_id()
@@ -121,6 +131,8 @@ pub(crate) async fn fetch_xai_oauth_models_internal(
         false,
         None,
         None,
+        None,
+        None,
     )
     .await
 }
@@ -128,8 +140,7 @@ pub(crate) async fn fetch_xai_oauth_models_internal(
 #[cfg(test)]
 mod tests {
     use super::{
-        opencode_models_command, parse_opencode_models, OpenCodeModelRef,
-        OPENCODE_MODELS_TIMEOUT,
+        opencode_models_command, parse_opencode_models, OpenCodeModelRef, OPENCODE_MODELS_TIMEOUT,
     };
 
     #[test]
@@ -169,4 +180,32 @@ mod tests {
         );
         assert_eq!(OPENCODE_MODELS_TIMEOUT.as_secs(), 20);
     }
+}
+
+pub(crate) async fn fetch_codex_oauth_models_internal(
+    account_id: Option<String>,
+    state: &Arc<RwLock<crate::proxy::providers::codex_oauth_auth::CodexOAuthManager>>,
+) -> Result<Vec<FetchedModel>, String> {
+    let manager = state.read().await;
+    let id = match account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => id.to_string(),
+        None => manager
+            .default_account_id()
+            .await
+            .ok_or("No ChatGPT account available")?,
+    };
+    let token = manager
+        .get_valid_token_for_account(&id)
+        .await
+        .map_err(|e| format!("Codex OAuth token unavailable: {e}"))?;
+    let chatgpt_id = manager
+        .chatgpt_account_id_for_account(&id)
+        .await
+        .map_err(|e| e.to_string())?;
+    drop(manager);
+    crate::services::codex_oauth_models::fetch_models_with_token(&token, &chatgpt_id).await
 }

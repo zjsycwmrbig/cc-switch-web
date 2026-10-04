@@ -1,3 +1,5 @@
+import { PromptCopyDialog } from "./PromptCopyDialog";
+import { useDelayedFlag } from "@/hooks/useDelayedFlag";
 import React, { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText, Search } from "lucide-react";
@@ -23,6 +25,7 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
   ({ open, appId }, ref) => {
     const { t } = useTranslation();
     const [isFormOpen, setIsFormOpen] = useState(false);
+    const [copyingId, setCopyingId] = useState<string | null>(null);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [confirmDialog, setConfirmDialog] = useState<{
@@ -41,6 +44,7 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
       deletePrompt,
       toggleEnabled,
     } = usePromptActions(appId);
+    const showLoading = useDelayedFlag(loading);
 
     useEffect(() => {
       if (open) reload();
@@ -134,7 +138,7 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
         {appId === "pi" && <PiNativePromptResources />}
 
         <div className="flex-1 overflow-y-auto pb-16">
-          {loading ? (
+          {loading && Object.keys(prompts).length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               {t("prompts.loading")}
             </div>
@@ -156,20 +160,34 @@ const PromptPanel = React.forwardRef<PromptPanelHandle, PromptPanelProps>(
               <p className="text-sm">{t("prompts.noSearchResults")}</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div
+              className={showLoading ? "space-y-3 opacity-50" : "space-y-3"}
+              aria-busy={loading}
+            >
               {filteredPromptEntries.map(([id, prompt]) => (
                 <PromptListItem
                   key={id}
                   id={id}
                   prompt={prompt}
-                  onToggle={toggleEnabled}
+                  onToggle={(id, enabled) => {
+                    if (!loading) void toggleEnabled(id, enabled);
+                  }}
                   onEdit={handleEdit}
                   onDelete={handleDelete}
+                  onCopy={setCopyingId}
                 />
               ))}
             </div>
           )}
         </div>
+
+        {copyingId && prompts[copyingId] && (
+          <PromptCopyDialog
+            prompt={prompts[copyingId]}
+            source={appId}
+            onClose={() => setCopyingId(null)}
+          />
+        )}
 
         {isFormOpen && (
           <PromptFormPanel

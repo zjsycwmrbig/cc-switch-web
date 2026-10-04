@@ -6,13 +6,15 @@ use crate::services::proxy::ProxyService;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// 全局应用状态
+/// 全局应用状态；克隆只共享服务、数据库和账号管理器。
+#[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
     pub copilot_auth_state: Arc<RwLock<CopilotAuthManager>>,
     pub codex_oauth_state: Arc<RwLock<CodexOAuthManager>>,
     pub xai_oauth_state: Arc<RwLock<XaiOAuthManager>>,
     pub proxy_service: ProxyService,
+    pub(crate) mode_startup_errors: Arc<RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -40,6 +42,7 @@ impl AppState {
             codex_oauth_state,
             xai_oauth_state,
             proxy_service,
+            mode_startup_errors: Arc::new(RwLock::new(Default::default())),
         }
     }
 }

@@ -127,10 +127,6 @@ pub fn remove_gemini_env_entries(doomed: &HashMap<String, String>) -> Result<boo
 }
 
 /// 写入 Gemini .env 文件（原子操作）
-pub fn write_gemini_env_atomic(map: &HashMap<String, String>) -> Result<(), AppError> {
-    write_gemini_env_text_atomic(&serialize_env_file(map))
-}
-
 pub fn write_gemini_env_text_atomic(content: &str) -> Result<(), AppError> {
     let path = get_gemini_env_path();
 
@@ -257,94 +253,6 @@ pub fn validate_gemini_settings_strict(settings: &Value) -> Result<(), AppError>
 /// 返回路径：`~/.gemini/settings.json`（与 `.env` 文件同级）
 pub fn get_gemini_settings_path() -> PathBuf {
     get_gemini_dir().join("settings.json")
-}
-
-/// 更新 Gemini 目录 settings.json 中的 security.auth.selectedType 字段
-///
-/// 此函数会：
-/// 1. 读取现有的 settings.json（如果存在）
-/// 2. 只更新 `security.auth.selectedType` 字段，保留其他所有字段
-/// 3. 原子性写入文件
-///
-/// # 参数
-/// - `selected_type`: 要设置的 selectedType 值（如 "gemini-api-key" 或 "oauth-personal"）
-fn update_selected_type(selected_type: &str) -> Result<(), AppError> {
-    let settings_path = get_gemini_settings_path();
-
-    // 确保目录存在
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-
-    // 读取现有的 settings.json（如果存在）
-    let mut settings_content = if settings_path.exists() {
-        let content =
-            fs::read_to_string(&settings_path).map_err(|e| AppError::io(&settings_path, e))?;
-        serde_json::from_str::<Value>(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // 只更新 security.auth.selectedType 字段
-    if let Some(obj) = settings_content.as_object_mut() {
-        let security = obj
-            .entry("security")
-            .or_insert_with(|| serde_json::json!({}));
-
-        if let Some(security_obj) = security.as_object_mut() {
-            let auth = security_obj
-                .entry("auth")
-                .or_insert_with(|| serde_json::json!({}));
-
-            if let Some(auth_obj) = auth.as_object_mut() {
-                auth_obj.insert(
-                    "selectedType".to_string(),
-                    Value::String(selected_type.to_string()),
-                );
-            }
-        }
-    }
-
-    // 写入文件
-    crate::config::write_json_file(&settings_path, &settings_content)?;
-
-    Ok(())
-}
-
-/// 为 Packycode Gemini 供应商写入 settings.json
-///
-/// 设置 `~/.gemini/settings.json` 中的：
-/// ```json
-/// {
-///   "security": {
-///     "auth": {
-///       "selectedType": "gemini-api-key"
-///     }
-///   }
-/// }
-/// ```
-///
-/// 保留文件中的其他所有字段。
-pub fn write_packycode_settings() -> Result<(), AppError> {
-    update_selected_type("gemini-api-key")
-}
-
-/// 为 Google 官方 Gemini 供应商写入 settings.json（OAuth 模式）
-///
-/// 设置 `~/.gemini/settings.json` 中的：
-/// ```json
-/// {
-///   "security": {
-///     "auth": {
-///       "selectedType": "oauth-personal"
-///     }
-///   }
-/// }
-/// ```
-///
-/// 保留文件中的其他所有字段。
-pub fn write_google_oauth_settings() -> Result<(), AppError> {
-    update_selected_type("oauth-personal")
 }
 
 #[cfg(test)]
@@ -689,7 +597,8 @@ KEY_WITH-DASH=value";
 
     #[test]
     fn remove_env_entries_preserves_layout_and_different_values() {
-        let content = "# keep comment\nGOOGLE_API_KEY=leaked\nGOOGLE_API_KEY=own-key\n\nTIMEOUT=30\n";
+        let content =
+            "# keep comment\nGOOGLE_API_KEY=leaked\nGOOGLE_API_KEY=own-key\n\nTIMEOUT=30\n";
         let doomed = HashMap::from([("GOOGLE_API_KEY".to_string(), "leaked".to_string())]);
 
         let cleaned = remove_env_entries_preserving_layout(content, &doomed)

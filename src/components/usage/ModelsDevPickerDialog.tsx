@@ -1,3 +1,5 @@
+import { modelsDevQueryOptions } from "@/lib/modelsDev";
+import { compareProviderNames } from "@/utils/providerSort";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
@@ -23,18 +25,13 @@ import {
 } from "@/components/ui/select";
 import { useUpdateModelPricing } from "@/lib/query/usage";
 import {
-  fetchModelsDevPricing,
   flattenModels,
   formatPrice,
   type ModelsDevEntry,
 } from "@/lib/modelsDevPricing";
 import { isTextEditableTarget } from "@/utils/domUtils";
 
-export {
-  flattenModels,
-  formatPrice,
-  normalizeModelIdForPricing,
-} from "@/lib/modelsDevPricing";
+export { flattenModels, formatPrice } from "@/lib/modelsDevPricing";
 
 // 全量约 5000 条：默认只展示最新发布的一批，搜索时才做全量匹配
 const DEFAULT_VISIBLE_ROWS = 50;
@@ -69,11 +66,8 @@ export function ModelsDevPickerDialog({
   }, [open]);
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["models-dev-pricing"],
-    queryFn: fetchModelsDevPricing,
+    ...modelsDevQueryOptions,
     enabled: open,
-    staleTime: 60 * 60 * 1000,
-    retry: 1,
   });
 
   const entries = useMemo(() => (data ? flattenModels(data) : []), [data]);
@@ -86,7 +80,7 @@ export function ModelsDevPickerDialog({
       }
     }
     return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) =>
-      a.name.localeCompare(b.name),
+      compareProviderNames(a.name, b.name),
     );
   }, [entries]);
 

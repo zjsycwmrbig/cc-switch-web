@@ -1,3 +1,11 @@
+import { WindowedRows } from "@/components/common/WindowedRows";
+import { useQueryClient } from "@tanstack/react-query";
+import type { SkillRepoFailure } from "@/lib/api/skills";
+import { SkillsStorageDialog } from "./SkillsStorageDialog";
+import { SkillRepoFailures } from "./SkillRepoFailures";
+import { ResyncButton } from "@/components/common/ResyncButton";
+import { skillsApi } from "@/lib/api/skills";
+import { useSkillRepoFailures } from "@/hooks/useSkills";
 import React, { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -113,6 +121,8 @@ const UnifiedSkillsPanel = React.forwardRef<
   UnifiedSkillsPanelProps
 >(({ onOpenDiscovery, currentApp }, ref) => {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { data: updateFailures } = useSkillRepoFailures("updates");
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -160,28 +170,6 @@ const UnifiedSkillsPanel = React.forwardRef<
     return map;
   }, [skillUpdates]);
 
-  const enabledCounts = useMemo(() => {
-    const counts = {
-      claude: 0,
-      "claude-desktop": 0,
-      codex: 0,
-      gemini: 0,
-      grokbuild: 0,
-      opencode: 0,
-      openclaw: 0,
-      hermes: 0,
-      pi: 0,
-      mcode: 0,
-    };
-    if (!skills) return counts;
-    skills.forEach((skill) => {
-      for (const app of SKILLS_APP_IDS) {
-        if (skill.apps[app]) counts[app]++;
-      }
-    });
-    return counts;
-  }, [skills]);
-
   const filteredSkills = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return skills ?? [];
@@ -197,6 +185,28 @@ const UnifiedSkillsPanel = React.forwardRef<
     );
   }, [searchQuery, skills]);
 
+  const enabledCounts = useMemo(() => {
+    const counts = {
+      claude: 0,
+      "claude-desktop": 0,
+      codex: 0,
+      gemini: 0,
+      grokbuild: 0,
+      opencode: 0,
+      openclaw: 0,
+      hermes: 0,
+      pi: 0,
+      mcode: 0,
+    };
+
+    filteredSkills.forEach((skill) => {
+      for (const app of SKILLS_APP_IDS) {
+        if (skill.apps[app]) counts[app]++;
+      }
+    });
+    return counts;
+  }, [filteredSkills]);
+
   const writePending =
     toggleAppMutation.isPending || bulkToggleAppMutation.isPending;
 
@@ -211,7 +221,7 @@ const UnifiedSkillsPanel = React.forwardRef<
 
   const handleToggleAll = async (app: AppId, enabled: boolean) => {
     if (writePending) return;
-    const ids = (skills ?? [])
+    const ids = filteredSkills
       .filter((skill) => Boolean(skill.apps[app]) !== enabled)
       .map((skill) => skill.id);
     if (ids.length === 0) return;
@@ -225,6 +235,28 @@ const UnifiedSkillsPanel = React.forwardRef<
       toast.error(
         t("common.bulkToggleFailed", { count: result.failed.length }),
       );
+    }
+    if (result.succeeded.length > 0) {
+      toast.success(t("common.saved"), {
+        action: {
+          label: t("common.undo"),
+          onClick: () => {
+            void bulkToggleAppMutation
+              .mutateAsync({ ids: result.succeeded, app, enabled: !enabled })
+              .then((undone) => {
+                if (undone.failed.length)
+                  toast.error(
+                    t("common.bulkToggleFailed", {
+                      count: undone.failed.length,
+                    }),
+                  );
+              })
+              .catch((error) =>
+                toast.error(t("common.error"), { description: String(error) }),
+              );
+          },
+        },
+      });
     }
   };
 
@@ -290,8 +322,16 @@ const UnifiedSkillsPanel = React.forwardRef<
 
   const handleCheckUpdates = async () => {
     try {
-      const result = await checkUpdates();
+      const result = await checkUpdates({ throwOnError: true });
       const updates = result.data || [];
+      const failures = queryClient.getQueryData<SkillRepoFailure[]>([
+        "skills",
+        "updates-failures",
+      ]);
+      if (failures?.length) {
+        toast.warning(t("skills.repoFailures", { count: failures.length }));
+        return;
+      }
       if (updates.length === 0) {
         toast.success(t("skills.noUpdates"), { closeButton: true });
       } else {
@@ -386,9 +426,17 @@ const UnifiedSkillsPanel = React.forwardRef<
         0,
       );
       const failedResults = results.filter((result) => result.error);
-      const skippedCount = results.filter(
-        (result) => !result.error && result.installed.length === 0,
-      ).length;
+      const skippedCount = results.reduce(
+        (count, result) => count + (result.skipped?.length ?? 0),
+        0,
+      );
+      const skipped = results.flatMap((result) => result.skipped ?? []);
+      if (skipped.length)
+        toast.info(t("skills.zipSkipped", { count: skipped.length }), {
+          description: skipped
+            .map((item) => `${item.directory}: ${item.existingName}`)
+            .join("; "),
+        });
 
       if (installedCount === 0 && failedResults.length === 0) {
         toast.info(t("skills.installFromZip.noNewSkills"), {
@@ -549,12 +597,19 @@ const UnifiedSkillsPanel = React.forwardRef<
 
   return (
     <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
+      <SkillRepoFailures failures={updateFailures} />
+      <SkillsStorageDialog installedCount={skills?.length ?? 0} />
+      <ResyncButton
+        run={skillsApi.resync}
+        queryKey={["skills", "installed"]}
+        disabled={writePending}
+      />
       <div className="flex items-center justify-between gap-3">
         <AppCountBar
           totalLabel={t("skills.installed", { count: skills?.length || 0 })}
           counts={enabledCounts}
           appIds={SKILLS_APP_IDS}
-          totalCount={skills?.length ?? 0}
+          totalCount={filteredSkills.length}
           onToggleAll={handleToggleAll}
           pendingApp={bulkToggleAppMutation.variables?.app ?? null}
           disabled={writePending}
@@ -632,22 +687,24 @@ const UnifiedSkillsPanel = React.forwardRef<
         ) : (
           <TooltipProvider delayDuration={300}>
             <div className="rounded-xl border border-border-default overflow-hidden">
-              {filteredSkills.map((skill, index) => (
-                <InstalledSkillListItem
-                  key={skill.id}
-                  skill={skill}
-                  hasUpdate={Boolean(updatesMap[skill.id])}
-                  isUpdating={
-                    updateSkillMutation.isPending &&
-                    updateSkillMutation.variables === skill.id
-                  }
-                  onToggleApp={handleToggleApp}
-                  onUninstall={() => handleUninstall(skill)}
-                  onUpdate={() => handleUpdateSkill(skill)}
-                  actionsDisabled={writePending}
-                  isLast={index === filteredSkills.length - 1}
-                />
-              ))}
+              <WindowedRows>
+                {filteredSkills.map((skill, index) => (
+                  <InstalledSkillListItem
+                    key={skill.id}
+                    skill={skill}
+                    hasUpdate={Boolean(updatesMap[skill.id])}
+                    isUpdating={
+                      updateSkillMutation.isPending &&
+                      updateSkillMutation.variables === skill.id
+                    }
+                    onToggleApp={handleToggleApp}
+                    onUninstall={() => handleUninstall(skill)}
+                    onUpdate={() => handleUpdateSkill(skill)}
+                    actionsDisabled={writePending}
+                    isLast={index === filteredSkills.length - 1}
+                  />
+                ))}
+              </WindowedRows>
             </div>
           </TooltipProvider>
         )}
@@ -803,7 +860,7 @@ const InstalledSkillListItem: React.FC<InstalledSkillListItemProps> = ({
       />
 
       <div
-        className="flex-shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="flex-shrink-0 flex items-center gap-0.5 md:opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
         style={hasUpdate ? { opacity: 1 } : undefined}
       >
         {hasUpdate && onUpdate ? (

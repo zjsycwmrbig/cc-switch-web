@@ -6,6 +6,8 @@ use crate::error::AppError;
 use crate::proxy::circuit_breaker::CircuitBreakerConfig;
 use crate::proxy::types::*;
 use crate::store::AppState;
+use crate::{app_config::AppType, mode::controller};
+use std::str::FromStr;
 
 fn circuit_breaker_config_from_app(config: &AppProxyConfig) -> CircuitBreakerConfig {
     CircuitBreakerConfig {
@@ -32,19 +34,33 @@ fn apply_circuit_breaker_config_to_app(
 pub(crate) async fn start_proxy_server_internal(
     state: &AppState,
 ) -> Result<ProxyServerInfo, String> {
-    state.proxy_service.start().await
+    controller::start_service(state)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 停止代理服务器（恢复 Live 配置）
 pub(crate) async fn stop_proxy_with_restore_internal(state: &AppState) -> Result<(), String> {
-    state.proxy_service.stop_with_restore().await
+    controller::exit_all(state).await.map_err(|e| e.to_string())
 }
 
 /// 获取各应用接管状态
 pub(crate) async fn get_proxy_takeover_status_internal(
-    state: &AppState,
+    _state: &AppState,
 ) -> Result<ProxyTakeoverStatus, String> {
-    state.proxy_service.get_takeover_status().await
+    let [claude, codex, gemini, grokbuild] = crate::mode::state::mode_states(
+        &crate::live::engine::DeviceStore::for_device(),
+        ["claude", "codex", "gemini", "grokbuild"],
+    )
+    .map_err(|e| e.to_string())?
+    .map(|mode| mode.is_proxy());
+    Ok(ProxyTakeoverStatus {
+        claude,
+        codex,
+        gemini,
+        grokbuild,
+        ..Default::default()
+    })
 }
 
 /// 为指定应用开启/关闭接管
@@ -53,10 +69,13 @@ pub(crate) async fn set_proxy_takeover_for_app_internal(
     app_type: String,
     enabled: bool,
 ) -> Result<(), String> {
-    state
-        .proxy_service
-        .set_takeover_for_app(&app_type, enabled)
-        .await
+    let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
+    if enabled {
+        controller::enter(state, &app, None).await
+    } else {
+        controller::exit(state, &app).await
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// 获取代理服务器状态
@@ -74,7 +93,17 @@ pub(crate) async fn update_proxy_config_internal(
     state: &AppState,
     config: ProxyConfig,
 ) -> Result<(), String> {
-    state.proxy_service.update_config(&config).await
+    let mut global = state
+        .db
+        .get_global_proxy_config()
+        .await
+        .map_err(|e| e.to_string())?;
+    global.listen_address = config.listen_address;
+    global.listen_port = config.listen_port;
+    global.enable_logging = config.enable_logging;
+    controller::configure_service(state, global, false)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ==================== Global & Per-App Config ====================
@@ -98,8 +127,7 @@ pub(crate) async fn update_global_proxy_config_internal(
     state: &AppState,
     config: GlobalProxyConfig,
 ) -> Result<(), String> {
-    let db = &state.db;
-    db.update_global_proxy_config(config)
+    controller::configure_service(state, config, false)
         .await
         .map_err(|e| e.to_string())
 }
@@ -130,23 +158,6 @@ pub(crate) async fn update_proxy_config_for_app_internal(
         .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn get_default_cost_multiplier_internal(
-    state: &AppState,
-    app_type: &str,
-) -> Result<String, AppError> {
-    let db = &state.db;
-    db.get_default_cost_multiplier(app_type).await
-}
-
-pub(crate) async fn set_default_cost_multiplier_internal(
-    state: &AppState,
-    app_type: &str,
-    value: &str,
-) -> Result<(), AppError> {
-    let db = &state.db;
-    db.set_default_cost_multiplier(app_type, value).await
-}
-
 pub(crate) async fn get_pricing_model_source_internal(
     state: &AppState,
     app_type: &str,
@@ -171,7 +182,8 @@ pub(crate) async fn is_proxy_running_internal(state: &AppState) -> Result<bool, 
 
 /// 检查是否处于 Live 接管模式
 pub(crate) async fn is_live_takeover_active_internal(state: &AppState) -> Result<bool, String> {
-    state.proxy_service.is_takeover_active().await
+    let status = get_proxy_takeover_status_internal(state).await?;
+    Ok(status.claude || status.codex || status.gemini || status.grokbuild)
 }
 
 /// 代理模式下切换供应商（热切换）
@@ -180,10 +192,10 @@ pub(crate) async fn switch_proxy_provider_internal(
     app_type: String,
     provider_id: String,
 ) -> Result<(), String> {
-    state
-        .proxy_service
-        .switch_proxy_target(&app_type, &provider_id)
+    let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
+    controller::set_route(state, &app, &provider_id)
         .await
+        .map_err(|e| e.to_string())
 }
 
 // ==================== 故障转移相关命令 ====================
@@ -234,9 +246,10 @@ pub(crate) async fn reset_circuit_breaker_internal(
 
     if app_enabled && auto_failover_enabled && state.proxy_service.is_running().await {
         // 获取当前供应商 ID
-        let current_id = db
-            .get_current_provider(&app_type)
-            .map_err(|e| e.to_string())?;
+        let app = AppType::from_str(&app_type).map_err(|e| e.to_string())?;
+        let current_id =
+            crate::mode::current::provider_for(db, &app, crate::mode::current::Purpose::InUse)
+                .map_err(|e| e.to_string())?;
 
         if let Some(current_id) = current_id {
             // 获取故障转移队列

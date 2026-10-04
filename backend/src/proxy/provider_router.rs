@@ -81,7 +81,7 @@ impl ProviderRouter {
             let current_id = AppType::from_str(app_type)
                 .ok()
                 .and_then(|app_enum| {
-                    crate::settings::get_effective_current_provider(&self.db, &app_enum)
+                    crate::mode::current::provider_for(&self.db, &app_enum, crate::mode::current::Purpose::InUse)
                         .ok()
                         .flatten()
                 })

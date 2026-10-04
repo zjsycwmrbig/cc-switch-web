@@ -9,11 +9,62 @@ import {
   opencodeProviderPresets,
 } from "@/config/opencodeProviderPresets";
 import { localIconList } from "@/icons/local";
+import { hasIcon } from "@/icons/extracted";
+import { claudeDesktopProviderPresets } from "@/config/claudeDesktopProviderPresets";
+import { hermesProviderPresets } from "@/config/hermesProviderPresets";
+import { piProviderPresets } from "@/config/piProviderPresets";
 import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
 import zh from "@/i18n/locales/zh.json";
 
 describe("current provider presets", () => {
+  it("includes 88API and Tu-zi with resolvable icons across nine apps and retires ETok", () => {
+    for (const presets of [
+      providerPresets,
+      claudeDesktopProviderPresets,
+      codexProviderPresets,
+      geminiProviderPresets,
+      grokBuildProviderPresets,
+      opencodeProviderPresets,
+      openclawProviderPresets,
+      hermesProviderPresets,
+      piProviderPresets,
+    ]) {
+      expect(presets.some((preset) => preset.name === "ETok.ai")).toBe(false);
+      for (const name of ["88API", "Tu-zi"]) {
+        const preset = presets.find((entry) => entry.name === name);
+        expect(preset, name).toBeDefined();
+        expect(
+          preset?.icon &&
+            (hasIcon(preset.icon) || localIconList.includes(preset.icon)),
+          name,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("uses Tu-zi's API key header and the bare Claude Desktop host", () => {
+    expect(
+      providerPresets.find((preset) => preset.name === "Tu-zi"),
+    ).toMatchObject({
+      apiKeyField: "ANTHROPIC_API_KEY",
+      settingsConfig: {
+        env: {
+          ANTHROPIC_API_KEY: "",
+          ANTHROPIC_BASE_URL: "https://api.tu-zi.com",
+        },
+      },
+    });
+    expect(
+      claudeDesktopProviderPresets.find((preset) => preset.name === "Tu-zi")
+        ?.baseUrl,
+    ).toBe("https://api.tu-zi.com");
+    for (const locale of [zh, en, ja]) {
+      expect(locale.providerForm.presets.tuzi).toBeTruthy();
+      expect(locale.providerForm.partnerPromotion["88api"]).toBeTruthy();
+    }
+  });
+
   it("includes A6API in every supported app", () => {
     for (const presets of [
       providerPresets,
@@ -108,23 +159,23 @@ describe("current provider presets", () => {
       "Qiniu",
       "AICoding",
       "SubRouter",
+      "88API",
       "APIKEY.FUN",
       "9527CODE",
       "Code0",
       "A6API",
       "SSSAiCode",
       "SoleAPI",
-      "ETok.ai",
       "Cubence",
       "CrazyRouter",
       "SudoCode.us",
       "XycAi",
+      "Tu-zi",
       "E-FlowCode",
       "CherryIN",
       "OpenRouter",
       "TheRouter",
       "AICodeWith",
-      "自定义",
     ]);
   });
 

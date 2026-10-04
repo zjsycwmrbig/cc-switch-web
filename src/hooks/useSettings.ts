@@ -77,6 +77,7 @@ export function useSettings(): UseSettingsResult {
     resolvedDirs,
     isLoading: isDirectoryLoading,
     initialAppConfigDir,
+    markAppConfigDirSaved,
     updateDirectory,
     updateAppConfigDir,
     browseDirectory,
@@ -405,6 +406,7 @@ export function useSettings(): UseSettingsResult {
 
         const appDirChanged = sanitizedAppDir !== (previousAppDir ?? undefined);
         setRequiresRestart(appDirChanged);
+        markAppConfigDirSaved(sanitizedAppDir);
 
         if (!options?.silent) {
           toast.success(
@@ -431,6 +433,7 @@ export function useSettings(): UseSettingsResult {
       appConfigDir,
       data,
       initialAppConfigDir,
+      markAppConfigDirSaved,
       saveMutation,
       settings,
       setRequiresRestart,

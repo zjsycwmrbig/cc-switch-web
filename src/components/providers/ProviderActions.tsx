@@ -1,10 +1,17 @@
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   BarChart3,
   Check,
   Copy,
   Edit,
   Loader2,
   Minus,
+  MoreHorizontal,
   Play,
   Plus,
   Terminal,
@@ -17,7 +24,18 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AppId } from "@/lib/api";
 
+export interface AggregationActions {
+  member: boolean;
+  default: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+  onDefault: () => void;
+}
+
 interface ProviderActionsProps {
+  aggregation?: AggregationActions;
+  failoverUnavailable?: boolean;
+  deleteDisabled?: boolean;
   appId?: AppId;
   isCurrent: boolean;
   isInConfig?: boolean;
@@ -43,6 +61,9 @@ interface ProviderActionsProps {
 }
 
 export function ProviderActions({
+  aggregation,
+  failoverUnavailable = false,
+  deleteDisabled = false,
   appId,
   isCurrent,
   isInConfig = false,
@@ -81,6 +102,11 @@ export function ProviderActions({
     !isAdditiveMode && !isOmo && isAutoFailoverEnabled && onToggleFailover;
 
   const handleMainButtonClick = () => {
+    if (failoverUnavailable && isAutoFailoverEnabled && !aggregation) return;
+    if (aggregation) {
+      aggregation.onToggle();
+      return;
+    }
     if (isOmo) {
       if (isCurrent) {
         onDisableOmo?.();
@@ -106,6 +132,24 @@ export function ProviderActions({
   };
 
   const getMainButtonState = () => {
+    if (aggregation)
+      return {
+        disabled: aggregation.disabled || aggregation.default,
+        variant: "secondary" as const,
+        className: "",
+        icon: aggregation.member ? (
+          <Check className="h-4 w-4" />
+        ) : (
+          <Plus className="h-4 w-4" />
+        ),
+        text: t(
+          aggregation.default
+            ? "webMode.default"
+            : aggregation.member
+              ? "webMode.member"
+              : "webMode.join",
+        ),
+      };
     if (isOmo) {
       if (isCurrent) {
         return {
@@ -189,13 +233,20 @@ export function ProviderActions({
   const buttonState = getMainButtonState();
 
   const canDelete =
-    !isReadOnly && (isOmo || isAdditiveMode ? true : !isCurrent);
+    !deleteDisabled &&
+    !isReadOnly &&
+    (isOmo || isAdditiveMode ? true : !isCurrent);
   const readOnlyHint = t("provider.managedByHermesHint", {
     defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
   });
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
+      {failoverUnavailable && isAutoFailoverEnabled && !aggregation && (
+        <span className="max-w-56 text-xs text-muted-foreground">
+          {t("failover.officialUnavailable")}
+        </span>
+      )}
       {(appId === "openclaw" || appId === "hermes") &&
         isInConfig &&
         onSetAsDefault && (
@@ -226,13 +277,33 @@ export function ProviderActions({
         size="sm"
         variant={buttonState.variant}
         onClick={handleMainButtonClick}
-        disabled={buttonState.disabled}
+        disabled={
+          buttonState.disabled ||
+          (failoverUnavailable && isAutoFailoverEnabled && !aggregation)
+        }
         className={cn("w-[4.5rem] px-2.5", buttonState.className)}
       >
         {buttonState.icon}
         {buttonState.text}
       </Button>
 
+      {aggregation && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon" variant="ghost" aria-label={t("webMode.more")}>
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem
+              disabled={aggregation.default || aggregation.disabled}
+              onSelect={aggregation.onDefault}
+            >
+              {t("webMode.setDefault")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
       <div className="flex items-center gap-1">
         <Button
           size="icon"
@@ -309,6 +380,7 @@ export function ProviderActions({
           size="icon"
           variant="ghost"
           onClick={canDelete ? onDelete : undefined}
+          disabled={!canDelete}
           title={isReadOnly ? readOnlyHint : t("common.delete")}
           className={cn(
             iconButtonClass,

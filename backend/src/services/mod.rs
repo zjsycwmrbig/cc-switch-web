@@ -18,6 +18,7 @@ pub(crate) mod session_usage_gemini;
 pub(crate) mod session_usage_grokbuild;
 pub mod session_usage_mcode;
 pub(crate) mod session_usage_pi;
+pub(crate) mod session_usage_opencode;
 pub(crate) mod skill;
 pub(crate) mod speedtest;
 pub(crate) mod stream_check;
@@ -27,3 +28,5 @@ pub(crate) mod usage_stats;
 pub(crate) mod webdav;
 pub(crate) mod webdav_auto_sync;
 pub(crate) mod webdav_sync;
+
+pub mod codex_oauth_models;

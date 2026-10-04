@@ -3,6 +3,7 @@ import { CodexAuthSection, CodexConfigSection } from "./CodexConfigSections";
 import { CodexCommonConfigModal } from "./CodexCommonConfigModal";
 
 interface CodexConfigEditorProps {
+  keyFieldMode?: boolean;
   authValue: string;
 
   configValue: string;
@@ -35,6 +36,7 @@ interface CodexConfigEditorProps {
 }
 
 const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
+  keyFieldMode = false,
   authValue,
   configValue,
   onAuthChange,
@@ -70,6 +72,7 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
 
       {/* Config TOML Section */}
       <CodexConfigSection
+        keyFieldMode={keyFieldMode}
         value={configValue}
         onChange={onConfigChange}
         useCommonConfig={useCommonConfig}
@@ -80,15 +83,17 @@ const CodexConfigEditor: React.FC<CodexConfigEditorProps> = ({
       />
 
       {/* Common Config Modal */}
-      <CodexCommonConfigModal
-        isOpen={isCommonConfigModalOpen}
-        onClose={handleCloseCommonConfigModal}
-        value={commonConfigSnippet}
-        onSave={onCommonConfigSnippetChange}
-        error={commonConfigError}
-        onExtract={onExtract}
-        isExtracting={isExtracting}
-      />
+      {!keyFieldMode && (
+        <CodexCommonConfigModal
+          isOpen={isCommonConfigModalOpen}
+          onClose={handleCloseCommonConfigModal}
+          value={commonConfigSnippet}
+          onSave={onCommonConfigSnippetChange}
+          error={commonConfigError}
+          onExtract={onExtract}
+          isExtracting={isExtracting}
+        />
+      )}
     </div>
   );
 };

@@ -106,6 +106,10 @@ export interface ProviderStats {
   totalCost: string;
   successRate: number;
   avgLatencyMs: number;
+  speedOutputTokens?: number;
+  speedGenerationMs?: number;
+  estSpeedOutputTokens?: number;
+  estSpeedDurationMs?: number;
 }
 
 export interface ModelStats {
@@ -135,10 +139,18 @@ export interface ProviderLimitStatus {
   monthlyExceeded: boolean;
 }
 
-export type UsageRangePreset = "today" | "1d" | "7d" | "14d" | "30d" | "custom";
+export type UsageRangePreset =
+  | "today"
+  | "1d"
+  | "7d"
+  | "14d"
+  | "30d"
+  | "all"
+  | "custom";
 
 export interface UsageRangeSelection {
   preset: UsageRangePreset;
+  liveEndTime?: boolean;
   customStartDate?: number;
   customEndDate?: number;
 }

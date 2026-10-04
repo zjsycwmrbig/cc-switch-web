@@ -1,3 +1,6 @@
+import { useProviderEditorConflict } from "@/hooks/useProviderEditorConflict";
+import { useProviderEditorView } from "@/hooks/useProviderEditorView";
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
@@ -35,6 +38,7 @@ interface AddProviderDialogProps {
       addToLive?: boolean;
       ensureGrokBuildOfficialSeed?: boolean;
       ensureCodexOfficialSeed?: boolean;
+      editorSave?: ProviderEditorSave;
     },
   ) => Promise<void> | void;
 }
@@ -46,6 +50,29 @@ export function AddProviderDialog({
   onSubmit,
 }: AddProviderDialogProps) {
   const { t } = useTranslation();
+  const editorConflict = useProviderEditorConflict(open, appId);
+  const providerEditor = useProviderEditorView(
+    open &&
+      (appId === "claude" ||
+        appId === "codex" ||
+        appId === "gemini" ||
+        appId === "grokbuild"),
+    {},
+    "add",
+    appId === "codex"
+      ? "codex"
+      : appId === "grokbuild"
+        ? "grokbuild"
+        : appId === "gemini"
+          ? "gemini"
+          : "claude",
+  );
+  const editorReady =
+    (appId !== "claude" &&
+      appId !== "codex" &&
+      appId !== "gemini" &&
+      appId !== "grokbuild") ||
+    !!providerEditor.view;
   // 累加模式应用和 Grok Build 不支持统一供应商投影。
   const showUniversalTab =
     appId !== "opencode" &&
@@ -107,6 +134,7 @@ export function AddProviderDialog({
         addToLive?: boolean;
         ensureGrokBuildOfficialSeed?: boolean;
         ensureCodexOfficialSeed?: boolean;
+        editorSave?: ProviderEditorSave;
       } = {
         name: values.name.trim(),
         notes: values.notes?.trim() || undefined,
@@ -278,10 +306,29 @@ export function AddProviderDialog({
         providerData.suggestedDefaults = values.suggestedDefaults;
       }
 
-      await onSubmit(providerData);
-      onOpenChange(false);
+      if (
+        appId === "claude" ||
+        appId === "codex" ||
+        appId === "gemini" ||
+        appId === "grokbuild"
+      ) {
+        if (!providerEditor.view) return;
+        providerData.editorSave = {
+          base: providerEditor.view.settings,
+          onConflict: "refuse",
+        };
+      }
+      const saved = await editorConflict.run((policy) =>
+        onSubmit({
+          ...providerData,
+          ...(providerData.editorSave
+            ? { editorSave: { ...providerData.editorSave, onConflict: policy } }
+            : {}),
+        }),
+      );
+      if (saved) onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange],
+    [appId, onSubmit, onOpenChange, providerEditor.view, editorConflict.run],
   );
 
   const footer =
@@ -300,7 +347,7 @@ export function AddProviderDialog({
         <Button
           type="submit"
           form="provider-form"
-          disabled={isFormSubmitting}
+          disabled={isFormSubmitting || !editorReady}
           className="bg-primary text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -327,62 +374,92 @@ export function AddProviderDialog({
     );
 
   return (
-    <FullScreenPanel
-      isOpen={open}
-      title={t("provider.addNewProvider")}
-      onClose={() => onOpenChange(false)}
-      footer={footer}
-      contentClassName="pt-3"
-    >
-      {showUniversalTab ? (
-        <Tabs
-          value={activeTab}
-          onValueChange={(v) => setActiveTab(v as "app-specific" | "universal")}
-        >
-          <TabsList className="grid w-full grid-cols-2 mb-6">
-            <TabsTrigger value="app-specific">
-              {t(`apps.${appId}`)} {t("provider.tabProvider")}
-            </TabsTrigger>
-            <TabsTrigger value="universal">
-              {t("provider.tabUniversal")}
-            </TabsTrigger>
-          </TabsList>
+    <>
+      {editorConflict.dialog}
+      <FullScreenPanel
+        isOpen={open}
+        title={t("provider.addNewProvider")}
+        onClose={() => onOpenChange(false)}
+        footer={footer}
+        contentClassName="pt-3"
+      >
+        {showUniversalTab ? (
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) =>
+              setActiveTab(v as "app-specific" | "universal")
+            }
+          >
+            <TabsList className="grid w-full grid-cols-2 mb-6">
+              <TabsTrigger value="app-specific">
+                {t(`apps.${appId}`)} {t("provider.tabProvider")}
+              </TabsTrigger>
+              <TabsTrigger value="universal">
+                {t("provider.tabUniversal")}
+              </TabsTrigger>
+            </TabsList>
 
-          <TabsContent value="app-specific" className="mt-0">
-            <ProviderForm
-              appId={appId}
-              submitLabel={t("common.add")}
-              onSubmit={handleSubmit}
-              onCancel={() => onOpenChange(false)}
-              onSubmittingChange={setIsFormSubmitting}
-              showButtons={false}
-            />
-          </TabsContent>
+            <TabsContent value="app-specific" className="mt-0">
+              {!editorReady ? (
+                <div role="status">
+                  {providerEditor.error
+                    ? t("claudeConfig.editorLoadFailed")
+                    : t("common.loading")}
+                  {providerEditor.error && (
+                    <Button onClick={providerEditor.retry}>
+                      {t("common.retry")}
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <ProviderForm
+                  providerLiveBase={providerEditor.view?.settings}
+                  appId={appId}
+                  submitLabel={t("common.add")}
+                  onSubmit={handleSubmit}
+                  onCancel={() => onOpenChange(false)}
+                  onSubmittingChange={setIsFormSubmitting}
+                  showButtons={false}
+                />
+              )}
+            </TabsContent>
 
-          <TabsContent value="universal" className="mt-0">
-            <UniversalProviderPanel />
-          </TabsContent>
-        </Tabs>
-      ) : (
-        // OpenCode/OpenClaw: directly show form without tabs
-        <ProviderForm
-          appId={appId}
-          submitLabel={t("common.add")}
-          onSubmit={handleSubmit}
-          onCancel={() => onOpenChange(false)}
-          onSubmittingChange={setIsFormSubmitting}
-          showButtons={false}
-        />
-      )}
+            <TabsContent value="universal" className="mt-0">
+              <UniversalProviderPanel />
+            </TabsContent>
+          </Tabs>
+        ) : !editorReady ? (
+          <div role="status">
+            {providerEditor.error
+              ? t("claudeConfig.editorLoadFailed")
+              : t("common.loading")}
+            {providerEditor.error && (
+              <Button onClick={providerEditor.retry}>
+                {t("common.retry")}
+              </Button>
+            )}
+          </div>
+        ) : (
+          <ProviderForm
+            providerLiveBase={providerEditor.view?.settings}
+            appId={appId}
+            submitLabel={t("common.add")}
+            onSubmit={handleSubmit}
+            onCancel={() => onOpenChange(false)}
+            onSubmittingChange={setIsFormSubmitting}
+            showButtons={false}
+          />
+        )}
 
-      {showUniversalTab && (
-        <UniversalProviderFormModal
-          isOpen={universalFormOpen}
-          onClose={handleUniversalFormClose}
-          onSave={handleUniversalProviderSave}
-          initialPreset={selectedUniversalPreset}
-        />
-      )}
-    </FullScreenPanel>
+        {showUniversalTab && (
+          <UniversalProviderFormModal
+            isOpen={universalFormOpen}
+            onClose={handleUniversalFormClose}
+            onSave={handleUniversalProviderSave}
+            initialPreset={selectedUniversalPreset}
+          />
+        )}
+      </FullScreenPanel>
+    </>
   );
 }

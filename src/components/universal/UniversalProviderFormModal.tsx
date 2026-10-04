@@ -1,3 +1,4 @@
+import { sortProvidersByName } from "@/utils/providerSort";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
@@ -361,7 +362,7 @@ requires_openai_auth = true`;
               })}
             </Label>
             <div className="flex flex-wrap gap-2">
-              {universalProviderPresets.map((preset) => (
+              {sortProvidersByName(universalProviderPresets).map((preset) => (
                 <button
                   key={preset.providerType}
                   type="button"

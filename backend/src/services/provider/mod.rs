@@ -2,9 +2,32 @@
 //!
 //! Handles provider CRUD operations, switching, and configuration management.
 
+pub(crate) mod claude_direct;
+pub(crate) mod claude_editor;
+pub(crate) mod codex_client_catalog;
+pub(crate) mod codex_direct;
+pub(crate) mod codex_editor;
+mod codex_login;
+pub(crate) mod codex_official_models;
+#[cfg(test)]
+mod codex_runtime_tests;
+#[cfg(test)]
+mod common_config_tests;
+mod desktop;
+#[cfg(test)]
+mod desktop_tests;
+pub(crate) mod editor_toml;
 mod endpoints;
 mod gemini_auth;
+pub(crate) mod gemini_direct;
+pub(crate) mod gemini_editor;
+pub(crate) mod grok_direct;
+pub(crate) mod grok_editor;
 mod live;
+#[cfg(test)]
+mod mcode_tests;
+#[cfg(test)]
+mod opencode_tests;
 mod pi;
 mod usage;
 
@@ -34,7 +57,6 @@ pub fn import_pi_providers_from_live(state: &AppState) -> Result<usize, AppError
 }
 
 // Internal re-exports (pub(crate))
-pub(crate) use live::sanitize_claude_settings_for_live;
 pub(crate) use live::{
     build_effective_settings_with_common_config, normalize_provider_common_config_for_storage,
     provider_exists_in_live_config, strip_common_config_from_live_settings,
@@ -66,6 +88,19 @@ pub fn official_provider_supports_proxy_takeover(app_type: &AppType, provider: &
 
 /// 统一会话开关变化后，立即刷新当前官方 Codex 的 live 或代理恢复备份。
 pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, AppError> {
+    let _service = futures::executor::block_on(crate::mode::controller::lock_service());
+    let _app = futures::executor::block_on(state.proxy_service.lock_switch_for_app("codex"));
+    crate::mode::operation::settle(&state.db, "codex")?;
+    if futures::executor::block_on(crate::mode::controller::reapply_after_save_locked(
+        state,
+        &AppType::Codex,
+        None,
+    ))? {
+        return Ok(true);
+    }
+    if crate::mode::current::is_proxy(&AppType::Codex) {
+        return Ok(false);
+    }
     let Some(current_id) =
         crate::settings::get_effective_current_provider(&state.db, &AppType::Codex)?
     else {
@@ -95,6 +130,10 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
 /// 接管。Web 端的更新 / 重投影调用方已持有该应用的切换锁，接管激活不可能与之
 /// 并发，因此不需要上游的“切换进行中”判定。
 pub(crate) fn proxy_owns_live_config(state: &AppState, app_type: &AppType) -> (bool, bool) {
+    let mode = crate::mode::current::mode_state(app_type);
+    if mode.mode.is_some() {
+        return (mode.is_proxy(), false);
+    }
     let has_live_backup =
         match futures::executor::block_on(state.db.get_live_backup(app_type.as_str())) {
             Ok(backup) => backup.is_some(),
@@ -168,7 +207,13 @@ pub(crate) fn sync_live_for_provider_respecting_takeover(
     if has_live_backup {
         refresh_stale_live_backup(state, app_type, provider);
     }
-    write_live_with_common_config(state.db.as_ref(), app_type, provider)?;
+    if *app_type == AppType::Codex {
+        crate::mode::operation::settle(&state.db, "codex")?;
+        let previous = codex_direct::current_provider(&state.db)?;
+        codex_direct::write_direct(state, previous.as_ref(), provider, false, None)?;
+    } else {
+        write_live_with_common_config(state.db.as_ref(), app_type, provider)?;
+    }
     Ok(true)
 }
 
@@ -263,7 +308,11 @@ mod tests {
             state.db.save_universal_provider(&universal).unwrap();
             ProviderService::sync_universal_to_apps(&state, &universal.id).unwrap();
             for (app, before) in ["claude", "codex", "gemini"].iter().zip(&expected) {
-                let after = state.db.get_provider_by_id(&before.id, app).unwrap().unwrap();
+                let after = state
+                    .db
+                    .get_provider_by_id(&before.id, app)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     serde_json::to_value(&after.meta).unwrap(),
                     serde_json::to_value(&before.meta).unwrap(),
@@ -315,7 +364,9 @@ mod tests {
         ProviderService::update(&state, AppType::Claude, None, updated)
             .expect("update current provider");
 
-        let live: serde_json::Value = crate::config::read_json_file(&crate::config::get_claude_settings_path()).expect("read live");
+        let live: serde_json::Value =
+            crate::config::read_json_file(&crate::config::get_claude_settings_path())
+                .expect("read live");
         assert_eq!(
             live["env"]["ANTHROPIC_BASE_URL"].as_str(),
             Some("https://api.new.example")
@@ -364,7 +415,9 @@ mod tests {
         ProviderService::update(&state, AppType::Claude, None, updated)
             .expect("update current provider");
 
-        let live: serde_json::Value = crate::config::read_json_file(&crate::config::get_claude_settings_path()).expect("read live");
+        let live: serde_json::Value =
+            crate::config::read_json_file(&crate::config::get_claude_settings_path())
+                .expect("read live");
         assert_eq!(
             live["env"]["ANTHROPIC_BASE_URL"].as_str(),
             Some("https://api.new.example")
@@ -422,7 +475,9 @@ mod tests {
         ProviderService::update(&state, AppType::Claude, None, updated)
             .expect("update current provider");
 
-        let live: serde_json::Value = crate::config::read_json_file(&crate::config::get_claude_settings_path()).expect("read live");
+        let live: serde_json::Value =
+            crate::config::read_json_file(&crate::config::get_claude_settings_path())
+                .expect("read live");
         assert_eq!(
             live["env"]["ANTHROPIC_BASE_URL"].as_str(),
             Some("https://api.new.example")
@@ -472,12 +527,15 @@ mod tests {
             let mut old_live = child.settings_config.clone();
             old_live["env"]["ANTHROPIC_BASE_URL"] =
                 serde_json::Value::String("https://api.old.example".to_string());
-            crate::config::write_json_file(&crate::config::get_claude_settings_path(), &old_live).expect("seed old live");
+            crate::config::write_json_file(&crate::config::get_claude_settings_path(), &old_live)
+                .expect("seed old live");
 
             ProviderService::sync_universal_to_apps(state, "shared")
                 .expect("sync universal provider");
 
-            let live: serde_json::Value = crate::config::read_json_file(&crate::config::get_claude_settings_path()).expect("read live");
+            let live: serde_json::Value =
+                crate::config::read_json_file(&crate::config::get_claude_settings_path())
+                    .expect("read live");
             assert_eq!(
                 live["env"]["ANTHROPIC_BASE_URL"].as_str(),
                 Some("https://api.new.example")
@@ -615,7 +673,7 @@ base_url = "http://localhost:8080"
         );
         db.set_config_snippet(
             AppType::Codex.as_str(),
-            Some("disable_response_storage = true".to_string()),
+            Some("approval_policy = \"on-request\"".to_string()),
         )
         .expect("seed snippet");
         let state = AppState::new(db.clone());
@@ -630,7 +688,7 @@ base_url = "http://localhost:8080"
             ..Default::default()
         });
         let live = json!({
-            "config": "model = \"gpt-5.6\"\ndisable_response_storage = false\n\n[model_providers.remote]\nbase_url = \"https://example.com/v1\"\n"
+            "config": "model = \"gpt-5.6\"\napproval_policy = \"never\"\ndisable_response_storage = false\n\n[model_providers.remote]\nbase_url = \"https://example.com/v1\"\n"
         });
         let mut result = SwitchResult::default();
 
@@ -646,7 +704,8 @@ base_url = "http://localhost:8080"
             .get_config_snippet(AppType::Codex.as_str())
             .expect("read snippet")
             .expect("snippet");
-        assert!(snippet.contains("disable_response_storage = false"));
+        assert!(snippet.contains("approval_policy = \"never\""));
+        assert!(!snippet.contains("disable_response_storage"));
         assert!(!snippet.contains("model_providers"));
         assert!(!snippet.contains("https://example.com"));
         assert!(result.warnings.is_empty());
@@ -1015,6 +1074,402 @@ base_url = "http://localhost:8080"
     /// Regression for issue #4272: Fable tier env keys must not enter the shared
     /// Claude common-config snippet (same class as haiku/sonnet/opus model pins).
     #[test]
+    fn retired_snippet_entries_keep_the_current_providers_own_family() {
+        let old_snippet = json!({
+            "env": {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "AWS_REGION": "us-west-2",
+                "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer x",
+                "DISABLE_TELEMETRY": "1"
+            },
+            "model": "picked",
+            "theme": "dark"
+        })
+        .to_string();
+        let retired = |live: Value| -> Value {
+            ProviderService::retired_snippet_entries(&AppType::Claude, &old_snippet, &live)
+                .map(|text| serde_json::from_str(&text).expect("valid JSON"))
+                .unwrap_or(Value::Null)
+        };
+
+        assert_eq!(
+            retired(json!({ "env": {} })),
+            json!({
+                "env": {
+                    "CLAUDE_CODE_USE_BEDROCK": "1",
+                    "AWS_REGION": "us-west-2",
+                    "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer x"
+                },
+                "model": "picked"
+            })
+        );
+        for live in [
+            json!({ "env": { "AWS_BEARER_TOKEN_BEDROCK": "k", "ANTHROPIC_MODEL": "arn" } }),
+            json!({ "env": { "AWS_ACCESS_KEY_ID": "AKIA", "ANTHROPIC_MODEL": "arn" } }),
+            // 旧版 Bedrock API Key 预设把 Key 写在顶层。
+            json!({ "env": { "ANTHROPIC_MODEL": "arn" }, "apiKey": "legacy-bedrock-key" }),
+        ] {
+            assert_eq!(
+                retired(live),
+                json!({
+                    "env": { "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer x" },
+                    "model": "picked"
+                }),
+                "the Bedrock provider keeps its own selector and region"
+            );
+        }
+        assert_eq!(
+            ProviderService::retired_snippet_entries(&AppType::Codex, &old_snippet, &json!({})),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_gemini_common_config_strips_credentials_keeps_shareable() {
+        // Gemini 的共享片段会被 deep-merge 回**其它** Gemini 供应商的 env
+        // Web 尚保留切换时合并片段的流程，因此任何凭据都不得进入片段。
+        // 之前这里只硬编码跳过 GEMINI_API_KEY/GOOGLE_GEMINI_BASE_URL，而
+        // GOOGLE_API_KEY 是 provider.rs 认可的一等 Gemini 凭据 → 会泄露到别的供应商。
+        let settings = json!({
+            "env": {
+                "GEMINI_API_KEY": "g-gem",
+                "GOOGLE_API_KEY": "g-legacy-real-key",
+                "GOOGLE_GEMINI_BASE_URL": "https://gemini.example",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/path/creds.json",
+                "SOME_PROXY_AUTH_TOKEN": "tok-proxy",
+                // 关键字段归供应商，不能随共享片段带入其他供应商。
+                "GEMINI_MODEL": "gemini-2.5-pro",
+                "GOOGLE_GENAI_USE_VERTEXAI": "true",
+                // 可共享的非机密配置必须保留
+                "GEMINI_TIMEOUT_MS": "30000"
+            }
+        });
+
+        let snippet =
+            ProviderService::extract_gemini_common_config(&settings).expect("extract should work");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+
+        for leaked in [
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "SOME_PROXY_AUTH_TOKEN",
+            "GEMINI_MODEL",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+        ] {
+            assert!(
+                value.get(leaked).is_none(),
+                "{leaked} must not go into the shared Gemini snippet"
+            );
+        }
+        assert_eq!(
+            value.get("GEMINI_TIMEOUT_MS").and_then(|v| v.as_str()),
+            Some("30000"),
+            "shareable non-secret config must be preserved"
+        );
+    }
+
+    #[test]
+    fn extract_claude_common_config_strips_all_credentials_keeps_shareable() {
+        // env 混入多种凭据（Anthropic/OpenRouter/Google/OpenAI/Gemini + AWS/Vertex）
+        // 与可共享配置；顶层混入非标准的 apiKey/api_key 凭据与正常设置。
+        let settings = json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-ant",
+                "ANTHROPIC_AUTH_TOKEN": "tok-ant",
+                "OPENROUTER_API_KEY": "sk-or",
+                "GOOGLE_API_KEY": "g-key",
+                "OPENAI_API_KEY": "sk-oai",
+                "GEMINI_API_KEY": "g-gem",
+                "AWS_ACCESS_KEY_ID": "AKIA",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "AWS_SESSION_TOKEN": "sess",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/path/creds.json",
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-tok",
+                "ANTHROPIC_BASE_URL": "https://example.com",
+                "ANTHROPIC_MODEL": "claude-x",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "gpt-5.4-mini",
+                "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000",
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
+                // 可共享、非机密配置（复数 _TOKENS 不应被误剥）
+                "ENABLE_TOOL_SEARCH": "true",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192"
+            },
+            "apiKey": "sk-top",
+            "api_key": "sk-top2",
+            "theme": "dark",
+            "includeCoAuthoredBy": false
+        });
+
+        let snippet = ProviderService::extract_claude_common_config(&settings)
+            .expect("extract should succeed");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+
+        // 所有凭据都不得出现在共享片段里
+        let env = value.get("env");
+        for leaked in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENROUTER_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ] {
+            assert!(
+                env.and_then(|e| e.get(leaked)).is_none(),
+                "credential {leaked} must not leak into common config"
+            );
+        }
+        assert!(
+            value.get("apiKey").is_none() && value.get("api_key").is_none(),
+            "top-level credentials must be stripped"
+        );
+
+        // 端点/模型（provider-specific 非机密）也应剥掉
+        assert!(env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).is_none());
+        assert!(env.and_then(|e| e.get("ANTHROPIC_MODEL")).is_none());
+        assert!(env
+            .and_then(|e| e.get("CLAUDE_CODE_SUBAGENT_MODEL"))
+            .is_none());
+        assert!(env
+            .and_then(|e| e.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS"))
+            .is_none());
+        assert!(env
+            .and_then(|e| e.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"))
+            .is_none());
+
+        // 可共享的非机密配置必须保留（含复数 _TOKENS 不被误剥）
+        assert_eq!(
+            env.and_then(|e| e.get("ENABLE_TOOL_SEARCH"))
+                .and_then(|v| v.as_str()),
+            Some("true")
+        );
+        assert_eq!(
+            env.and_then(|e| e.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS"))
+                .and_then(|v| v.as_str()),
+            Some("8192")
+        );
+        assert_eq!(value.get("theme").and_then(|v| v.as_str()), Some("dark"));
+        assert_eq!(value.get("includeCoAuthoredBy"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn extract_claude_common_config_keeps_key_fields_per_provider() {
+        let settings = json!({
+            "env": {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "CLAUDE_CODE_USE_VERTEX": "1",
+                "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
+                "AWS_REGION": "us-west-2",
+                "AWS_PROFILE": "work",
+                "CLOUD_ML_REGION": "us-east5",
+                "VERTEX_REGION_CLAUDE_4_0_OPUS": "europe-west1",
+                "ANTHROPIC_VERTEX_PROJECT_ID": "my-project",
+                "ANTHROPIC_SMALL_FAST_MODEL": "haiku",
+                "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1",
+                "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                "DISABLE_TELEMETRY": "1"
+            },
+            "model": "opus",
+            "fallbackModel": "sonnet",
+            "apiKeyHelper": "~/bin/key.sh",
+            "awsAuthRefresh": "aws sso login",
+            "hooks": { "Stop": [] },
+            "theme": "dark"
+        });
+
+        let snippet = ProviderService::extract_claude_common_config(&settings)
+            .expect("extract should succeed");
+        let value: Value = serde_json::from_str(&snippet).expect("snippet is valid JSON");
+
+        assert_eq!(
+            value,
+            json!({
+                "env": {
+                    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
+                    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                    "DISABLE_TELEMETRY": "1"
+                },
+                "hooks": { "Stop": [] },
+                "theme": "dark"
+            })
+        );
+        assert!(
+            snippet.find("CLAUDE_CODE_USE_POWERSHELL_TOOL") < snippet.find("DISABLE_TELEMETRY"),
+            "removing keys must not reorder the ones that stay: {snippet}"
+        );
+    }
+
+    #[test]
+    fn extract_codex_common_config_strips_provider_fields_and_injected_artifacts() {
+        // 顶层 experimental_bearer_token 模拟无活跃路由时的 fallback 注入；
+        // web_search = "disabled" 是 cc-switch 对黑名单网关注入的哨兵；
+        // 顶层 wire_api 模拟无 model_provider 时的 fallback 写法；
+        // [mcp.servers] 是历史错误格式，sync_all_enabled 清不掉它。
+        let config_toml = r#"model_provider = "azure"
+model = "gpt-4"
+wire_api = "chat"
+disable_response_storage = true
+model_reasoning_effort = "high"
+approval_policy = "on-request"
+experimental_bearer_token = "sk-live-secret"
+model_catalog_json = "cc-switch-model-catalog.json"
+web_search = "disabled"
+
+[agents]
+default_subagent_model = "gpt-4-mini"
+max_threads = 4
+
+[model_providers.azure]
+name = "Azure OpenAI"
+base_url = "https://azure.example/v1"
+wire_api = "responses"
+
+[mcp_servers.my_server]
+base_url = "http://localhost:8080"
+
+[mcp.servers.legacy_server]
+command = "legacy-cmd"
+"#;
+
+        let settings = json!({ "config": config_toml });
+        let extracted = ProviderService::extract_codex_common_config(&settings)
+            .expect("extract_codex_common_config should succeed");
+
+        assert!(
+            !extracted
+                .lines()
+                .any(|line| line.trim_start().starts_with("model_provider")),
+            "should remove top-level model_provider"
+        );
+        assert!(
+            !extracted
+                .lines()
+                .any(|line| line.trim_start().starts_with("model =")),
+            "should remove top-level model"
+        );
+        assert!(
+            !extracted.contains("[model_providers"),
+            "should remove entire model_providers table"
+        );
+        // MCP 归 DB mcp_servers 表所有，不得进共享片段（含历史错误格式 [mcp.servers]）
+        assert!(
+            !extracted.contains("mcp_servers") && !extracted.contains("http://localhost:8080"),
+            "should strip mcp_servers from the shared snippet, got: {extracted}"
+        );
+        assert!(
+            !extracted.contains("[mcp") && !extracted.contains("legacy-cmd"),
+            "should strip the legacy [mcp.servers] form from the shared snippet, got: {extracted}"
+        );
+        // 顶层 wire_api 是供应商路由语义（model_providers 整表已剥，
+        // 剩余任何 wire_api 都意味着泄漏）
+        assert!(
+            !extracted.contains("wire_api"),
+            "should strip top-level wire_api from the shared snippet, got: {extracted}"
+        );
+        // 注入产物不得进共享片段（bearer token 泄漏为密钥级问题）
+        assert!(
+            !extracted.contains("experimental_bearer_token")
+                && !extracted.contains("sk-live-secret"),
+            "should strip top-level fallback bearer token, got: {extracted}"
+        );
+        assert!(
+            !extracted.contains("model_catalog_json"),
+            "should strip catalog projection pointer, got: {extracted}"
+        );
+        assert!(
+            !extracted.contains("web_search"),
+            "should strip the cc-switch web_search disabled sentinel, got: {extracted}"
+        );
+        // 关键字段归供应商，不在共享片段中传播。
+        for key in [
+            "disable_response_storage",
+            "model_reasoning_effort",
+            "default_subagent_model",
+        ] {
+            assert!(
+                !extracted.contains(key),
+                "key field {key} must stay with the provider, got: {extracted}"
+            );
+        }
+        // 真正可共享的键保留
+        assert!(
+            extracted.contains("approval_policy = \"on-request\"")
+                && extracted.contains("max_threads = 4"),
+            "shareable keys must survive extraction, got: {extracted}"
+        );
+    }
+
+    #[test]
+    fn extract_codex_common_config_keeps_user_set_web_search() {
+        let config_toml = "web_search = \"enabled\"\ndisable_response_storage = true\n";
+        let settings = json!({ "config": config_toml });
+        let extracted = ProviderService::extract_codex_common_config(&settings)
+            .expect("extract should succeed");
+        assert!(
+            extracted.contains("web_search = \"enabled\""),
+            "a user-set web_search value is a shareable preference, got: {extracted}"
+        );
+    }
+
+    #[test]
+    fn sensitive_key_matcher_covers_common_credential_namings() {
+        for key in [
+            // 裸 `_KEY`：最常见的写法，却曾被"只枚举 `_API_KEY` 这些子类"漏在外面
+            "OPENAI_KEY",
+            "GROQ_KEY",
+            "XAI_KEY",
+            // 不带分隔符的复合写法
+            "VOLC_ACCESSKEY",
+            "ALIYUN_SECRETKEY",
+            "SOME_APITOKEN",
+            // personal access token：既不含 TOKEN 也不含 KEY
+            "GITHUB_PAT",
+            "gitlab_pat",
+            // 口令类缩写
+            "MYSQL_PWD",
+            "DB_PASS",
+            "GPG_PASSPHRASE",
+            "AWS_CREDS",
+            // 发往上游的自定义请求头、Cookie、Authorization
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "GEMINI_CLI_CUSTOM_HEADERS",
+            "headers",
+            "UPSTREAM_COOKIE",
+            "PROXY_AUTHORIZATION",
+        ] {
+            assert!(
+                ProviderService::is_sensitive_config_key(key),
+                "{key} must be treated as a credential"
+            );
+        }
+
+        // 后缀必须带下划线，不能把正常配置一起卷进来
+        for key in [
+            "PATH",
+            "OLDPWD",
+            "GEMINI_COMPAT",
+            "SSL_BYPASS",
+            "GEMINI_TIMEOUT_MS",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            // 名字带 HEADER 但不是发往上游的凭据：普通开关、用户自己的遥测端点
+            "CLAUDE_CODE_ATTRIBUTION_HEADER",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+        ] {
+            assert!(
+                !ProviderService::is_sensitive_config_key(key),
+                "{key} is ordinary shareable config and must not be stripped"
+            );
+        }
+    }
+
+    #[test]
     fn extract_claude_common_config_strips_fable_model_env_keys() {
         let settings = json!({
             "env": {
@@ -1159,24 +1614,43 @@ base_url = "http://localhost:8080"
 impl ProviderService {
     pub(crate) fn is_sensitive_config_key(name: &str) -> bool {
         let upper = name.to_ascii_uppercase();
+
+        // 单数 `_TOKEN` 命中 AWS_SESSION_TOKEN 等，但**不**误伤复数 `_TOKENS`
+        // （CLAUDE_CODE_MAX_OUTPUT_TOKENS / MAX_THINKING_TOKENS 是正常可共享配置）。
         const SENSITIVE_SUFFIXES: &[&str] = &[
+            // 裸 `_KEY` 是最常见的凭据写法（OPENAI_KEY / GROQ_KEY / XAI_KEY…），
+            // 必须单列：只枚举 `_API_KEY` / `_ACCESS_KEY` 这些子类，等于把最普通
+            // 的那一种漏在外面。下面几条 `_*_KEY` 被它蕴含，保留是为了说明覆盖面。
             "_KEY",
             "_API_KEY",
             "_ACCESS_KEY",
             "_ACCESS_KEY_ID",
             "_KEY_ID",
             "_PRIVATE_KEY",
+            // 不带分隔符的复合写法各走各的后缀：`_KEY` 够不着 `..._APIKEY`
+            // （倒数第四个字符是 I 不是下划线）。VOLC_ACCESSKEY 是火山引擎文档
+            // 里的正式变量名，本仓库就实现了火山 AK/SK 用量查询。
             "_APIKEY",
             "_ACCESSKEY",
             "_SECRETKEY",
             "_APITOKEN",
             "_AUTH_TOKEN",
             "_TOKEN",
+            // GITHUB_PAT / GITLAB_PAT 等 personal access token 的惯用写法，
+            // 既不含 TOKEN 也不含 KEY，前面每一条规则都够不着。
             "_PAT",
+            // 口令类的常见缩写。`_PASS` 不会误伤 `*_BYPASS`（那个以 `_BYPASS`
+            // 结尾），`_PWD` 也不会误伤 shell 的 PWD / OLDPWD。
             "_PWD",
             "_PASS",
             "_PASSPHRASE",
             "_CREDS",
+            // 发往上游的自定义请求头（ANTHROPIC_CUSTOM_HEADERS、
+            // GEMINI_CLI_CUSTOM_HEADERS）：常见写法是 `Authorization: Bearer …`
+            // 或 `Cookie: …`，整串就是凭据。只认 `_CUSTOM_HEADERS`，不按 HEADER
+            // 一刀切：CLAUDE_CODE_ATTRIBUTION_HEADER 是普通开关，
+            // OTEL_EXPORTER_OTLP_HEADERS 发往用户自己的遥测端点，都应照常共享。
+            "_CUSTOM_HEADERS",
         ];
         const SENSITIVE_EXACT: &[&str] = &[
             "APIKEY",
@@ -1185,7 +1659,10 @@ impl ProviderService {
             "SECRET",
             "PASSWORD",
             "CREDENTIALS",
+            "HEADERS",
         ];
+        // contains：覆盖 AWS_SECRET_ACCESS_KEY / *_CLIENT_SECRET /
+        // GOOGLE_APPLICATION_CREDENTIALS / AWS_BEARER_TOKEN_BEDROCK 等变体。
         const SENSITIVE_CONTAINS: &[&str] = &[
             "SECRET",
             "PASSWORD",
@@ -1193,15 +1670,13 @@ impl ProviderService {
             "CREDENTIAL",
             "PRIVATE_KEY",
             "BEARER_TOKEN",
+            "COOKIE",
+            "AUTHORIZATION",
         ];
 
         SENSITIVE_EXACT.contains(&upper.as_str())
-            || SENSITIVE_SUFFIXES
-                .iter()
-                .any(|suffix| upper.ends_with(suffix))
-            || SENSITIVE_CONTAINS
-                .iter()
-                .any(|fragment| upper.contains(fragment))
+            || SENSITIVE_SUFFIXES.iter().any(|s| upper.ends_with(s))
+            || SENSITIVE_CONTAINS.iter().any(|c| upper.contains(c))
     }
 
     fn normalize_provider_if_claude(app_type: &AppType, provider: &mut Provider) {
@@ -1391,25 +1866,44 @@ impl ProviderService {
     ///
     /// 对于累加模式应用（OpenCode, OpenClaw），不存在"当前供应商"概念，直接返回空字符串。
     pub fn current(state: &AppState, app_type: AppType) -> Result<String, AppError> {
+        if matches!(
+            app_type,
+            AppType::Claude
+                | AppType::ClaudeDesktop
+                | AppType::Codex
+                | AppType::Gemini
+                | AppType::GrokBuild
+        ) {
+            crate::mode::operation::settle(state.db.as_ref(), app_type.as_str())?;
+        }
         // Additive mode apps have no "current" provider concept
         if app_type.is_additive_mode() {
             return Ok(String::new());
         }
-        crate::settings::get_effective_current_provider(&state.db, &app_type)
-            .map(|opt| opt.unwrap_or_default())
+        crate::mode::current::provider_for(
+            &state.db,
+            &app_type,
+            crate::mode::current::Purpose::InUse,
+        )
+        .map(|opt| opt.unwrap_or_default())
     }
 
     fn save_mcode_provider(
         state: &AppState,
         provider: &Provider,
         write_live: bool,
+        create: bool,
     ) -> Result<bool, AppError> {
         let previous = state.db.get_provider_by_id(&provider.id, "mcode")?;
         state.db.save_provider("mcode", provider)?;
         if write_live {
-            if let Err(error) =
-                crate::mcode_config::set_provider(&provider.id, provider.settings_config.clone())
-            {
+            let config = provider.settings_config.clone();
+            let written = if create {
+                crate::mcode_config::add_provider(&provider.id, config)
+            } else {
+                crate::mcode_config::set_provider(&provider.id, config)
+            };
+            if let Err(error) = written {
                 match previous {
                     Some(previous) => state.db.save_provider("mcode", &previous)?,
                     None => state.db.delete_provider("mcode", &provider.id)?,
@@ -1427,6 +1921,21 @@ impl ProviderService {
         provider: Provider,
         add_to_live: bool,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::ClaudeDesktop {
+            return Self::save_desktop(state, provider, true);
+        }
+        if app_type == AppType::Codex {
+            return Self::save_codex(state, provider, None, true);
+        }
+        if app_type == AppType::Claude {
+            return Self::save_claude(state, provider, None, true);
+        }
+        if app_type == AppType::Gemini {
+            return Self::save_gemini(state, provider, None, true);
+        }
+        if app_type == AppType::GrokBuild {
+            return Self::save_grok(state, provider, None, true);
+        }
         if app_type == AppType::Pi {
             return pi::add(state, provider, add_to_live);
         }
@@ -1499,11 +2008,33 @@ impl ProviderService {
         }
 
         if app_type == AppType::Mcode {
-            return Self::save_mcode_provider(state, &provider, add_to_live);
+            // Serialize user-chosen keys; the live write checks again under MCode's file lock.
+            let _guard = futures::executor::block_on(
+                state.proxy_service.lock_switch_for_app(app_type.as_str()),
+            );
+            if state
+                .db
+                .get_provider_by_id(&provider.id, "mcode")?
+                .is_some()
+                || crate::mcode_config::provider_key_exists(&provider.id)?
+            {
+                return Err(AppError::InvalidInput(format!(
+                    "MCode provider key '{}' already exists",
+                    provider.id
+                )));
+            }
+            return Self::save_mcode_provider(state, &provider, add_to_live, true);
         }
 
         // Save to database
         state.db.save_provider(app_type.as_str(), &provider)?;
+
+        if matches!(app_type, AppType::ClaudeDesktop) {
+            if current.is_none() {
+                crate::claude_desktop_config::switch_provider(state.db.as_ref(), &provider)?;
+            }
+            return Ok(true);
+        }
 
         // Additive mode apps (OpenCode, OpenClaw) - optionally write to live config
         if app_type.is_additive_mode() {
@@ -1541,6 +2072,46 @@ impl ProviderService {
         original_id: Option<&str>,
         provider: Provider,
     ) -> Result<bool, AppError> {
+        if app_type == AppType::ClaudeDesktop {
+            if original_id.is_some_and(|id| id != provider.id) {
+                return Err(AppError::Message(
+                    "Claude Desktop provider ID cannot be changed".into(),
+                ));
+            }
+            return Self::save_desktop(state, provider, false);
+        }
+        if app_type == AppType::Codex {
+            if original_id.is_some_and(|id| id != provider.id) {
+                return Err(AppError::Message(
+                    "Codex provider ID cannot be changed".into(),
+                ));
+            }
+            return Self::save_codex(state, provider, None, false);
+        }
+        if app_type == AppType::Claude {
+            if original_id.is_some_and(|id| id != provider.id) {
+                return Err(AppError::Message(
+                    "Claude provider ID cannot be changed".into(),
+                ));
+            }
+            return Self::save_claude(state, provider, None, false);
+        }
+        if app_type == AppType::Gemini {
+            if original_id.is_some_and(|id| id != provider.id) {
+                return Err(AppError::Message(
+                    "Gemini provider ID cannot be changed".into(),
+                ));
+            }
+            return Self::save_gemini(state, provider, None, false);
+        }
+        if app_type == AppType::GrokBuild {
+            if original_id.is_some_and(|id| id != provider.id) {
+                return Err(AppError::Message(
+                    "Grok provider ID cannot be changed".into(),
+                ));
+            }
+            return Self::save_grok(state, provider, None, false);
+        }
         if app_type == AppType::Pi {
             return pi::update(state, original_id, provider);
         }
@@ -1753,7 +2324,7 @@ impl ProviderService {
             )?;
             Self::set_provider_live_config_managed(&mut provider, live_config_managed);
             if app_type == AppType::Mcode {
-                return Self::save_mcode_provider(state, &provider, live_config_managed);
+                return Self::save_mcode_provider(state, &provider, live_config_managed, false);
             }
             state.db.save_provider(app_type.as_str(), &provider)?;
             if !live_config_managed {
@@ -1846,7 +2417,10 @@ impl ProviderService {
         let local_current = crate::settings::get_current_provider(&app_type);
         let db_current = state.db.get_current_provider(app_type.as_str())?;
 
-        if local_current.as_deref() == Some(id) || db_current.as_deref() == Some(id) {
+        if local_current.as_deref() == Some(id)
+            || db_current.as_deref() == Some(id)
+            || crate::mode::current::is_referenced(&state.db, &app_type, id)?
+        {
             return Err(AppError::Message(
                 "无法删除当前正在使用的供应商".to_string(),
             ));
@@ -1943,11 +2517,36 @@ impl ProviderService {
         if app_type == AppType::Pi {
             return pi::enable(state, id);
         }
+        let _service = if crate::mode::controller::PROXY_APPS.contains(&app_type) {
+            Some(futures::executor::block_on(
+                crate::mode::controller::lock_service(),
+            ))
+        } else {
+            None
+        };
+        if matches!(
+            app_type,
+            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
+        ) {
+            crate::mode::operation::settle(state.db.as_ref(), app_type.as_str())?;
+        }
         // Check if provider exists
         let providers = state.db.get_all_providers(app_type.as_str())?;
         let _provider = providers
             .get(id)
             .ok_or_else(|| AppError::Message(format!("供应商 {id} 不存在")))?;
+
+        if matches!(app_type, AppType::ClaudeDesktop) {
+            futures::executor::block_on(crate::mode::controller::switch_desktop(state, id))?;
+            return Ok(SwitchResult::default());
+        }
+
+        if crate::mode::current::mode_state(&app_type).is_proxy() {
+            futures::executor::block_on(crate::mode::controller::set_route_locked(
+                state, &app_type, id,
+            ))?;
+            return Ok(SwitchResult::default());
+        }
 
         // OMO providers are switched through their own exclusive path.
         if matches!(app_type, AppType::OpenCode) && _provider.category.as_deref() == Some("omo") {
@@ -2079,6 +2678,27 @@ impl ProviderService {
             return Ok(SwitchResult::default());
         }
 
+        if app_type == AppType::Claude {
+            let current = crate::settings::get_effective_current_provider(&state.db, &app_type)?;
+            let previous = current.as_deref().and_then(|id| providers.get(id));
+            claude_direct::switch_to(state.db.as_ref(), previous, provider)?;
+            return Ok(SwitchResult::default());
+        }
+
+        if app_type == AppType::Gemini {
+            gemini_direct::switch_to(&state.db, provider)?;
+            return Ok(SwitchResult::default());
+        }
+        if app_type == AppType::GrokBuild {
+            let previous = grok_direct::current_provider(&state.db)?;
+            grok_direct::switch_to(&state.db, previous.as_ref(), provider)?;
+            return Ok(SwitchResult::default());
+        }
+        if app_type == AppType::Codex {
+            let previous = codex_direct::current_provider(&state.db)?;
+            codex_direct::write_direct(state, previous.as_ref(), provider, true, None)?;
+            return Ok(SwitchResult::default());
+        }
         let mut result = SwitchResult::default();
 
         // Backfill: Backfill current live config to current provider
@@ -2098,7 +2718,7 @@ impl ProviderService {
                     // Only backfill when switching to a different provider
                     if let Ok(live_config) = read_live_settings(app_type.clone()) {
                         if let Some(mut current_provider) = providers.get(current_id).cloned() {
-                            Self::sync_common_config_snippet_from_live(
+                            let retired_entries = Self::sync_common_config_snippet_from_live(
                                 state,
                                 &app_type,
                                 &current_provider,
@@ -2112,6 +2732,14 @@ impl ProviderService {
                                     &current_provider,
                                     live_config,
                                 );
+                            if let Some(retired) = retired_entries.as_deref() {
+                                current_provider.settings_config =
+                                    live::remove_common_config_from_settings(
+                                        &app_type,
+                                        &current_provider.settings_config,
+                                        retired,
+                                    )?;
+                            }
                             if let Some(account_id) = current_managed_codex_account_id.as_deref() {
                                 let live_auth = current_provider.settings_config.get("auth");
                                 if live_auth.is_some_and(|auth| {
@@ -2308,6 +2936,7 @@ impl ProviderService {
         if app_type.is_additive_mode() {
             return sync_current_provider_for_app_to_live(state, &app_type);
         }
+        let _service = futures::executor::block_on(crate::mode::controller::lock_service());
         let _switch_guard = if matches!(
             app_type,
             AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
@@ -2318,6 +2947,16 @@ impl ProviderService {
         } else {
             None
         };
+
+        crate::mode::operation::settle(&state.db, app_type.as_str())?;
+        if futures::executor::block_on(crate::mode::controller::reapply_after_save_locked(
+            state, &app_type, None,
+        ))? {
+            return Ok(());
+        }
+        if crate::mode::current::is_proxy(&app_type) {
+            return Ok(());
+        }
 
         let current_id =
             match crate::settings::get_effective_current_provider(&state.db, &app_type)? {
@@ -2355,6 +2994,12 @@ impl ProviderService {
         app_type: AppType,
         legacy_snippet: &str,
     ) -> Result<(), AppError> {
+        if matches!(
+            app_type,
+            AppType::Claude | AppType::Codex | AppType::Gemini | AppType::GrokBuild
+        ) {
+            return Ok(());
+        }
         if app_type.is_additive_mode() || legacy_snippet.trim().is_empty() {
             return Ok(());
         }
@@ -2430,7 +3075,7 @@ impl ProviderService {
         provider: &Provider,
         live_config: &Value,
         result: &mut SwitchResult,
-    ) {
+    ) -> Option<String> {
         if !matches!(app_type, AppType::Claude | AppType::Codex)
             || provider
                 .meta
@@ -2438,15 +3083,15 @@ impl ProviderService {
                 .and_then(|meta| meta.common_config_enabled)
                 != Some(true)
         {
-            return;
+            return None;
         }
 
         match state.db.is_config_snippet_cleared(app_type.as_str()) {
-            Ok(true) => return,
+            Ok(true) => return None,
             Ok(false) => {}
             Err(error) => {
                 log::warn!("读取 {} 通用配置清空标记失败: {error}", app_type.as_str());
-                return;
+                return None;
             }
         }
 
@@ -2461,18 +3106,22 @@ impl ProviderService {
                     app_type.as_str(),
                     provider.id
                 );
-                return;
+                return None;
             }
         };
-        if state
-            .db
-            .get_config_snippet(app_type.as_str())
-            .ok()
-            .flatten()
-            .as_deref()
-            == Some(new_snippet.as_str())
-        {
-            return;
+        // 重提取前保留旧片段，回填须剥除本次不再共享的键值。
+        let current = match state.db.get_config_snippet(app_type.as_str()) {
+            Ok(current) => current,
+            Err(error) => {
+                log::warn!("读取旧通用配置失败，跳过重提取: {error}");
+                result
+                    .warnings
+                    .push(format!("common_config_sync_failed:{}", provider.id));
+                return None;
+            }
+        };
+        if current.as_deref() == Some(new_snippet.as_str()) {
+            return None;
         }
 
         if let Err(error) = state
@@ -2487,7 +3136,111 @@ impl ProviderService {
             result
                 .warnings
                 .push(format!("common_config_sync_failed:{}", provider.id));
+            return None;
         }
+        current
+            .as_deref()
+            .and_then(|old| Self::retired_snippet_entries(app_type, old, live_config))
+    }
+
+    /// 旧片段里、按现行提取规则不再共享的条目（凭据、关键字段），序列化成可交给
+    /// `remove_common_config_from_settings` 的片段文本；没有则返回 `None`。
+    ///
+    /// 提取规则收紧后（补上 `ANTHROPIC_CUSTOM_HEADERS` 这类凭据、`CLAUDE_CODE_USE_BEDROCK`
+    /// 这类关键字段），存量片段里还留着这些条目，并已合并进当前 live。重提取会把它们从
+    /// 片段里去掉，但回填按**新**片段剥离，就剥不掉它们，于是某一家的自定义头、Bedrock
+    /// 选择器会被永久写进**当前**供应商的行。所以切换时要按旧片段里的值再剥一次。
+    ///
+    /// 例外：当前供应商自己带着 AWS / Google 的凭据时，同家族的选择器和区域是它自己的
+    /// （片段收走它们时，也从它的行里剥掉了），不剥。凭据键从不进片段，一定是这一家的。
+    ///
+    /// 代价：别的供应商如果把自己的选择器或区域交给了片段，这次之后要重填一次；
+    /// `/model` 的选择回到默认模型。与 `scrub_leaked_gemini_common_config` 取舍一致：
+    /// 宁可让人重填，也不把一家的凭据和路由留在别家的行里。
+    ///
+    /// Codex 同样按旧片段剥除新规则排除的模型、推理档位和选路字段。
+    fn retired_snippet_entries(app_type: &AppType, snippet: &str, live: &Value) -> Option<String> {
+        if matches!(app_type, AppType::Codex) {
+            let shared = Self::extract_codex_common_config(&serde_json::json!({
+                "config": snippet
+            }))
+            .ok()?;
+            let retired = live::update_toml_common_config_snippet(snippet, &shared, false).ok()?;
+            let doc = retired.parse::<toml_edit::DocumentMut>().ok()?;
+            return (!doc.as_table().is_empty()).then_some(retired);
+        }
+        if !matches!(app_type, AppType::Claude) {
+            return None;
+        }
+        let Ok(Value::Object(entries)) = serde_json::from_str::<Value>(snippet) else {
+            return None;
+        };
+
+        let owns_aws = Self::claude_owns_credentials(live, "AWS_");
+        let owns_google = Self::claude_owns_credentials(live, "GOOGLE_");
+        let keep = |key: &str| {
+            (owns_aws && Self::is_claude_aws_family_key(key))
+                || (owns_google && Self::is_claude_google_family_key(key))
+        };
+
+        let mut retired = serde_json::Map::new();
+        for (key, value) in entries {
+            if key == "env" {
+                let Value::Object(env) = value else {
+                    continue;
+                };
+                let env: serde_json::Map<String, Value> = env
+                    .into_iter()
+                    .filter(|(name, _)| !Self::claude_env_key_is_shared(name) && !keep(name))
+                    .collect();
+                if !env.is_empty() {
+                    retired.insert(key, Value::Object(env));
+                }
+            } else if !Self::claude_top_key_is_shared(&key) && !keep(&key) {
+                retired.insert(key, value);
+            }
+        }
+
+        (!retired.is_empty()).then(|| Value::Object(retired).to_string())
+    }
+
+    /// live 里是否有这家自己的某类凭据：`env` 里带该前缀的敏感键。AWS 另认旧 Bedrock
+    /// API Key 预设写在顶层的 `apiKey`（Claude Code 自身没有这个设置）。
+    fn claude_owns_credentials(live: &Value, env_prefix: &str) -> bool {
+        let in_env = live
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| {
+                env.keys()
+                    .any(|key| key.starts_with(env_prefix) && Self::is_sensitive_config_key(key))
+            });
+        in_env || (env_prefix == "AWS_" && live.get("apiKey").is_some())
+    }
+
+    fn is_claude_aws_family_key(key: &str) -> bool {
+        key.starts_with("AWS_")
+            || key.starts_with("ANTHROPIC_BEDROCK_")
+            || matches!(
+                key,
+                "CLAUDE_CODE_USE_BEDROCK"
+                    | "CLAUDE_CODE_USE_ANTHROPIC_AWS"
+                    | "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION"
+                    | "awsAuthRefresh"
+                    | "awsCredentialExport"
+            )
+    }
+
+    fn is_claude_google_family_key(key: &str) -> bool {
+        key.starts_with("GOOGLE_")
+            || key.starts_with("VERTEX_REGION_")
+            || key.starts_with("ANTHROPIC_VERTEX_")
+            || matches!(
+                key,
+                "CLAUDE_CODE_USE_VERTEX"
+                    | "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD"
+                    | "CLOUD_ML_REGION"
+                    | "gcpAuthRefresh"
+            )
     }
 
     /// Extract common config snippet from current provider
@@ -2542,66 +3295,44 @@ impl ProviderService {
         }
     }
 
+    /// Claude `env` 里的键能否进通用配置片段。
+    ///
+    /// 片段会合并进每一家勾选了它的供应商，所以只能放与供应商无关的设置。关键字段
+    /// （请求发到哪、凭什么鉴权、哪个模型名、哪种协议）一旦进了片段，就会跟着切换带给
+    /// 下一家：从 Bedrock 切到官方后，官方的 live 里还留着 `CLAUDE_CODE_USE_BEDROCK=1`，
+    /// Claude Code 继续走 Bedrock。凭据另由 `is_sensitive_config_key` 统一剥离。
+    fn claude_env_key_is_shared(key: &str) -> bool {
+        // Context limits follow the actual upstream model. Sharing these
+        // across providers can cap GPT/Kimi to the wrong window and make
+        // Claude Code compact too early or miss the upstream limit.
+        const UPSTREAM_WINDOW_KEYS: &[&str] = &[
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        ];
+
+        !crate::live::floor::claude_floor_env(key)
+            && !UPSTREAM_WINDOW_KEYS.contains(&key)
+            && !Self::is_sensitive_config_key(key)
+    }
+
+    /// Claude 顶层键能否进通用配置片段，口径同 [`Self::claude_env_key_is_shared`]。
+    /// `model` 是 `/model` 保存的选择，属于当时那一家。
+    fn claude_top_key_is_shared(key: &str) -> bool {
+        !crate::live::floor::claude_floor_top(key) && !Self::is_sensitive_config_key(key)
+    }
+
     /// Extract common config for Claude (JSON format)
     fn extract_claude_common_config(settings: &Value) -> Result<String, AppError> {
         let mut config = settings.clone();
 
-        const ENV_EXCLUDES: &[&str] = &[
-            "ANTHROPIC_MODEL",
-            "ANTHROPIC_REASONING_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
-            "ANTHROPIC_DEFAULT_FABLE_MODEL",
-            "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-            "ANTHROPIC_BASE_URL",
-        ];
-
-        const TOP_LEVEL_EXCLUDES: &[&str] = &[
-            "apiBaseUrl",
-            // Legacy model fields
-            "primaryModel",
-            "smallFastModel",
-        ];
-
-        // Remove env fields
-        if let Some(env) = config.get_mut("env").and_then(|v| v.as_object_mut()) {
-            let sensitive: Vec<String> = env
-                .keys()
-                .filter(|key| Self::is_sensitive_config_key(key))
-                .cloned()
-                .collect();
-            for key in ENV_EXCLUDES {
-                env.remove(*key);
-            }
-            for key in sensitive {
-                env.remove(&key);
-            }
-            // If env is empty after removal, remove the env object itself
-            if env.is_empty() {
-                config.as_object_mut().map(|obj| obj.remove("env"));
-            }
-        }
-
-        // Remove top-level fields
         if let Some(obj) = config.as_object_mut() {
-            let sensitive: Vec<String> = obj
-                .keys()
-                .filter(|key| Self::is_sensitive_config_key(key))
-                .cloned()
-                .collect();
-            for key in TOP_LEVEL_EXCLUDES {
-                obj.remove(*key);
+            if let Some(Value::Object(env)) = obj.get_mut("env") {
+                env.retain(|key, _| Self::claude_env_key_is_shared(key));
             }
-            for key in sensitive {
-                obj.remove(&key);
-            }
+            obj.retain(|key, value| match key.as_str() {
+                "env" => !value.as_object().is_some_and(|env| env.is_empty()),
+                _ => Self::claude_top_key_is_shared(key),
+            });
         }
 
         // Check if result is empty
@@ -2629,30 +3360,60 @@ impl ProviderService {
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| AppError::Message(format!("TOML parse error: {e}")))?;
 
-        // Remove provider-specific fields.
+        // 关键字段（选路、模型名、推理档位等，见 `live::floor`）归供应商，不进片段：
+        // 避免将一家供应商的连接配置共享给其他供应商。
         let root = doc.as_table_mut();
-        root.remove("model");
-        root.remove("model_provider");
-        // Legacy/alt formats might use a top-level base_url.
-        root.remove("base_url");
-        root.remove("wire_api");
+        for key in crate::live::floor::CODEX_FLOOR_TOP {
+            root.remove(key);
+        }
+        for path in crate::live::floor::CODEX_FLOOR_NESTED {
+            let [parent, key] = path else { continue };
+            if let Some(table) = root
+                .get_mut(parent)
+                .and_then(|item| item.as_table_like_mut())
+            {
+                table.remove(key);
+                if table.is_empty() {
+                    root.remove(parent);
+                }
+            }
+        }
 
         // Remove entire model_providers table (provider-specific configuration)
         root.remove("model_providers");
+
+        // MCP 服务器归 DB mcp_servers 表所有：进了共享片段会绕过按应用的
+        // 启用状态被合并进所有勾选通用配置的供应商，且在通用配置编辑框里
+        // 显示为一份"重复"的 MCP 配置。
         root.remove("mcp_servers");
-        if let Some(mcp) = root
+        // 历史错误格式 [mcp.servers] 一并剥离（与 strip_codex_mcp_servers_from_settings
+        // 一致）：sync_all_enabled 只管理 [mcp_servers.*]，legacy 形态一旦进了
+        // 片段就会被合并进所有供应商，且没有任何同步路径能清掉这个孤儿。
+        if let Some(mcp_tbl) = root
             .get_mut("mcp")
             .and_then(|item| item.as_table_like_mut())
         {
-            mcp.remove("servers");
-            if mcp.is_empty() {
+            mcp_tbl.remove("servers");
+            if mcp_tbl.is_empty() {
                 root.remove("mcp");
             }
         }
+
+        // cc-switch 写 live 时注入的产物一律不进共享片段：
+        // - experimental_bearer_token 正常写在 [model_providers.<id>] 内（上面
+        //   整表已剥），但无活跃路由 / 内建保留 id / 路由表缺失三种 fallback
+        //   会落在顶层——不剥等于把 API 密钥写进共享片段。
         root.remove("experimental_bearer_token");
+        // - model_catalog_json 指向按供应商生成的 catalog 投影文件（DB 为 SSOT）。
         root.remove("model_catalog_json");
-        if root.get("web_search").and_then(|item| item.as_str()) == Some("disabled") {
-            root.remove("web_search");
+        // - web_search 只剥 cc-switch 注入的 "disabled" 哨兵；用户手设的其它值
+        //   属于可共享偏好，保留。
+        if root
+            .get(crate::codex_config::CODEX_WEB_SEARCH_FIELD)
+            .and_then(|item| item.as_str())
+            == Some(crate::codex_config::CODEX_WEB_SEARCH_DISABLED)
+        {
+            root.remove(crate::codex_config::CODEX_WEB_SEARCH_FIELD);
         }
 
         // Clean up multiple empty lines (keep at most one blank line).
@@ -2685,7 +3446,11 @@ impl ProviderService {
         let mut snippet = serde_json::Map::new();
         if let Some(env) = env {
             for (key, value) in env {
-                if key == "GOOGLE_GEMINI_BASE_URL" || Self::is_sensitive_config_key(key) {
+                // 关键字段（地址、凭据、模型名、Vertex 选择器）归供应商，不进片段：
+                // 防止模型名和认证方式随通用配置传播到其他供应商。凭据另交给
+                // `is_sensitive_config_key` 统一模式匹配（与 Claude 提取器一致），
+                // 兜住关键字段清单以外的 `*_API_KEY`、`*_TOKEN`。
+                if crate::live::floor::gemini_floor_env(key) || Self::is_sensitive_config_key(key) {
                     continue;
                 }
                 let Value::String(v) = value else {
@@ -3669,3 +4434,12 @@ impl ProviderService {
         }
     }
 }
+
+#[cfg(test)]
+mod claude_runtime_tests;
+
+#[cfg(test)]
+mod gemini_runtime_tests;
+
+#[cfg(test)]
+mod grok_runtime_tests;

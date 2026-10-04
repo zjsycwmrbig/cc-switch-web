@@ -4,15 +4,7 @@ import { FormLabel } from "@/components/ui/form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ClaudeIcon, CodexIcon, GeminiIcon } from "@/components/BrandIcons";
-import {
-  ArrowUpAZ,
-  Search,
-  Zap,
-  Star,
-  Heart,
-  Layers,
-  Settings2,
-} from "lucide-react";
+import { ArrowUpAZ, Search, Zap, Layers, Settings2 } from "lucide-react";
 import type { ProviderPreset } from "@/config/claudeProviderPresets";
 import type { CodexProviderPreset } from "@/config/codexProviderPresets";
 import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
@@ -27,16 +19,13 @@ import {
   type UniversalProviderPreset,
 } from "@/config/universalProviderPresets";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import {
+  compareProviderNames,
+  sortProvidersByName,
+} from "@/utils/providerSort";
+import { PRESET_SEARCH_ALIASES } from "@/config/presetSearchAliases";
 
 type PresetTranslator = (key: string) => unknown;
-
-export const PresetSortMode = {
-  Original: "original",
-  NameAsc: "nameAsc",
-} as const;
-
-export type PresetSortMode =
-  (typeof PresetSortMode)[keyof typeof PresetSortMode];
 
 export type AnyPreset =
   | ProviderPreset
@@ -64,7 +53,14 @@ export function getPresetSearchText(
   entry: PresetEntry,
   t: PresetTranslator,
 ): string {
-  return [getPresetDisplayName(entry.preset, t), entry.preset.name]
+  return [
+    getPresetDisplayName(entry.preset, t),
+    entry.preset.name,
+    "websiteUrl" in entry.preset ? entry.preset.websiteUrl : "",
+    "apiKeyUrl" in entry.preset ? entry.preset.apiKeyUrl : "",
+    PRESET_SEARCH_ALIASES[entry.preset.name] ?? "",
+  ]
+    .filter(Boolean)
     .join(" ")
     .toLowerCase();
 }
@@ -86,49 +82,18 @@ export function filterPresetEntries(
 
 export function sortPresetEntries(
   entries: PresetEntry[],
-  sortMode: PresetSortMode,
   t: PresetTranslator,
 ): PresetEntry[] {
-  const byDisplayName = (a: PresetEntry, b: PresetEntry) =>
-    getPresetDisplayName(a.preset, t).localeCompare(
+  return [...entries].sort((a, b) =>
+    compareProviderNames(
+      getPresetDisplayName(a.preset, t),
       getPresetDisplayName(b.preset, t),
-    );
-
-  if (sortMode === PresetSortMode.Original) {
-    // 置顶优先级：官方分类 > 尊享合作伙伴（Kimi）> 其余赞助商 > 非赞助商。
-    // 前三组用分区拼接而非排序，保持各自在预设文件里的相对顺序
-    // （赞助商的文件顺序与 README 赞助商表对齐）；非赞助商按显示名排序。
-    // 排他条件保证同时命中多组的预设只归入最前面的组、不被重复。
-    const official = entries.filter(
-      (entry) => entry.preset.category === "official",
-    );
-    const prime = entries.filter(
-      (entry) =>
-        entry.preset.category !== "official" && entry.preset.primePartner,
-    );
-    const partner = entries.filter(
-      (entry) =>
-        entry.preset.category !== "official" &&
-        !entry.preset.primePartner &&
-        entry.preset.isPartner,
-    );
-    const rest = entries
-      .filter(
-        (entry) =>
-          entry.preset.category !== "official" &&
-          !entry.preset.primePartner &&
-          !entry.preset.isPartner,
-      )
-      .sort(byDisplayName);
-    return [...official, ...prime, ...partner, ...rest];
-  }
-
-  return [...entries].sort(byDisplayName);
+    ),
+  );
 }
 
 export interface PresetVisibilityOptions {
   query: string;
-  sortMode: PresetSortMode;
   t: PresetTranslator;
 }
 
@@ -136,9 +101,9 @@ export function getVisiblePresetEntries(
   entries: PresetEntry[],
   options: PresetVisibilityOptions,
 ): PresetEntry[] {
-  const { query, sortMode, t } = options;
+  const { query, t } = options;
 
-  return sortPresetEntries(filterPresetEntries(entries, query, t), sortMode, t);
+  return sortPresetEntries(filterPresetEntries(entries, query, t), t);
 }
 
 interface ProviderPresetSelectorProps {
@@ -163,9 +128,6 @@ export function ProviderPresetSelector({
   const { t } = useTranslation();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortMode, setSortMode] = useState<PresetSortMode>(
-    PresetSortMode.Original,
-  );
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -210,10 +172,9 @@ export function ProviderPresetSelector({
     () =>
       getVisiblePresetEntries(presetEntries, {
         query: searchQuery,
-        sortMode,
         t,
       }),
-    [presetEntries, searchQuery, sortMode, t],
+    [presetEntries, searchQuery, t],
   );
 
   const getCategoryHint = (): ReactNode => {
@@ -248,14 +209,6 @@ export function ProviderPresetSelector({
           defaultValue: "选择预设后可继续调整下方字段。",
         });
     }
-  };
-
-  const toggleSortMode = () => {
-    setSortMode((current) =>
-      current === PresetSortMode.Original
-        ? PresetSortMode.NameAsc
-        : PresetSortMode.Original,
-    );
   };
 
   const renderPresetIcon = (preset: AnyPreset, isSelected: boolean) => {
@@ -367,32 +320,12 @@ export function ProviderPresetSelector({
             <Search className="size-4" />
           </Button>
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={t("providerPreset.sortAriaLabel", {
-              defaultValue: "Toggle preset sorting",
-            })}
-            aria-pressed={sortMode === PresetSortMode.NameAsc}
-            onClick={toggleSortMode}
-            title={
-              sortMode === PresetSortMode.NameAsc
-                ? t("providerPreset.sortOriginalTooltip", {
-                    defaultValue: "Restore original order",
-                  })
-                : t("providerPreset.sortNameAscTooltip", {
-                    defaultValue: "Sort A-Z",
-                  })
-            }
-            className={
-              sortMode === PresetSortMode.NameAsc
-                ? "size-8 bg-accent text-foreground"
-                : "size-8"
-            }
+          <span
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+            title={t("providerPreset.sortNameAscTooltip")}
           >
-            <ArrowUpAZ className="size-4" />
-          </Button>
+            <ArrowUpAZ className="size-4" aria-hidden /> A–Z
+          </span>
         </div>
       </div>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
@@ -419,8 +352,6 @@ export function ProviderPresetSelector({
 
         {visiblePresetEntries.map((entry) => {
           const isSelected = selectedPresetId === entry.id;
-          const isPartner = entry.preset.isPartner;
-          const isPrimePartner = entry.preset.primePartner;
           const presetCategory = entry.preset.category ?? "others";
           return (
             <button
@@ -438,19 +369,6 @@ export function ProviderPresetSelector({
               <span className="truncate">
                 {getPresetDisplayName(entry.preset, t)}
               </span>
-              {isPrimePartner ? (
-                <Heart
-                  className="absolute -top-1 -right-1 h-5 w-5 fill-amber-500 text-amber-500 drop-shadow-sm"
-                  strokeWidth={0}
-                  aria-hidden
-                />
-              ) : (
-                isPartner && (
-                  <span className="absolute -top-1 -right-1 flex items-center gap-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-500 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-md">
-                    <Star className="h-2.5 w-2.5 fill-current" />
-                  </span>
-                )
-              )}
             </button>
           );
         })}
@@ -458,7 +376,7 @@ export function ProviderPresetSelector({
 
       {onUniversalPresetSelect && universalProviderPresets.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-2">
-          {universalProviderPresets.map((preset) => (
+          {sortProvidersByName(universalProviderPresets).map((preset) => (
             <button
               key={`universal-${preset.providerType}`}
               type="button"

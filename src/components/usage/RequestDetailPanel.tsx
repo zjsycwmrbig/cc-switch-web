@@ -6,7 +6,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useRequestDetail } from "@/lib/query/usage";
-import { formatOutputTokensPerSecond } from "./format";
+import { Button } from "@/components/ui/button";
+import { extractErrorMessage } from "@/utils/errorUtils";
+import {
+  formatOutputTokensPerSecond,
+  formatEstimatedTokensPerSecond,
+} from "./format";
 
 interface RequestDetailPanelProps {
   requestId: string;
@@ -18,7 +23,12 @@ export function RequestDetailPanel({
   onClose,
 }: RequestDetailPanelProps) {
   const { t, i18n } = useTranslation();
-  const { data: request, isLoading } = useRequestDetail(requestId);
+  const {
+    data: request,
+    isLoading,
+    error,
+    refetch,
+  } = useRequestDetail(requestId);
   const dateLocale =
     i18n.language === "zh"
       ? "zh-CN"
@@ -29,29 +39,45 @@ export function RequestDetailPanel({
   if (isLoading) {
     return (
       <Dialog open onOpenChange={onClose}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl" aria-describedby={undefined}>
+          <DialogTitle className="sr-only">
+            {t("usage.requestDetail")}
+          </DialogTitle>
           <div className="h-[400px] animate-pulse rounded bg-gray-100" />
         </DialogContent>
       </Dialog>
     );
   }
 
-  if (!request) {
+  if (!request || error) {
     return (
       <Dialog open onOpenChange={onClose}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>{t("usage.requestDetail", "请求详情")}</DialogTitle>
           </DialogHeader>
-          <div className="text-center text-muted-foreground">
-            {t("usage.requestNotFound", "请求未找到")}
+          <div
+            role={error ? "alert" : undefined}
+            className="text-center text-muted-foreground"
+          >
+            {error
+              ? extractErrorMessage(error)
+              : t("usage.requestNotFound", "请求未找到")}
+            {error && (
+              <Button variant="outline" onClick={() => void refetch()}>
+                {t("common.retry")}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
     );
   }
 
-  const outputTps = formatOutputTokensPerSecond(request);
+  const exactTps = formatOutputTokensPerSecond(request);
+  const estimatedTps = formatEstimatedTokensPerSecond(request);
+  const outputTps =
+    exactTps ?? (estimatedTps == null ? null : `≈${estimatedTps}`);
 
   return (
     <Dialog open onOpenChange={onClose}>

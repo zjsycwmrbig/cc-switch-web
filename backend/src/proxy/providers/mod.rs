@@ -16,6 +16,7 @@ mod auth;
 mod claude;
 mod codex;
 pub(crate) mod codex_chat_common;
+pub(crate) mod codex_compaction;
 pub mod codex_oauth_auth;
 pub(crate) mod codex_responses_sse;
 pub mod copilot_auth;
@@ -23,8 +24,10 @@ pub mod copilot_model_map;
 mod gemini;
 pub(crate) mod gemini_schema;
 pub mod gemini_shadow;
+pub(crate) mod inline_think;
 pub mod models;
 pub(crate) mod reasoning_bridge;
+pub(crate) mod responses_late_arguments;
 pub mod streaming;
 pub mod streaming_codex_anthropic;
 pub mod streaming_codex_chat;
@@ -55,11 +58,13 @@ pub use claude::{
     transform_claude_request_for_api_format, ClaudeAdapter,
 };
 pub use codex::{
+    codex_stack_upstream_rejects_web_search, strip_codex_hosted_web_search,
     apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
     inject_codex_chat_prompt_cache_key, is_codex_official_provider,
-    provider_needs_responses_namespace_flatten, resolve_codex_catalog_tool_profile,
-    resolve_codex_chat_reasoning_config, should_convert_codex_responses_to_anthropic,
-    should_convert_codex_responses_to_chat, CodexAdapter,
+    provider_needs_responses_late_arguments_repair, provider_needs_responses_namespace_flatten,
+    resolve_codex_catalog_tool_profile, resolve_codex_chat_reasoning_config,
+    should_convert_codex_responses_to_anthropic, should_convert_codex_responses_to_chat,
+    CodexAdapter,
 };
 pub use gemini::GeminiAdapter;
 

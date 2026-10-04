@@ -3,6 +3,7 @@ import { GeminiEnvSection, GeminiConfigSection } from "./GeminiConfigSections";
 import { GeminiCommonConfigModal } from "./GeminiCommonConfigModal";
 
 interface GeminiConfigEditorProps {
+  keyFieldMode?: boolean;
   envValue: string;
   configValue: string;
   onEnvChange: (value: string) => void;
@@ -21,6 +22,7 @@ interface GeminiConfigEditorProps {
 }
 
 const GeminiConfigEditor: React.FC<GeminiConfigEditorProps> = ({
+  keyFieldMode = false,
   envValue,
   configValue,
   onEnvChange,
@@ -48,6 +50,7 @@ const GeminiConfigEditor: React.FC<GeminiConfigEditorProps> = ({
     <div className="space-y-6">
       {/* Env Section */}
       <GeminiEnvSection
+        keyFieldMode={keyFieldMode}
         value={envValue}
         onChange={onEnvChange}
         onBlur={onEnvBlur}
@@ -66,15 +69,17 @@ const GeminiConfigEditor: React.FC<GeminiConfigEditorProps> = ({
       />
 
       {/* Common Config Modal */}
-      <GeminiCommonConfigModal
-        isOpen={isCommonConfigModalOpen}
-        onClose={handleCloseCommonConfigModal}
-        value={commonConfigSnippet}
-        onSave={onCommonConfigSnippetChange}
-        error={commonConfigError}
-        onExtract={onExtract}
-        isExtracting={isExtracting}
-      />
+      {!keyFieldMode && (
+        <GeminiCommonConfigModal
+          isOpen={isCommonConfigModalOpen}
+          onClose={handleCloseCommonConfigModal}
+          value={commonConfigSnippet}
+          onSave={onCommonConfigSnippetChange}
+          error={commonConfigError}
+          onExtract={onExtract}
+          isExtracting={isExtracting}
+        />
+      )}
     </div>
   );
 };

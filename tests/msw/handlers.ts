@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import { MODELS_DEV_API_URL } from "@/lib/modelsDev";
 import type { AppId } from "@/lib/api/types";
 import type { Provider, Settings } from "@/types";
 import {
@@ -36,6 +37,91 @@ const withJson = async <T>(request: Request): Promise<T> => {
 const success = <T>(payload: T) => HttpResponse.json(payload as any);
 
 export const handlers = [
+  http.post(`${RUNTIME_ENDPOINT}/get_last_session_scan`, () => success(null)),
+  http.post(`${RUNTIME_ENDPOINT}/get_app_mode`, async ({ request }) => {
+    const { appType } = await withJson<{ appType: AppId }>(request);
+    return success({
+      mode: "direct",
+      attached: false,
+      directProviderId: getCurrentProviderId(appType) || null,
+      routeProviderId: null,
+      eligibleProviderIds: Object.keys(getProviders(appType)),
+      aggregation: { active: false, members: [] },
+    });
+  }),
+  http.post(
+    `${RUNTIME_ENDPOINT}/get_codex_editor_view`,
+    async ({ request }) => {
+      const { settings } = await withJson<{
+        settings: Record<string, unknown>;
+      }>(request);
+      return success({ settings: { config: "", ...settings }, inactive: [] });
+    },
+  ),
+  http.post(`${RUNTIME_ENDPOINT}/save_codex_editor`, async ({ request }) => {
+    const { provider, add } = await withJson<{
+      provider: Provider;
+      add: boolean;
+    }>(request);
+    if (add) addProvider("codex", provider);
+    else updateProvider("codex", provider);
+    return success(true);
+  }),
+  http.post(`${RUNTIME_ENDPOINT}/get_grok_editor_view`, async ({ request }) => {
+    const { settings } = await withJson<{ settings: Record<string, unknown> }>(
+      request,
+    );
+    return success({ settings: { config: "", ...settings }, inactive: [] });
+  }),
+  http.post(`${RUNTIME_ENDPOINT}/save_grok_editor`, async ({ request }) => {
+    const { provider, add } = await withJson<{
+      provider: Provider;
+      add: boolean;
+    }>(request);
+    if (add) addProvider("grokbuild", provider);
+    else updateProvider("grokbuild", provider);
+    return success(true);
+  }),
+  http.post(
+    `${RUNTIME_ENDPOINT}/get_gemini_editor_view`,
+    async ({ request }) => {
+      const { settings } = await withJson<{
+        settings: Record<string, unknown>;
+      }>(request);
+      return success({
+        settings: { env: {}, config: {}, ...settings },
+        inactive: [],
+      });
+    },
+  ),
+  http.post(`${RUNTIME_ENDPOINT}/save_gemini_editor`, async ({ request }) => {
+    const { provider, add } = await withJson<{
+      provider: Provider;
+      add: boolean;
+    }>(request);
+    if (add) addProvider("gemini", provider);
+    else updateProvider("gemini", provider);
+    return success(true);
+  }),
+  http.post(
+    `${RUNTIME_ENDPOINT}/get_claude_editor_view`,
+    async ({ request }) => {
+      const { settings } = await withJson<{
+        settings: Record<string, unknown>;
+      }>(request);
+      return success({ settings, inactive: [] });
+    },
+  ),
+  http.post(`${RUNTIME_ENDPOINT}/save_claude_editor`, async ({ request }) => {
+    const { provider, add } = await withJson<{
+      provider: Provider;
+      add: boolean;
+    }>(request);
+    if (add) addProvider("claude", provider);
+    else updateProvider("claude", provider);
+    return success(true);
+  }),
+  http.get(MODELS_DEV_API_URL, () => HttpResponse.json({})),
   http.post(`${RUNTIME_ENDPOINT}/get_providers`, async ({ request }) => {
     const { app } = await withJson<{ app: AppId }>(request);
     return success(getProviders(app));
@@ -195,13 +281,16 @@ export const handlers = [
     return success("/default/opencode");
   }),
 
-  http.post(`${RUNTIME_ENDPOINT}/get_default_config_dir`, async ({ request }) => {
-    const { app } = await withJson<{ app: AppId }>(request);
-    if (app === "claude") return success("/default/claude");
-    if (app === "codex") return success("/default/codex");
-    if (app === "gemini") return success("/default/gemini");
-    return success("/default/opencode");
-  }),
+  http.post(
+    `${RUNTIME_ENDPOINT}/get_default_config_dir`,
+    async ({ request }) => {
+      const { app } = await withJson<{ app: AppId }>(request);
+      if (app === "claude") return success("/default/claude");
+      if (app === "codex") return success("/default/codex");
+      if (app === "gemini") return success("/default/gemini");
+      return success("/default/opencode");
+    },
+  ),
 
   // Sync current providers live (no-op success)
   http.post(`${RUNTIME_ENDPOINT}/sync_current_providers_live`, () =>
@@ -237,7 +326,9 @@ export const handlers = [
     }),
   ),
 
-  http.post(`${RUNTIME_ENDPOINT}/is_live_takeover_active`, () => success(false)),
+  http.post(`${RUNTIME_ENDPOINT}/is_live_takeover_active`, () =>
+    success(false),
+  ),
 
   // Failover / circuit breaker defaults
   http.post(`${RUNTIME_ENDPOINT}/get_failover_queue`, () => success([])),

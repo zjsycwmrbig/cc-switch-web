@@ -1,3 +1,6 @@
+import { useProviderEditorConflict } from "@/hooks/useProviderEditorConflict";
+import { useProviderEditorView } from "@/hooks/useProviderEditorView";
+import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Save } from "lucide-react";
@@ -14,8 +17,6 @@ import {
   providersApi,
   type AppId,
 } from "@/lib/api";
-import { extractCodexExperimentalBearerToken } from "@/utils/providerConfigUtils";
-import { resolveCodexOfficialIdentity } from "@/utils/providerCapabilities";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -24,6 +25,7 @@ interface EditProviderDialogProps {
   onSubmit: (payload: {
     provider: Provider;
     originalId?: string;
+    editorSave?: ProviderEditorSave;
   }) => Promise<void> | void;
   appId: AppId;
   isProxyTakeover?: boolean; // 代理接管模式下不读取 live（避免显示被接管后的代理配置）
@@ -34,86 +36,6 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
-const hasAuthMaterial = (value: unknown): boolean => {
-  if (value === null || value === undefined) return false;
-  if (typeof value === "string") return value.trim().length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return true;
-};
-
-/**
- * Whether an auth payload actually carries a credential, ignoring the bare
- * `auth_mode` marker — the frontend twin of the backend
- * `codex_auth_has_login_material`.
- */
-const hasCodexAuthMaterial = (auth: Record<string, unknown> | null): boolean =>
-  auth !== null &&
-  Object.entries(auth).some(
-    ([key, value]) => key !== "auth_mode" && hasAuthMaterial(value),
-  );
-
-/**
- * Rebuild the provider auth only for a current Codex provider's live snapshot.
- *
- * In official-auth-preservation mode, live config.toml owns the active
- * provider bearer while the shared auth.json may belong to another provider or
- * contain the user's ChatGPT login. Stored provider auth remains the template:
- * this mirrors the backend switch-away backfill and avoids copying shared auth
- * material into the provider row. DB snapshots and presets must keep their
- * normal auth-first precedence.
- */
-const reconcileCodexLiveAuth = (
-  liveSettings: Record<string, unknown>,
-  storedSettings: Record<string, unknown> | null,
-  isOfficialProvider: boolean,
-): Record<string, unknown> => {
-  if (isOfficialProvider) return liveSettings;
-
-  const configText =
-    typeof liveSettings.config === "string" ? liveSettings.config : "";
-  const bearer = extractCodexExperimentalBearerToken(configText);
-  const liveAuth = asRecord(liveSettings.auth);
-  const storedAuth = asRecord(storedSettings?.auth);
-
-  if (!bearer) {
-    // Live auth.json is a single shared slot with no provider identity, and a
-    // third-party Codex route never reads it: the switch deletes the file in
-    // default mode and injects the key into config.toml instead — an injection
-    // that is skipped entirely when the provider table declares its own
-    // credential source (`env_key`, `auth`/`aws`, an explicit Authorization
-    // header). A credential-less live auth (missing file, or the bare
-    // `auth_mode` logout marker) is therefore an absent field, not an emptied
-    // one: keep the stored template so saving the form cannot silently erase
-    // the only remaining copy of the provider's key.
-    if (!hasCodexAuthMaterial(liveAuth) && hasCodexAuthMaterial(storedAuth)) {
-      return { ...liveSettings, auth: storedAuth };
-    }
-    return liveSettings;
-  }
-
-  const authTemplate = storedAuth ?? liveAuth ?? {};
-  const hasProviderApiKey =
-    typeof authTemplate.OPENAI_API_KEY === "string" &&
-    authTemplate.OPENAI_API_KEY.trim().length > 0;
-  const hasOauthLogin = Object.entries(authTemplate).some(
-    ([key, value]) =>
-      key !== "auth_mode" && key !== "OPENAI_API_KEY" && hasAuthMaterial(value),
-  );
-
-  // Match should_restore_codex_provider_token_for_backfill: an OAuth-only
-  // provider must not be silently converted into an API-key provider.
-  if (hasOauthLogin && !hasProviderApiKey) return liveSettings;
-
-  return {
-    ...liveSettings,
-    auth: {
-      ...authTemplate,
-      OPENAI_API_KEY: bearer,
-    },
-  };
-};
-
 export function EditProviderDialog({
   open,
   provider,
@@ -123,6 +45,31 @@ export function EditProviderDialog({
   isProxyTakeover = false,
 }: EditProviderDialogProps) {
   const { t } = useTranslation();
+  const editorConflict = useProviderEditorConflict(open, `${appId}:${provider?.id ?? ""}`);
+  const providerEditor = useProviderEditorView(
+    open &&
+      (appId === "claude" ||
+        appId === "codex" ||
+        appId === "gemini" ||
+        appId === "grokbuild") &&
+      !!provider,
+    provider?.settingsConfig ?? {},
+    provider?.id ?? "",
+    appId === "codex"
+      ? "codex"
+      : appId === "grokbuild"
+        ? "grokbuild"
+        : appId === "gemini"
+          ? "gemini"
+          : "claude",
+    provider?.category,
+  );
+  const editorReady =
+    (appId !== "claude" &&
+      appId !== "codex" &&
+      appId !== "gemini" &&
+      appId !== "grokbuild") ||
+    !!providerEditor.view;
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
 
   // 默认使用传入的 provider.settingsConfig，若当前编辑对象是"当前生效供应商"，则尝试读取实时配置替换初始值
@@ -142,6 +89,14 @@ export function EditProviderDialog({
         setHasLoadedLive(false);
         return;
       }
+
+      if (
+        appId === "claude" ||
+        appId === "codex" ||
+        appId === "gemini" ||
+        appId === "grokbuild"
+      )
+        return;
 
       // 关键修复：只在首次打开时加载一次
       if (hasLoadedLive) {
@@ -224,24 +179,18 @@ export function EditProviderDialog({
     };
   }, [open, provider?.id, appId, hasLoadedLive, isProxyTakeover]); // 只依赖 provider.id，不依赖整个 provider 对象
 
-  // 旧版官方卡片可能没有 category；其 live 登出状态仍拥有 auth（上游 5a80e300）。
-  const isCodexOfficialProvider =
-    appId === "codex" &&
-    provider !== null &&
-    (provider.category === "official" ||
-      resolveCodexOfficialIdentity(appId, provider) !== null);
-
   const initialSettingsConfig = useMemo(() => {
+    if (
+      (appId === "claude" ||
+        appId === "codex" ||
+        appId === "gemini" ||
+        appId === "grokbuild") &&
+      providerEditor.view
+    )
+      return providerEditor.view.settings;
     const storedSettings = asRecord(provider?.settingsConfig);
-    if (appId === "codex" && liveSettings) {
-      return reconcileCodexLiveAuth(
-        liveSettings,
-        storedSettings,
-        isCodexOfficialProvider,
-      );
-    }
     return (liveSettings ?? storedSettings ?? {}) as Record<string, unknown>;
-  }, [liveSettings, provider?.settingsConfig, isCodexOfficialProvider, appId]); // 只依赖表单初始化所需字段，不依赖整个 provider
+  }, [liveSettings, provider?.settingsConfig, appId, providerEditor.view]); // 只依赖表单初始化所需字段，不依赖整个 provider
 
   // 固定 initialData，防止 provider 对象更新时重置表单
   const initialData = useMemo(() => {
@@ -293,13 +242,42 @@ export function EditProviderDialog({
         ...(values.meta ? { meta: values.meta } : {}),
       };
 
-      await onSubmit({
-        provider: updatedProvider,
-        originalId: provider.id,
-      });
-      onOpenChange(false);
+      if (
+        (appId === "claude" ||
+          appId === "codex" ||
+          appId === "gemini" ||
+          appId === "grokbuild") &&
+        !providerEditor.view
+      )
+        return;
+      const saved = await editorConflict.run((policy) =>
+        onSubmit({
+          ...((appId === "claude" ||
+            appId === "codex" ||
+            appId === "gemini" ||
+            appId === "grokbuild") &&
+          providerEditor.view
+            ? {
+                editorSave: {
+                  base: providerEditor.view.settings,
+                  onConflict: policy,
+                },
+              }
+            : {}),
+          provider: updatedProvider,
+          originalId: provider.id,
+        }),
+      );
+      if (saved) onOpenChange(false);
     },
-    [appId, onSubmit, onOpenChange, provider],
+    [
+      appId,
+      onSubmit,
+      onOpenChange,
+      provider,
+      providerEditor.view,
+      editorConflict.run,
+    ],
   );
 
   if (!provider || !initialData) {
@@ -307,32 +285,62 @@ export function EditProviderDialog({
   }
 
   return (
-    <FullScreenPanel
-      isOpen={open}
-      title={t("provider.editProvider")}
-      onClose={() => onOpenChange(false)}
-      footer={
-        <Button
-          type="submit"
-          form="provider-form"
-          disabled={isFormSubmitting}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Save className="h-4 w-4 mr-2" />
-          {t("common.save")}
-        </Button>
-      }
-    >
-      <ProviderForm
-        appId={appId}
-        providerId={provider.id}
-        submitLabel={t("common.save")}
-        onSubmit={handleSubmit}
-        onCancel={() => onOpenChange(false)}
-        onSubmittingChange={setIsFormSubmitting}
-        initialData={initialData}
-        showButtons={false}
-      />
-    </FullScreenPanel>
+    <>
+      {editorConflict.dialog}
+      <FullScreenPanel
+        isOpen={open}
+        title={t("provider.editProvider")}
+        onClose={() => onOpenChange(false)}
+        footer={
+          <Button
+            type="submit"
+            form="provider-form"
+            disabled={isFormSubmitting || !editorReady}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Save className="h-4 w-4 mr-2" />
+            {t("common.save")}
+          </Button>
+        }
+      >
+        {!editorReady ? (
+          <div role="status">
+            {providerEditor.error
+              ? t("claudeConfig.editorLoadFailed")
+              : t("common.loading")}
+            {providerEditor.error && (
+              <Button onClick={providerEditor.retry}>
+                {t("common.retry")}
+              </Button>
+            )}
+          </div>
+        ) : (
+          <>
+            {(appId === "claude" ||
+              appId === "codex" ||
+              appId === "gemini" ||
+              appId === "grokbuild") &&
+              !!providerEditor.view?.inactive.length && (
+                <p className="text-sm text-muted-foreground">
+                  {t("claudeConfig.inactiveFields")}:{" "}
+                  {providerEditor.view.inactive
+                    .map((field) => field.path.join("."))
+                    .join(", ")}
+                </p>
+              )}
+            <ProviderForm
+              appId={appId}
+              providerId={provider.id}
+              submitLabel={t("common.save")}
+              onSubmit={handleSubmit}
+              onCancel={() => onOpenChange(false)}
+              onSubmittingChange={setIsFormSubmitting}
+              initialData={initialData}
+              showButtons={false}
+            />
+          </>
+        )}
+      </FullScreenPanel>
+    </>
   );
 }

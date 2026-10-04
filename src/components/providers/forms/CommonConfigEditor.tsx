@@ -13,6 +13,7 @@ import {
 } from "@/lib/windowsEnvPaths";
 
 interface CommonConfigEditorProps {
+  keyFieldMode?: boolean;
   value: string;
   onChange: (value: string) => void;
   useCommonConfig: boolean;
@@ -28,6 +29,7 @@ interface CommonConfigEditorProps {
 }
 
 export function CommonConfigEditor({
+  keyFieldMode = false,
   value,
   onChange,
   useCommonConfig,
@@ -235,34 +237,43 @@ export function CommonConfigEditor({
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="settingsConfig">{t("provider.configJson")}</Label>
-          <div className="flex items-center gap-2">
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                id="useCommonConfig"
-                checked={useCommonConfig}
-                onChange={(e) => onCommonConfigToggle(e.target.checked)}
-                className="w-4 h-4 text-primary bg-white dark:bg-gray-800 border-border-default rounded focus:ring-ring focus:ring-2"
-              />
-              <span>
-                {t("claudeConfig.writeCommonConfig", {
-                  defaultValue: "写入通用配置",
-                })}
-              </span>
-            </label>
+          {!keyFieldMode && (
+            <div className="flex items-center gap-2">
+              <label className="inline-flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  id="useCommonConfig"
+                  checked={useCommonConfig}
+                  onChange={(e) => onCommonConfigToggle(e.target.checked)}
+                  className="w-4 h-4 text-primary bg-white dark:bg-gray-800 border-border-default rounded focus:ring-ring focus:ring-2"
+                />
+                <span>
+                  {t("claudeConfig.writeCommonConfig", {
+                    defaultValue: "写入通用配置",
+                  })}
+                </span>
+              </label>
+            </div>
+          )}
+        </div>
+        {keyFieldMode && (
+          <p className="text-xs text-muted-foreground">
+            {t("claudeConfig.keyFieldScope")}
+          </p>
+        )}
+        {!keyFieldMode && (
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={onEditClick}
+              className="text-xs text-primary hover:text-primary/80 transition-colors"
+            >
+              {t("claudeConfig.editCommonConfig", {
+                defaultValue: "编辑通用配置",
+              })}
+            </button>
           </div>
-        </div>
-        <div className="flex items-center justify-end">
-          <button
-            type="button"
-            onClick={onEditClick}
-            className="text-xs text-primary hover:text-primary/80 transition-colors"
-          >
-            {t("claudeConfig.editCommonConfig", {
-              defaultValue: "编辑通用配置",
-            })}
-          </button>
-        </div>
+        )}
         {commonConfigError && !isModalOpen && (
           <p className="text-xs text-red-500 dark:text-red-400 text-right">
             {commonConfigError}

@@ -9,6 +9,7 @@ use super::{AuthInfo, AuthStrategy, ProviderAdapter};
 use crate::provider::{CodexChatReasoningConfig, Provider};
 use crate::proxy::error::ProxyError;
 use serde_json::Value as JsonValue;
+use std::collections::HashSet;
 use toml::Value as TomlValue;
 
 /// Codex 适配器
@@ -300,6 +301,11 @@ pub fn provider_needs_responses_namespace_flatten(provider: &Provider) -> bool {
     provider.is_xai_oauth() || provider_is_xai_native_responses(provider)
 }
 
+/// 仅在排除 Chat/Anthropic 转换和 xAI 改写后的原生透传分支中使用。
+pub fn provider_needs_responses_late_arguments_repair(provider: &Provider) -> bool {
+    !is_codex_official_provider(provider)
+}
+
 /// Codex Provider 是否以原生 Responses 直连 xAI（`api.x.ai`），包含非 `xai_oauth` 的
 /// API Key Grok Provider。
 fn provider_is_xai_native_responses(provider: &Provider) -> bool {
@@ -462,9 +468,75 @@ pub fn apply_codex_chat_upstream_model(
 
 /// 已经确认协议类型时复用同一模型替换逻辑（如 Anthropic bridge）。
 pub fn apply_codex_upstream_model(provider: &Provider, body: &mut JsonValue) -> Option<String> {
+    let catalog_model_ids = codex_provider_catalog_model_ids(provider);
+    if let Some(request_model) = body
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        if catalog_model_ids.contains(request_model) {
+            return Some(request_model.to_string());
+        }
+    }
+
     let upstream_model = codex_provider_upstream_model(provider)?;
     body["model"] = JsonValue::String(upstream_model.clone());
     Some(upstream_model)
+}
+
+/// Stack 请求的上游拒收 Codex 的托管 `web_search`：按这家的地址和模型品牌判断，和它做
+/// 路由时写 `web_search = "disabled"` 的依据相同（归一化后的配置，旧形态的行也认得出
+/// 地址）；另看这次请求的模型：行里配了多个模型时，选中的不一定是行的 `model`。
+pub fn codex_stack_upstream_rejects_web_search(
+    provider: &Provider,
+    request_model: Option<&str>,
+) -> bool {
+    let projected =
+        crate::live::project::codex::CodexProjection::of(&crate::live::project::codex::RowInput {
+            settings: &provider.settings_config,
+            official: false,
+            proxy_injected_oauth: provider.uses_proxy_injected_oauth(),
+        })
+        .map(|projection| projection.catalog_input_text());
+    let config_text = match &projected {
+        Ok(text) => text.as_str(),
+        Err(_) => provider
+            .settings_config
+            .get("config")
+            .and_then(|value| value.as_str())
+            .unwrap_or(""),
+    };
+    crate::codex_config::codex_native_gateway_rejects_web_search(config_text)
+        || request_model.is_some_and(crate::codex_config::codex_model_rejects_web_search)
+}
+
+/// 去掉 Responses 请求里托管的 `web_search` 工具：`tools` 去完为空时整个键删掉；指向它
+/// 的 `tool_choice` 一并删掉，`tools` 整个没了时 `tool_choice` 也删（上游对没有工具的
+/// `tool_choice` 报 400）。其余字段不动。返回是否改了请求。
+pub fn strip_codex_hosted_web_search(body: &mut JsonValue) -> bool {
+    let Some(obj) = body.as_object_mut() else {
+        return false;
+    };
+    let is_web_search =
+        |tool: &JsonValue| tool.get("type").and_then(|value| value.as_str()) == Some("web_search");
+    let mut changed = false;
+    let mut tools_gone = false;
+    if let Some(JsonValue::Array(tools)) = obj.get_mut("tools") {
+        let before = tools.len();
+        tools.retain(|tool| !is_web_search(tool));
+        changed = tools.len() != before;
+        tools_gone = changed && tools.is_empty();
+    }
+    if tools_gone {
+        obj.remove("tools");
+    }
+    let choice_is_web_search = obj.get("tool_choice").is_some_and(is_web_search);
+    if choice_is_web_search || (tools_gone && obj.contains_key("tool_choice")) {
+        obj.remove("tool_choice");
+        changed = true;
+    }
+    changed
 }
 
 pub fn resolve_codex_chat_reasoning_config(
@@ -1602,6 +1674,7 @@ wire_api = "chat"
         let adapter = CodexAdapter::new();
 
         assert!(is_codex_official_provider(&provider));
+        assert!(!provider_needs_responses_late_arguments_repair(&provider));
         assert_eq!(
             adapter.extract_base_url(&provider).expect("official URL"),
             crate::proxy::providers::CHATGPT_CODEX_BASE_URL
@@ -1615,6 +1688,9 @@ wire_api = "chat"
         native_alias.id = "work-account".to_string();
         native_alias.category = Some("official".to_string());
         assert!(is_codex_official_provider(&native_alias));
+        assert!(!provider_needs_responses_late_arguments_repair(
+            &native_alias
+        ));
 
         let mut managed_alias = create_provider(json!({ "auth": {}, "config": "" }));
         managed_alias.id = "team-chatgpt".to_string();
@@ -1628,6 +1704,9 @@ wire_api = "chat"
             ..Default::default()
         });
         assert!(is_codex_official_provider(&managed_alias));
+        assert!(!provider_needs_responses_late_arguments_repair(
+            &managed_alias
+        ));
     }
 
     #[test]
@@ -1641,6 +1720,25 @@ wire_api = "chat"
             let mut provider = create_provider(settings);
             provider.category = Some("official".to_string());
             assert!(!is_codex_official_provider(&provider));
+            assert!(provider_needs_responses_late_arguments_repair(&provider));
         }
     }
+}
+
+fn codex_provider_catalog_model_ids(provider: &Provider) -> HashSet<String> {
+    provider
+        .settings_config
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(|models| models.as_array())
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|model| model.get("model").and_then(|value| value.as_str()))
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }

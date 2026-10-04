@@ -64,27 +64,24 @@ impl PromptService {
         if app == AppType::Mcode {
             return upsert_mcode_prompt(state, id, prompt, &prompt_file_path(&app)?);
         }
-        // 检查是否为已启用的提示词
-        let is_enabled = prompt.enabled;
-
         validate_prompt_content(&app, &prompt.content)?;
+        let prompts = state.db.get_prompts(app.as_str())?;
+        // 只有停用最后一条启用中的提示词时才清空文件；新建、导入或重存
+        // 停用条目时，文件可能是用户自己写的，必须原样保留
+        let clear_live = !prompt.enabled
+            && prompts.get(id).is_some_and(|previous| previous.enabled)
+            && !prompts
+                .iter()
+                .any(|(key, prompt)| key != id && prompt.enabled);
         state.db.save_prompt(app.as_str(), &prompt)?;
 
-        if is_enabled {
-            // 启用提示词：写入内容到文件
+        if prompt.enabled {
             let target_path = prompt_file_path(&app)?;
             write_text_file(&target_path, &prompt.content)?;
-        } else {
-            // 禁用提示词：检查是否还有其他已启用的提示词
-            let prompts = state.db.get_prompts(app.as_str())?;
-            let any_enabled = prompts.values().any(|p| p.enabled);
-
-            if !any_enabled {
-                // 所有提示词都已禁用，清空文件
-                let target_path = prompt_file_path(&app)?;
-                if target_path.exists() {
-                    write_text_file(&target_path, "")?;
-                }
+        } else if clear_live {
+            let target_path = prompt_file_path(&app)?;
+            if target_path.exists() {
+                write_text_file(&target_path, "")?;
             }
         }
 
@@ -445,6 +442,59 @@ mod tests {
         AppState::new(Arc::new(
             crate::database::Database::memory().expect("database"),
         ))
+    }
+
+    #[test]
+    #[serial]
+    fn inactive_prompt_saves_preserve_external_file_until_last_active_is_disabled() {
+        struct HomeGuard(Option<std::ffi::OsString>);
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var("CC_SWITCH_TEST_HOME", value),
+                    None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
+                }
+                let _ = crate::settings::reload_settings();
+            }
+        }
+        let temp = tempfile::tempdir().expect("temp home");
+        let _guard = HomeGuard(std::env::var_os("CC_SWITCH_TEST_HOME"));
+        std::env::set_var("CC_SWITCH_TEST_HOME", temp.path());
+        crate::settings::reload_settings().expect("reload settings");
+        let state = memory_state();
+        let path = prompt_file_path(&AppType::Claude).unwrap();
+        write_text_file(&path, "external instructions").unwrap();
+        let mut prompt = Prompt {
+            id: "draft".into(),
+            name: "Draft".into(),
+            content: "saved instructions".into(),
+            description: None,
+            enabled: false,
+            created_at: None,
+            updated_at: None,
+        };
+        for _ in 0..2 {
+            PromptService::upsert_prompt(&state, AppType::Claude, "draft", prompt.clone()).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "external instructions"
+            );
+        }
+        prompt.enabled = true;
+        PromptService::upsert_prompt(&state, AppType::Claude, "draft", prompt.clone()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "saved instructions"
+        );
+        prompt.enabled = false;
+        PromptService::upsert_prompt(&state, AppType::Claude, "draft", prompt.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        write_text_file(&path, "new external instructions").unwrap();
+        PromptService::upsert_prompt(&state, AppType::Claude, "draft", prompt).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "new external instructions"
+        );
     }
 
     #[test]

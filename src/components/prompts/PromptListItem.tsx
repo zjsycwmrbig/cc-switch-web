@@ -1,6 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Edit3, Trash2 } from "lucide-react";
+import { Copy, Edit3, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Prompt } from "@/lib/api";
 import PromptToggle from "./PromptToggle";
@@ -11,6 +11,7 @@ interface PromptListItemProps {
   onToggle: (id: string, enabled: boolean) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
+  onCopy?: (id: string) => void;
 }
 
 const PromptListItem: React.FC<PromptListItemProps> = ({
@@ -19,6 +20,7 @@ const PromptListItem: React.FC<PromptListItemProps> = ({
   onToggle,
   onEdit,
   onDelete,
+  onCopy,
 }) => {
   const { t } = useTranslation();
 
@@ -45,6 +47,18 @@ const PromptListItem: React.FC<PromptListItemProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {onCopy && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => onCopy(id)}
+              title={t("common.copy")}
+              aria-label={t("common.copy")}
+            >
+              <Copy size={16} />
+            </Button>
+          )}
           <Button
             type="button"
             variant="ghost"

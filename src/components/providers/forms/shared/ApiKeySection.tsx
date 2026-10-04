@@ -15,6 +15,9 @@ interface ApiKeySectionProps {
     thirdParty: string;
   };
   disabled?: boolean;
+  /** 仅在保存时校验 Key 非空的表单启用。 */
+  required?: boolean;
+  // 兼容旧预设元数据，不参与界面展示。
   isPartner?: boolean;
   partnerPromotionKey?: string;
 }
@@ -29,8 +32,7 @@ export function ApiKeySection({
   websiteUrl,
   placeholder,
   disabled,
-  isPartner,
-  partnerPromotionKey,
+  required = false,
 }: ApiKeySectionProps) {
   const { t } = useTranslation();
 
@@ -44,6 +46,12 @@ export function ApiKeySection({
   };
 
   const finalPlaceholder = placeholder || defaultPlaceholder;
+  const isDisabled = disabled ?? category === "official";
+  const isRequired =
+    required &&
+    !isDisabled &&
+    category !== "official" &&
+    category !== "cloud_provider";
 
   return (
     <div className="space-y-1">
@@ -57,7 +65,8 @@ export function ApiKeySection({
             ? finalPlaceholder.official
             : finalPlaceholder.thirdParty
         }
-        disabled={disabled ?? category === "official"}
+        disabled={isDisabled}
+        required={isRequired}
       />
       {/* API Key 获取链接 */}
       {shouldShowLink && websiteUrl && (
@@ -72,15 +81,6 @@ export function ApiKeySection({
               defaultValue: "获取 API Key",
             })}
           </a>
-          {isPartner && partnerPromotionKey && (
-            <div className="rounded-md border border-primary/15 bg-primary/5 p-2.5">
-              <p className="text-xs leading-relaxed text-primary">
-                {t(`providerForm.partnerPromotion.${partnerPromotionKey}`, {
-                  defaultValue: "",
-                })}
-              </p>
-            </div>
-          )}
         </div>
       )}
     </div>

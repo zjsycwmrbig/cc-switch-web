@@ -6,6 +6,8 @@
 
 CC Switch Web is the web branch repository of [cc-switch](https://github.com/farion1231/cc-switch), carrying the web-oriented implementation and branch-specific customizations of CC Switch.
 
+CC Switch Web shows no sponsor or partner tags, badges, stars, hearts, special highlighting, or preferential placement for providers. Provider and preset lists use case-insensitive A–Z display-name order, without manual ranking by drag and drop. Failover queues retain their routing priority.
+
 Architecture and positioning:
 
 - Frontend: Web
@@ -86,6 +88,22 @@ Open [http://localhost:8890](http://localhost:8890). Web data persists in the `c
 ## Version
 
 The current repository version is `2.2.0`. This release adds the MiniMax Code app and role-based Claude model mapping, incremental session usage scanning with subscription usage, and Codex OAuth account isolation within shared workspaces, while syncing the latest upstream Provider presets and proxy protocol fixes. See `CHANGELOG.md` and `docs-dev/web-parity-post-fd14f9c4-2026-09.md` for release details and the upstream migration ledger.
+
+This working tree completes the applicable upstream changes from `f8788719..a189980f` (v4.0.0). They are not released; the repository version remains `2.2.0`. Of 195 commits, 176 are ported or adapted for Web and 19 are inapplicable desktop, release, documentation-layout, or Web-specific differences. See the [migration ledger](docs-dev/web-parity-post-f8788719-2026-10.md) for dispositions and targeted validation.
+
+The global sidebar opens MCP, Skills, Prompts, universal providers, Sessions, Usage, Accounts, Apps, and Settings. Expansion overlays content without reflow; mobile uses a drawer. Accounts groups Copilot, ChatGPT, and xAI accounts, quotas, and provider references, listing affected providers before removal. Managed ChatGPT models can be fetched directly; Copilot Enterprise domain sign-in remains unsupported. Hermes keeps separate drafts for its two memory files. See [global pages and resources](docs/web-global-resources-guide-zh.md) (Chinese) for operations and APIs.
+
+Claude Code, Codex, Gemini, and Grok Build use key-field writes and three-way conflict editing. Switching preserves global settings; saved global edits apply immediately. Legacy shared snippets are no longer merged or copied back wholesale. Codex commits config, login stash, model catalog, and account marker together. Gemini commits both files without changing OAuth files; Grok removes old model tables using write records. Claude Desktop modifies gateway fields in its own profile. State and first-write backups live in the Web data directory (default `~/.cc-switch-web`). Initial JSON writes may normalize whitespace and escaping; TOML/dotenv retain unchanged formatting and comments.
+
+The browser supports Direct, Routing, and Claude/Codex Aggregation. Direct selection and the proxy default are independent. Normal shutdown restores direct client access and startup restores the saved mode. Official Codex routes preserve the session-history bucket, support compaction replay, bounded state retries, and catalog refresh. Switching Gemini prompts a client restart. See the [routing guide](docs/claude-codex-routing-guide-zh.md) (Chinese).
+
+Usage includes heatmaps, 20-row pagination, exact/estimated output speed, and the last scan time. Quotas show remaining amounts, reset countdowns, refresh feedback, and saved ChatGPT resets with expiry dates. New requests ignore cost multipliers; historical billing retains its original basis. models.dev price sync defaults on and respects a saved off setting.
+
+The MCP editor supports structured fields, masked secrets, and multi-server paste. MCP/Skills bulk toggles affect filtered results only and offer undo; resync reports each app's outcome. Skills reports repository failures and skipped ZIP entries, distinguishes automatic/symlink/copy modes, and virtualizes large lists. Prompts can be copied as separate disabled records in other apps.
+
+Apps manages installation/upgrades for nine CLIs, installation-source conflicts, and tasks across page changes. Operations affect the service host. Sessions supports nine sources with structured turns, tools, diffs, on-demand images/output, full-text search, Markdown downloads, and token/cost summaries. Paths shown in the browser belong to the service host.
+
+Presets include 88API, Tu-zi, and Command Code, with GPT-6.1 Sol pricing. MiniMax Code accepts custom identifiers and rejects collisions; Pi provides structured model editing and capability completion. Model metadata matches presets and models.dev by API address and fills empty fields only. OpenCode JSONC editing preserves comments and unknown fields and detects external changes.
 
 This repository treats `0.1.0` as its initial Web release baseline; previous inherited release history has been removed and should be considered part of the upstream project history.
 

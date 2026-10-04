@@ -151,6 +151,9 @@ export const usageApi = {
     return invoke("check_provider_limits", { providerId, appType });
   },
 
+  getLastSessionScan: (): Promise<number | null> =>
+    invoke("get_last_session_scan"),
+
   syncSessionUsage: async (): Promise<SessionSyncResult> => {
     return invoke("sync_session_usage");
   },

@@ -1,6 +1,11 @@
+import { normalizeAggregationModels } from "./ClaudeAggregationModels";
+import type { ClaudeStackModel } from "@/types";
+import { overlayCodexProviderConfig } from "@/utils/codexEditorOverlay";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
+import { overlayGeminiProviderFields } from "@/utils/geminiEditorOverlay";
+import { overlayClaudeProviderFields } from "@/utils/claudeEditorOverlay";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -81,10 +86,7 @@ import { GeminiFormFields } from "./GeminiFormFields";
 import { McodeProviderForm } from "./McodeProviderForm";
 import { OmoFormFields } from "./OmoFormFields";
 import { parseOmoOtherFieldsObject } from "@/types/omo";
-import {
-  ProviderAdvancedConfig,
-  type PricingModelSourceOption,
-} from "./ProviderAdvancedConfig";
+import { ProviderAdvancedConfig } from "./ProviderAdvancedConfig";
 import {
   useProviderCategory,
   useApiKeyState,
@@ -112,7 +114,6 @@ import {
   GEMINI_DEFAULT_CONFIG,
   OPENCODE_DEFAULT_CONFIG,
   OPENCLAW_DEFAULT_CONFIG,
-  normalizePricingSource,
 } from "./helpers/opencodeFormUtils";
 import { HERMES_DEFAULT_CONFIG } from "./hooks/useHermesFormState";
 import { resolveManagedAccountId } from "@/lib/authBinding";
@@ -244,6 +245,7 @@ const normalizeProviderKey = (value: string) =>
   value.toLowerCase().replace(/[^a-z0-9-]/g, "");
 
 export interface ProviderFormProps {
+  providerLiveBase?: Record<string, unknown>;
   appId: AppId;
   providerId?: string;
   submitLabel: string;
@@ -266,6 +268,7 @@ export interface ProviderFormProps {
 }
 
 function ProviderFormFull({
+  providerLiveBase,
   appId,
   providerId,
   submitLabel,
@@ -296,6 +299,9 @@ function ProviderFormFull({
     }
   };
 
+  const [aggregationModels, setAggregationModels] = useState<
+    ClaudeStackModel[] | undefined
+  >(initialData?.meta?.stackModels);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(
     initialData ? null : "custom",
   );
@@ -331,19 +337,6 @@ function ProviderFormFull({
   const [proxyConfig, setProxyConfig] = useState<ProviderProxyConfig>(
     () => initialData?.meta?.proxyConfig ?? { enabled: false },
   );
-  const [pricingConfig, setPricingConfig] = useState<{
-    enabled: boolean;
-    costMultiplier?: string;
-    pricingModelSource: PricingModelSourceOption;
-  }>(() => ({
-    enabled:
-      initialData?.meta?.costMultiplier !== undefined ||
-      initialData?.meta?.pricingModelSource !== undefined,
-    costMultiplier: initialData?.meta?.costMultiplier,
-    pricingModelSource: normalizePricingSource(
-      initialData?.meta?.pricingModelSource,
-    ),
-  }));
   const [codexChatReasoning, setCodexChatReasoning] =
     useState<CodexChatReasoning>(
       () => initialData?.meta?.codexChatReasoning ?? {},
@@ -390,15 +383,6 @@ function ProviderFormFull({
     );
     setTestConfig(initialData?.meta?.testConfig ?? { enabled: false });
     setProxyConfig(initialData?.meta?.proxyConfig ?? { enabled: false });
-    setPricingConfig({
-      enabled:
-        initialData?.meta?.costMultiplier !== undefined ||
-        initialData?.meta?.pricingModelSource !== undefined,
-      costMultiplier: initialData?.meta?.costMultiplier,
-      pricingModelSource: normalizePricingSource(
-        initialData?.meta?.pricingModelSource,
-      ),
-    });
     setCodexChatReasoning(initialData?.meta?.codexChatReasoning ?? {});
     setPromptCacheRouting(initialData?.meta?.promptCacheRouting ?? "auto");
     setCustomUserAgent(initialData?.meta?.customUserAgent ?? "");
@@ -424,18 +408,32 @@ function ProviderFormFull({
         : appId === "codex"
           ? CODEX_DEFAULT_CONFIG
           : appId === "gemini"
-            ? GEMINI_DEFAULT_CONFIG
+            ? JSON.stringify(
+                overlayGeminiProviderFields(
+                  providerLiveBase ?? {},
+                  JSON.parse(GEMINI_DEFAULT_CONFIG),
+                ),
+                null,
+                2,
+              )
             : appId === "opencode"
               ? OPENCODE_DEFAULT_CONFIG
               : appId === "openclaw"
                 ? OPENCLAW_DEFAULT_CONFIG
                 : appId === "hermes"
                   ? HERMES_DEFAULT_CONFIG
-                  : CLAUDE_DEFAULT_CONFIG,
+                  : JSON.stringify(
+                      overlayClaudeProviderFields(
+                        providerLiveBase ?? {},
+                        JSON.parse(CLAUDE_DEFAULT_CONFIG),
+                      ),
+                      null,
+                      2,
+                    ),
       icon: initialData?.icon ?? "",
       iconColor: initialData?.iconColor ?? "",
     }),
-    [initialData, appId],
+    [initialData, appId, providerLiveBase],
   );
 
   const form = useForm<ProviderFormData>({
@@ -639,10 +637,19 @@ function ProviderFormFull({
   useEffect(() => {
     if (appId === "codex" && !initialData && selectedPresetId === "custom") {
       const template = getCodexCustomTemplate();
-      resetCodexConfig(template.auth, template.config);
+      resetCodexConfig(
+        template.auth,
+        overlayCodexProviderConfig(providerLiveBase?.config, template.config),
+      );
       setCodexTakeoverEnabled(false);
     }
-  }, [appId, initialData, selectedPresetId, resetCodexConfig]);
+  }, [
+    appId,
+    initialData,
+    selectedPresetId,
+    resetCodexConfig,
+    providerLiveBase,
+  ]);
 
   useEffect(() => {
     form.reset(defaultValues);
@@ -738,7 +745,7 @@ function ProviderFormFull({
     initialEnabled:
       appId === "claude" ? initialData?.meta?.commonConfigEnabled : undefined,
     selectedPresetId: selectedPresetId ?? undefined,
-    enabled: appId === "claude",
+    enabled: false,
   });
 
   const {
@@ -751,6 +758,7 @@ function ProviderFormFull({
     handleExtract: handleCodexExtract,
     clearCommonConfigError: clearCodexCommonConfigError,
   } = useCodexCommonConfig({
+    enabled: false,
     codexConfig,
     onConfigChange: handleCodexConfigChange,
     initialData: appId === "codex" ? initialData : undefined,
@@ -758,6 +766,15 @@ function ProviderFormFull({
       appId === "codex" ? initialData?.meta?.commonConfigEnabled : undefined,
     selectedPresetId: selectedPresetId ?? undefined,
   });
+
+  const geminiInitialData = useMemo(
+    () =>
+      appId === "gemini"
+        ? (initialData ??
+          (providerLiveBase ? { settingsConfig: providerLiveBase } : undefined))
+        : undefined,
+    [appId, initialData, providerLiveBase],
+  );
 
   const {
     geminiEnv,
@@ -776,7 +793,7 @@ function ProviderFormFull({
     envStringToObj,
     envObjToString,
   } = useGeminiConfigState({
-    initialData: appId === "gemini" ? initialData : undefined,
+    initialData: geminiInitialData,
   });
 
   const updateGeminiEnvField = useCallback(
@@ -835,6 +852,7 @@ function ProviderFormFull({
     handleExtract: handleGeminiExtract,
     clearCommonConfigError: clearGeminiCommonConfigError,
   } = useGeminiCommonConfig({
+    enabled: false,
     envValue: geminiEnv,
     onEnvChange: handleGeminiEnvChange,
     envStringToObj,
@@ -857,6 +875,7 @@ function ProviderFormFull({
   const {
     data: opencodeLiveProviderIds = [],
     isLoading: isOpencodeLiveProviderIdsLoading,
+    isSuccess: isOpencodeLiveProviderIdsSuccess,
   } = useQuery({
     queryKey: ["opencodeLiveProviderIds"],
     queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
@@ -870,6 +889,13 @@ function ProviderFormFull({
     onSettingsConfigChange: (config) => form.setValue("settingsConfig", config),
     getSettingsConfig: () => form.getValues("settingsConfig"),
   });
+
+  const canKeepExistingOpencodeOverride =
+    isEditMode &&
+    !!providerId &&
+    opencodeForm.opencodeProviderKey === providerId &&
+    isOpencodeLiveProviderIdsSuccess &&
+    opencodeLiveProviderIds.includes(providerId);
 
   const initialOmoSettings =
     appId === "opencode" &&
@@ -1091,8 +1117,13 @@ function ProviderFormFull({
         toast.error(t("opencode.providerKeyDuplicate"));
         return;
       }
-      if (Object.keys(opencodeForm.opencodeModels).length === 0) {
-        toast.error(t("opencode.modelsRequired"));
+      // 仅配置中已有的同名供应商可省略 npm 和模型定义。
+      if (
+        !canKeepExistingOpencodeOverride &&
+        (!opencodeForm.opencodeNpm.trim() ||
+          Object.keys(opencodeForm.opencodeModels).length === 0)
+      ) {
+        toast.error(t("opencode.customProviderRequired"));
         return;
       }
     }
@@ -1435,6 +1466,10 @@ function ProviderFormFull({
 
     payload.meta = {
       ...(baseMeta ?? {}),
+      stackModels:
+        appId === "claude" && aggregationModels !== undefined
+          ? normalizeAggregationModels(aggregationModels)
+          : undefined,
       isPartner: activePreset
         ? activePreset.isPartner
           ? true
@@ -1445,11 +1480,11 @@ function ProviderFormFull({
         : baseMeta?.partnerPromotionKey,
       commonConfigEnabled:
         appId === "claude"
-          ? useCommonConfig
+          ? true
           : appId === "codex"
             ? useCodexCommonConfigFlag
             : appId === "gemini"
-              ? useGeminiCommonConfigFlag
+              ? true
               : undefined,
       endpointAutoSelect,
       // 保存 providerType（用于识别 Copilot 等特殊供应商）
@@ -1502,13 +1537,6 @@ function ProviderFormFull({
         : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
       proxyConfig: proxyConfig.enabled ? proxyConfig : undefined,
-      costMultiplier: pricingConfig.enabled
-        ? pricingConfig.costMultiplier
-        : undefined,
-      pricingModelSource:
-        pricingConfig.enabled && pricingConfig.pricingModelSource !== "inherit"
-          ? pricingConfig.pricingModelSource
-          : undefined,
       apiFormat:
         appId === "claude" && category !== "official"
           ? isXaiOauthProvider
@@ -1637,7 +1665,10 @@ function ProviderFormFull({
 
       if (appId === "codex") {
         const template = getCodexCustomTemplate();
-        resetCodexConfig(template.auth, template.config);
+        resetCodexConfig(
+          template.auth,
+          overlayCodexProviderConfig(providerLiveBase?.config, template.config),
+        );
         setCodexChatReasoning({});
         setPromptCacheRouting("auto");
         setLocalCodexApiFormat(
@@ -1647,7 +1678,8 @@ function ProviderFormFull({
         setCodexTakeoverEnabled(false);
       }
       if (appId === "gemini") {
-        resetGeminiConfig({}, {});
+        const base = overlayGeminiProviderFields(providerLiveBase ?? {}, {});
+        resetGeminiConfig(base.env, base.config);
       }
       if (appId === "opencode") {
         opencodeForm.resetOpencodeState();
@@ -1678,7 +1710,10 @@ function ProviderFormFull({
     if (appId === "codex") {
       const preset = entry.preset as CodexProviderPreset;
       const auth = preset.auth ?? {};
-      const config = preset.config ?? "";
+      const config = overlayCodexProviderConfig(
+        providerLiveBase?.config,
+        preset.config ?? "",
+      );
 
       resetCodexConfig(auth, config, preset.modelCatalog ?? []);
       setCodexChatReasoning(preset.codexChatReasoning ?? {});
@@ -1708,15 +1743,16 @@ function ProviderFormFull({
 
     if (appId === "gemini") {
       const preset = entry.preset as GeminiProviderPreset;
-      const env = (preset.settingsConfig as any)?.env ?? {};
-      const config = (preset.settingsConfig as any)?.config ?? {};
-
-      resetGeminiConfig(env, config);
+      const merged = overlayGeminiProviderFields(
+        providerLiveBase ?? {},
+        preset.settingsConfig,
+      );
+      resetGeminiConfig(merged.env, merged.config);
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
         websiteUrl: preset.websiteUrl ?? "",
-        settingsConfig: JSON.stringify(preset.settingsConfig, null, 2),
+        settingsConfig: JSON.stringify(merged, null, 2),
         icon: preset.icon ?? "",
         iconColor: preset.iconColor ?? "",
       });
@@ -1794,9 +1830,9 @@ function ProviderFormFull({
     }
 
     const preset = entry.preset as ProviderPreset;
-    const config = applyTemplateValues(
-      preset.settingsConfig,
-      preset.templateValues,
+    const config = overlayClaudeProviderFields(
+      providerLiveBase ?? {},
+      applyTemplateValues(preset.settingsConfig, preset.templateValues),
     );
 
     if (preset.apiFormat) {
@@ -2044,6 +2080,8 @@ function ProviderFormFull({
 
           {appId === "claude" && (
             <ClaudeFormFields
+              aggregationModels={aggregationModels}
+              onAggregationModelsChange={setAggregationModels}
               providerId={providerId}
               shouldShowApiKey={
                 (category !== "cloud_provider" ||
@@ -2221,6 +2259,7 @@ function ProviderFormFull({
 
           {appId === "opencode" && !isAnyOmoCategory && (
             <OpenCodeFormFields
+              allowBuiltinDefaults={canKeepExistingOpencodeOverride}
               npm={opencodeForm.opencodeNpm}
               onNpmChange={opencodeForm.handleOpencodeNpmChange}
               apiKey={opencodeForm.opencodeApiKey}
@@ -2310,6 +2349,7 @@ function ProviderFormFull({
           {appId === "codex" ? (
             <>
               <CodexConfigEditor
+                keyFieldMode
                 authValue={codexAuth}
                 configValue={codexConfig}
                 onAuthChange={setCodexAuth}
@@ -2332,6 +2372,7 @@ function ProviderFormFull({
           ) : appId === "gemini" ? (
             <>
               <GeminiConfigEditor
+                keyFieldMode
                 envValue={geminiEnv}
                 configValue={geminiConfig}
                 onEnvChange={handleGeminiEnvChange}
@@ -2430,6 +2471,7 @@ function ProviderFormFull({
           ) : (
             <>
               <CommonConfigEditor
+                keyFieldMode={appId === "claude"}
                 value={form.getValues("settingsConfig")}
                 onChange={(value) => form.setValue("settingsConfig", value)}
                 useCommonConfig={useCommonConfig}
@@ -2454,10 +2496,8 @@ function ProviderFormFull({
               <ProviderAdvancedConfig
                 testConfig={testConfig}
                 proxyConfig={proxyConfig}
-                pricingConfig={pricingConfig}
                 onTestConfigChange={setTestConfig}
                 onProxyConfigChange={setProxyConfig}
-                onPricingConfigChange={setPricingConfig}
               />
             )}
 

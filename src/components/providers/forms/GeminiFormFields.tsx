@@ -134,6 +134,7 @@ export function GeminiFormFields({
       {/* API Key 输入框 */}
       {shouldShowApiKey && !isGoogleOfficial && (
         <ApiKeySection
+          required
           value={apiKey}
           onChange={onApiKeyChange}
           category={category}

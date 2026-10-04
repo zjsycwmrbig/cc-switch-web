@@ -57,6 +57,7 @@ export interface SkillBackupEntry {
 
 export interface SkillArchiveInstallResult {
   fileName: string;
+  skipped?: ZipSkippedSkill[];
   installed: InstalledSkill[];
   error?: string;
 }
@@ -126,9 +127,20 @@ export interface SkillRepo {
   enabled: boolean;
 }
 
+export interface SkillRepoFailure { owner: string; name: string; branch: string; error: string; }
+export interface SkillDiscoveryResult { skills: DiscoverableSkill[]; failures: SkillRepoFailure[]; }
+export interface SkillUpdateCheckResult { updates: SkillUpdateInfo[]; failures: SkillRepoFailure[]; }
+export interface ZipSkippedSkill { directory: string; existingId: string; existingName: string; }
+export interface SkillAppSyncOutcome { app: string; ok: boolean; error?: string; failedSkills: { directory: string; error: string }[]; }
+
 // ========== API ==========
 
 export const skillsApi = {
+  async storagePaths(): Promise<{ccSwitch: string; unified: string}> { return invoke("skill_storage_paths"); },
+  async discoverReport(): Promise<SkillDiscoveryResult> { return await invoke("discover_available_skills"); },
+  async checkUpdatesReport(): Promise<SkillUpdateCheckResult> { return await invoke("check_skill_updates"); },
+  async resync(): Promise<SkillAppSyncOutcome[]> { return await invoke("resync_skills"); },
+
   // ========== 统一管理 API (v3.10.0+) ==========
 
   /** 获取所有已安装的 Skills */
@@ -186,12 +198,12 @@ export const skillsApi = {
 
   /** 发现可安装的 Skills（从仓库获取） */
   async discoverAvailable(): Promise<DiscoverableSkill[]> {
-    return await invoke("discover_available_skills");
+    return (await skillsApi.discoverReport()).skills;
   },
 
   /** 检查 Skills 更新 */
   async checkUpdates(): Promise<SkillUpdateInfo[]> {
-    return await invoke("check_skill_updates");
+    return (await skillsApi.checkUpdatesReport()).updates;
   },
 
   /** 更新单个 Skill */

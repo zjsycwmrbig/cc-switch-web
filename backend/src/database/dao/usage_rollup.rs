@@ -133,7 +133,7 @@ mod tests {
                         input_tokens, output_tokens, total_cost_usd,
                         latency_ms, status_code, created_at
                     ) VALUES (?1, 'p1', 'claude', 'claude-3', 100, 50, '0.01', 100, 200, ?2)",
-                    rusqlite::params![format!("old-{i}"), old_ts + i as i64],
+                    rusqlite::params![format!("old-{i}"), old_ts],
                 )?;
             }
             for i in 0..3 {
@@ -143,7 +143,7 @@ mod tests {
                         input_tokens, output_tokens, total_cost_usd,
                         latency_ms, status_code, created_at
                     ) VALUES (?1, 'p1', 'claude', 'claude-3', 200, 100, '0.02', 150, 200, ?2)",
-                    rusqlite::params![format!("recent-{i}"), recent_ts + i as i64],
+                    rusqlite::params![format!("recent-{i}"), recent_ts],
                 )?;
             }
         }
@@ -184,8 +184,10 @@ mod tests {
 
         {
             let conn = crate::database::lock_conn!(db.conn);
+            // 日汇总按本地日期分桶；UTC 日期在本地午夜附近可能是前一天。
             let date_str = chrono::DateTime::from_timestamp(old_ts, 0)
                 .unwrap()
+                .with_timezone(&chrono::Local)
                 .format("%Y-%m-%d")
                 .to_string();
             conn.execute(
@@ -202,7 +204,7 @@ mod tests {
                         input_tokens, output_tokens, total_cost_usd,
                         latency_ms, status_code, created_at
                     ) VALUES (?1, 'p1', 'claude', 'claude-3', 100, 50, '0.01', 200, 200, ?2)",
-                    rusqlite::params![format!("merge-{i}"), old_ts + i as i64],
+                    rusqlite::params![format!("merge-{i}"), old_ts],
                 )?;
             }
         }
@@ -211,6 +213,11 @@ mod tests {
         assert_eq!(deleted, 3);
 
         let conn = crate::database::lock_conn!(db.conn);
+        let buckets: i64 =
+            conn.query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(buckets, 1, "同一天的记录应合并到已有日期桶");
         let (count, input): (i64, i64) = conn.query_row(
             "SELECT request_count, input_tokens FROM usage_daily_rollups
              WHERE app_type = 'claude' AND provider_id = 'p1'",

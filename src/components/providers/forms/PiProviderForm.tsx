@@ -1,3 +1,4 @@
+import { compareProviderNames } from "@/utils/providerSort";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -12,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import JsonEditor from "@/components/JsonEditor";
+import { PiModelsEditor } from "./PiModelsEditor";
 import { RequestHeadersEditor } from "./RequestHeadersEditor";
 import { normalizeRequestHeaders } from "./helpers/requestHeaders";
 import {
@@ -136,6 +138,16 @@ export function PiProviderForm({
   showButtons = true,
 }: ProviderFormProps) {
   const { t } = useTranslation();
+  const sortedPresets = useMemo(
+    () =>
+      [...piProviderPresets].sort((a, b) =>
+        compareProviderNames(
+          getPiPresetDisplayName(a, t),
+          getPiPresetDisplayName(b, t),
+        ),
+      ),
+    [t],
+  );
   const initialConfig = useMemo(
     () => asObject(initialData?.settingsConfig),
     [initialData?.settingsConfig],
@@ -164,6 +176,17 @@ export function PiProviderForm({
   const [selectedPreset, setSelectedPreset] = useState<PiProviderPreset | null>(
     null,
   );
+
+  const parsedConfig = useMemo(() => {
+    try {
+      const value = JSON.parse(configText);
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? asObject(value)
+        : null;
+    } catch {
+      return null;
+    }
+  }, [configText]);
 
   const setStructuredConfig = (updates: Record<string, unknown>) => {
     try {
@@ -281,7 +304,7 @@ export function PiProviderForm({
               <SelectValue placeholder={t("pi.provider.selectPreset")} />
             </SelectTrigger>
             <SelectContent>
-              {piProviderPresets.map((preset) => (
+              {sortedPresets.map((preset) => (
                 <SelectItem key={preset.providerKey} value={preset.providerKey}>
                   {getPiPresetDisplayName(preset, t)}
                 </SelectItem>
@@ -391,7 +414,33 @@ export function PiProviderForm({
         <p className="text-xs text-muted-foreground">
           {t("pi.provider.modelsHint")}
         </p>
-        <JsonEditor value={modelsText} onChange={setModelsText} rows={12} />
+        <PiModelsEditor
+          value={modelsText}
+          locked={!parsedConfig}
+          apiKey={apiKey}
+          headers={headers}
+          protocol={{
+            api,
+            baseUrl,
+            providerId: providerKey,
+            compat: asObject(parsedConfig?.compat),
+          }}
+          onChange={(value) => {
+            if (!parsedConfig) return;
+            setModelsText(value);
+            try {
+              setConfigText(
+                JSON.stringify(
+                  { ...parsedConfig, models: JSON.parse(value) },
+                  null,
+                  2,
+                ),
+              );
+            } catch {
+              /* 草稿保留到提交校验 */
+            }
+          }}
+        />
       </div>
 
       <div className="space-y-2">

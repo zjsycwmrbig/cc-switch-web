@@ -1,13 +1,10 @@
-import { useMemo, useState, useEffect, useRef } from "react";
-import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
+import { useMemo, useState, useEffect } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type {
-  DraggableAttributes,
-  DraggableSyntheticListeners,
-} from "@dnd-kit/core";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import type { AggregationActions } from "@/components/providers/ProviderActions";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import UsageFooter from "@/components/UsageFooter";
@@ -28,13 +25,9 @@ import {
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 
-interface DragHandleProps {
-  attributes: DraggableAttributes;
-  listeners: DraggableSyntheticListeners;
-  isDragging: boolean;
-}
-
 interface ProviderCardProps {
+  aggregation?: AggregationActions;
+  deleteDisabled?: boolean;
   provider: Provider;
   isCurrent: boolean;
   appId: AppId;
@@ -55,7 +48,6 @@ interface ProviderCardProps {
   isTesting?: boolean;
   isProxyRunning: boolean;
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管，切换为热切换）
-  dragHandleProps?: DragHandleProps;
   isAutoFailoverEnabled?: boolean; // 是否开启自动故障转移
   failoverPriority?: number; // 故障转移优先级（1 = P1, 2 = P2, ...）
   isInFailoverQueue?: boolean; // 是否在故障转移队列中
@@ -126,6 +118,8 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
 }
 
 export function ProviderCard({
+  aggregation,
+  deleteDisabled,
   provider,
   isCurrent,
   appId,
@@ -146,7 +140,6 @@ export function ProviderCard({
   isTesting,
   isProxyRunning,
   isProxyTakeover = false,
-  dragHandleProps,
   isAutoFailoverEnabled = false,
   failoverPriority,
   isInFailoverQueue = false,
@@ -250,26 +243,11 @@ export function ProviderCard({
 
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const actionsRef = useRef<HTMLDivElement>(null);
-  const [actionsWidth, setActionsWidth] = useState(0);
-
   useEffect(() => {
     if (hasMultiplePlans) {
       setIsExpanded(true);
     }
   }, [hasMultiplePlans]);
-
-  useEffect(() => {
-    if (actionsRef.current) {
-      const updateWidth = () => {
-        const width = actionsRef.current?.offsetWidth || 0;
-        setActionsWidth(width);
-      };
-      updateWidth();
-      window.addEventListener("resize", updateWidth);
-      return () => window.removeEventListener("resize", updateWidth);
-    }
-  }, [onTest]); // 按钮数量可能变化时重新计算
 
   const handleOpenWebsite = () => {
     if (!isClickableUrl) {
@@ -292,17 +270,20 @@ export function ProviderCard({
         ? false
         : appId === "pi"
           ? false
-        : isAutoFailoverEnabled
-          ? activeProviderId === provider.id
-          : isCurrent;
+          : isAutoFailoverEnabled
+            ? activeProviderId === provider.id
+            : isCurrent;
 
-  const shouldUseGreen = !isAnyOmo && isProxyTakeover && isActiveProvider;
+  const shouldUseViolet = Boolean(aggregation?.member);
+  const shouldUseGreen =
+    !aggregation && !isAnyOmo && isProxyTakeover && isActiveProvider;
   const hasPersistentConfigHighlight = isAdditiveMode && isInConfig;
   const shouldUseBlue =
-    (isAnyOmo && isActiveProvider) ||
-    (!isAnyOmo &&
-      !isProxyTakeover &&
-      (isActiveProvider || hasPersistentConfigHighlight));
+    !aggregation &&
+    ((isAnyOmo && isActiveProvider) ||
+      (!isAnyOmo &&
+        !isProxyTakeover &&
+        (isActiveProvider || hasPersistentConfigHighlight)));
 
   return (
     <div
@@ -312,12 +293,12 @@ export function ProviderCard({
         isAutoFailoverEnabled || isProxyTakeover
           ? "hover:border-[hsl(var(--success)/0.45)]"
           : "hover:border-border-active",
+        shouldUseViolet &&
+          "border-violet-400/60 bg-violet-50/40 dark:border-violet-500/50 dark:bg-violet-950/20",
         shouldUseGreen && "provider-card-active-success",
         shouldUseBlue && "provider-card-active-primary",
         !(isActiveProvider || hasPersistentConfigHighlight) &&
           "hover:shadow-sm",
-        dragHandleProps?.isDragging &&
-          "cursor-grabbing border-primary shadow-lg scale-105 z-10",
       )}
     >
       <div
@@ -333,21 +314,7 @@ export function ProviderCard({
         )}
       />
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex flex-1 items-start gap-3">
-          <button
-            type="button"
-            className={cn(
-              "-ml-1.5 mt-1 flex-shrink-0 cursor-grab p-1.5 active:cursor-grabbing",
-              "text-muted-foreground/50 hover:text-muted-foreground transition-colors",
-              dragHandleProps?.isDragging && "cursor-grabbing",
-            )}
-            aria-label={t("provider.dragHandle")}
-            {...(dragHandleProps?.attributes ?? {})}
-            {...(dragHandleProps?.listeners ?? {})}
-          >
-            <GripVertical className="h-4 w-4" />
-          </button>
-
+        <div className="flex min-w-0 flex-1 items-start gap-3">
           <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-border-default bg-background/80 shadow-sm transition-transform duration-300 group-hover:scale-105">
             <ProviderIcon
               icon={provider.icon}
@@ -359,7 +326,7 @@ export function ProviderCard({
 
           <div className="min-w-0 space-y-1.5">
             <div className="flex min-h-7 flex-wrap items-center gap-2">
-              <h3 className="text-base font-semibold leading-none tracking-tight">
+              <h3 className="break-words text-base font-semibold leading-none tracking-tight">
                 {provider.name}
               </h3>
 
@@ -436,16 +403,9 @@ export function ProviderCard({
           </div>
         </div>
 
-        <div
-          className="relative ml-auto flex min-w-0 flex-col gap-3 sm:min-h-[3rem] sm:items-end"
-          style={
-            {
-              "--actions-width": `${actionsWidth || 320}px`,
-            } as React.CSSProperties
-          }
-        >
+        <div className="relative ml-auto flex min-w-0 flex-col gap-3 sm:min-h-[3rem] sm:items-end">
           <div className="sm:ml-auto">
-            <div className="flex flex-wrap items-center gap-1 transition-transform duration-200 sm:justify-end sm:group-hover:-translate-x-[var(--actions-width)] sm:group-focus-within:-translate-x-[var(--actions-width)]">
+            <div className="flex flex-wrap items-center gap-1 sm:justify-end">
               {isCopilot ? (
                 <CopilotQuotaFooter
                   meta={provider.meta}
@@ -520,11 +480,14 @@ export function ProviderCard({
             </div>
           </div>
 
-          <div
-            ref={actionsRef}
-            className="flex flex-wrap items-center gap-1.5 border-t border-border/50 pt-3 sm:absolute sm:right-0 sm:top-1/2 sm:mt-0 sm:w-max sm:-translate-y-1/2 sm:border-t-0 sm:pl-3 sm:pt-0 sm:opacity-0 sm:pointer-events-none sm:translate-x-2 sm:transition-all sm:duration-200 sm:group-hover:pointer-events-auto sm:group-focus-within:pointer-events-auto sm:group-hover:translate-x-0 sm:group-focus-within:translate-x-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-          >
+          <div className="flex flex-wrap items-center justify-end gap-1.5 border-t border-border/50 pt-3">
             <ProviderActions
+              aggregation={aggregation}
+              failoverUnavailable={
+                appId === "codex" &&
+                resolveCodexOfficialIdentity(appId, provider) !== null
+              }
+              deleteDisabled={deleteDisabled}
               appId={appId}
               isCurrent={isCurrent}
               isInConfig={isInConfig}

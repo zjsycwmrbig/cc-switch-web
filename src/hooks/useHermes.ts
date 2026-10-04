@@ -1,3 +1,4 @@
+import { settingsApi } from "@/lib/api/settings";
 import { useCallback } from "react";
 import {
   useMutation,
@@ -149,3 +150,5 @@ export function useToggleHermesMemoryEnabled() {
     },
   });
 }
+
+export function useHermesConfigDir(enabled = true) { return useQuery({ queryKey: ["hermesConfigDir"], queryFn: () => settingsApi.getConfigDir("hermes"), enabled }); }

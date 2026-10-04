@@ -108,6 +108,7 @@ pub struct ForwardError {
 }
 
 pub struct RequestForwarder {
+    stack_request: bool,
     /// 共享的 ProviderRouter（持有熔断器状态）
     router: Arc<ProviderRouter>,
     status: Arc<RwLock<ProxyStatus>>,
@@ -136,6 +137,14 @@ pub struct RequestForwarder {
 }
 
 impl RequestForwarder {
+    pub fn stack_request(mut self, value: bool) -> Self {
+        self.stack_request = value;
+        self
+    }
+    fn routing_state_enabled(&self) -> bool {
+        !self.stack_request
+    }
+
     fn apply_media_prevention(&self, body: &mut Value, provider: &Provider) -> usize {
         if !(self.rectifier_config.enabled && self.rectifier_config.request_media_fallback) {
             return 0;
@@ -182,6 +191,7 @@ impl RequestForwarder {
         optimizer_config: OptimizerConfig,
     ) -> Self {
         Self {
+            stack_request: false,
             router,
             status,
             current_providers,
@@ -197,6 +207,32 @@ impl RequestForwarder {
             optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
         }
+    }
+
+    fn opaque_state_retry_rejection(
+        &self,
+        app_type: &AppType,
+        provider: &Provider,
+        endpoint: &str,
+        already_retried: bool,
+        request: &Value,
+        error: &ProxyError,
+    ) -> Option<super::opaque_state_rectifier::OpaqueStateRejection> {
+        if already_retried
+            || !matches!(app_type, AppType::Codex | AppType::GrokBuild)
+            || super::providers::should_convert_codex_responses_to_chat(provider, endpoint)
+            || super::providers::should_convert_codex_responses_to_anthropic(provider, endpoint)
+        {
+            return None;
+        }
+        let codex_third_party = matches!(app_type, AppType::Codex)
+            && !super::providers::is_codex_official_provider(provider);
+        super::opaque_state_rectifier::detect_opaque_state_rejection(
+            error,
+            &self.rectifier_config,
+            request,
+            codex_third_party,
+        )
     }
 
     /// 转发请求（带故障转移）
@@ -235,9 +271,10 @@ impl RequestForwarder {
         let mut rectifier_retried = false;
         let mut budget_rectifier_retried = false;
         let mut media_retried = false;
+        let mut opaque_rectifier_retried = false;
 
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
-        let bypass_circuit_breaker = providers.len() == 1;
+        let bypass_circuit_breaker = providers.len() == 1 || !self.routing_state_enabled();
 
         // 依次尝试每个供应商
         for provider in providers.iter() {
@@ -277,7 +314,7 @@ impl RequestForwarder {
             attempted_providers += 1;
 
             // 更新状态中的当前Provider信息
-            {
+            if self.routing_state_enabled() {
                 let mut status = self.status.write().await;
                 status.current_provider = Some(provider.name.clone());
                 status.current_provider_id = Some(provider.id.clone());
@@ -286,7 +323,7 @@ impl RequestForwarder {
             }
 
             // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
-            match self
+            let mut forwarded = self
                 .forward(
                     provider,
                     endpoint,
@@ -296,23 +333,60 @@ impl RequestForwarder {
                     adapter.as_ref(),
                     app_type,
                 )
-                .await
-            {
+                .await;
+            // 同一家原生 Responses 上游明确拒绝历史状态时，最多清理后重试一次。
+            // 在统一结果处理前重试，成功/失败仍沿用既有统计与故障转移语义。
+            if let Err(error) = &forwarded {
+                if let Some(rejection) = self.opaque_state_retry_rejection(
+                    app_type,
+                    provider,
+                    endpoint,
+                    opaque_rectifier_retried,
+                    &provider_body,
+                    error,
+                ) {
+                    let mut retry_body = provider_body.clone();
+                    let rectified = super::opaque_state_rectifier::rectify_opaque_state(
+                        &mut retry_body,
+                        rejection,
+                    );
+                    if rectified.applied {
+                        opaque_rectifier_retried = true;
+                        log::info!(
+                            "[{app_type_str}] [RECT-020] 历史状态整流后对同一供应商重试一次"
+                        );
+                        forwarded = self
+                            .forward(
+                                provider,
+                                endpoint,
+                                &retry_body,
+                                &headers,
+                                &extensions,
+                                adapter.as_ref(),
+                                app_type,
+                            )
+                            .await;
+                    }
+                }
+            }
+            match forwarded {
                 Ok((response, claude_api_format)) => {
                     // 成功：记录成功并更新熔断器
-                    let _ = self
-                        .router
-                        .record_result(
-                            &provider.id,
-                            app_type_str,
-                            used_half_open_permit,
-                            true,
-                            None,
-                        )
-                        .await;
+                    if self.routing_state_enabled() {
+                        let _ = self
+                            .router
+                            .record_result(
+                                &provider.id,
+                                app_type_str,
+                                used_half_open_permit,
+                                true,
+                                None,
+                            )
+                            .await;
+                    }
 
                     // 更新当前应用类型使用的 provider
-                    {
+                    if self.routing_state_enabled() {
                         let mut current_providers = self.current_providers.write().await;
                         current_providers.insert(
                             app_type_str.to_string(),
@@ -321,7 +395,7 @@ impl RequestForwarder {
                     }
 
                     // 更新成功统计
-                    {
+                    if self.routing_state_enabled() {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
                         status.last_error = None;
@@ -381,27 +455,33 @@ impl RequestForwarder {
                             .await
                         {
                             Ok((response, claude_api_format)) => {
-                                let _ = self
-                                    .router
-                                    .record_result(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                        true,
-                                        None,
-                                    )
-                                    .await;
-                                self.current_providers.write().await.insert(
-                                    app_type_str.to_string(),
-                                    (provider.id.clone(), provider.name.clone()),
-                                );
-                                let mut status = self.status.write().await;
-                                status.success_requests += 1;
-                                status.last_error = None;
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
+                                if self.routing_state_enabled() {
+                                    let _ = self
+                                        .router
+                                        .record_result(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                            true,
+                                            None,
+                                        )
+                                        .await;
+                                }
+                                if self.routing_state_enabled() {
+                                    self.current_providers.write().await.insert(
+                                        app_type_str.to_string(),
+                                        (provider.id.clone(), provider.name.clone()),
+                                    );
+                                }
+                                if self.routing_state_enabled() {
+                                    let mut status = self.status.write().await;
+                                    status.success_requests += 1;
+                                    status.last_error = None;
+                                    if status.total_requests > 0 {
+                                        status.success_rate = (status.success_requests as f32
+                                            / status.total_requests as f32)
+                                            * 100.0;
+                                    }
                                 }
                                 return Ok(ForwardResult {
                                     response,
@@ -431,20 +511,24 @@ impl RequestForwarder {
                             if rectifier_retried {
                                 log::warn!("[{app_type_str}] [RECT-005] 整流器已触发过，不再重试");
                                 // 释放 HalfOpen permit（不记录熔断器，这是客户端兼容性问题）
-                                self.router
-                                    .release_permit_neutral(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
+                                if self.routing_state_enabled() {
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
+                                }
+                                if self.routing_state_enabled() {
+                                    let mut status = self.status.write().await;
+                                    status.failed_requests += 1;
+                                    status.last_error = Some(e.to_string());
+                                    if status.total_requests > 0 {
+                                        status.success_rate = (status.success_requests as f32
+                                            / status.total_requests as f32)
+                                            * 100.0;
+                                    }
                                 }
                                 return Err(ForwardError {
                                     error: e,
@@ -489,19 +573,21 @@ impl RequestForwarder {
                                     Ok((response, claude_api_format)) => {
                                         log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
                                         // 记录成功
-                                        let _ = self
-                                            .router
-                                            .record_result(
-                                                &provider.id,
-                                                app_type_str,
-                                                used_half_open_permit,
-                                                true,
-                                                None,
-                                            )
-                                            .await;
+                                        if self.routing_state_enabled() {
+                                            let _ = self
+                                                .router
+                                                .record_result(
+                                                    &provider.id,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                    true,
+                                                    None,
+                                                )
+                                                .await;
+                                        }
 
                                         // 更新当前应用类型使用的 provider
-                                        {
+                                        if self.routing_state_enabled() {
                                             let mut current_providers =
                                                 self.current_providers.write().await;
                                             current_providers.insert(
@@ -511,7 +597,7 @@ impl RequestForwarder {
                                         }
 
                                         // 更新成功统计
-                                        {
+                                        if self.routing_state_enabled() {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
                                             status.last_error = None;
@@ -563,34 +649,41 @@ impl RequestForwarder {
 
                                         if is_provider_error {
                                             // Provider 问题：记录失败到熔断器
-                                            let _ = self
-                                                .router
-                                                .record_result(
-                                                    &provider.id,
-                                                    app_type_str,
-                                                    used_half_open_permit,
-                                                    false,
-                                                    Some(retry_err.to_string()),
-                                                )
-                                                .await;
+                                            if self.routing_state_enabled() {
+                                                let _ = self
+                                                    .router
+                                                    .record_result(
+                                                        &provider.id,
+                                                        app_type_str,
+                                                        used_half_open_permit,
+                                                        false,
+                                                        Some(retry_err.to_string()),
+                                                    )
+                                                    .await;
+                                            }
                                         } else {
                                             // 客户端问题：仅释放 permit，不记录熔断器
-                                            self.router
-                                                .release_permit_neutral(
-                                                    &provider.id,
-                                                    app_type_str,
-                                                    used_half_open_permit,
-                                                )
-                                                .await;
+                                            if self.routing_state_enabled() {
+                                                self.router
+                                                    .release_permit_neutral(
+                                                        &provider.id,
+                                                        app_type_str,
+                                                        used_half_open_permit,
+                                                    )
+                                                    .await;
+                                            }
                                         }
 
-                                        let mut status = self.status.write().await;
-                                        status.failed_requests += 1;
-                                        status.last_error = Some(retry_err.to_string());
-                                        if status.total_requests > 0 {
-                                            status.success_rate = (status.success_requests as f32
-                                                / status.total_requests as f32)
-                                                * 100.0;
+                                        if self.routing_state_enabled() {
+                                            let mut status = self.status.write().await;
+                                            status.failed_requests += 1;
+                                            status.last_error = Some(retry_err.to_string());
+                                            if status.total_requests > 0 {
+                                                status.success_rate = (status.success_requests
+                                                    as f32
+                                                    / status.total_requests as f32)
+                                                    * 100.0;
+                                            }
                                         }
                                         return Err(ForwardError {
                                             error: retry_err,
@@ -614,20 +707,24 @@ impl RequestForwarder {
                                 log::warn!(
                                     "[{app_type_str}] [RECT-013] budget 整流器已触发过，不再重试"
                                 );
-                                self.router
-                                    .release_permit_neutral(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
+                                if self.routing_state_enabled() {
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
+                                }
+                                if self.routing_state_enabled() {
+                                    let mut status = self.status.write().await;
+                                    status.failed_requests += 1;
+                                    status.last_error = Some(e.to_string());
+                                    if status.total_requests > 0 {
+                                        status.success_rate = (status.success_requests as f32
+                                            / status.total_requests as f32)
+                                            * 100.0;
+                                    }
                                 }
                                 return Err(ForwardError {
                                     error: e,
@@ -640,20 +737,24 @@ impl RequestForwarder {
                                 log::warn!(
                                     "[{app_type_str}] [RECT-014] budget 整流器触发但无可整流内容，不做无意义重试"
                                 );
-                                self.router
-                                    .release_permit_neutral(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
+                                if self.routing_state_enabled() {
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
+                                }
+                                if self.routing_state_enabled() {
+                                    let mut status = self.status.write().await;
+                                    status.failed_requests += 1;
+                                    status.last_error = Some(e.to_string());
+                                    if status.total_requests > 0 {
+                                        status.success_rate = (status.success_requests as f32
+                                            / status.total_requests as f32)
+                                            * 100.0;
+                                    }
                                 }
                                 return Err(ForwardError {
                                     error: e,
@@ -685,18 +786,20 @@ impl RequestForwarder {
                             {
                                 Ok((response, claude_api_format)) => {
                                     log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
-                                    let _ = self
-                                        .router
-                                        .record_result(
-                                            &provider.id,
-                                            app_type_str,
-                                            used_half_open_permit,
-                                            true,
-                                            None,
-                                        )
-                                        .await;
+                                    if self.routing_state_enabled() {
+                                        let _ = self
+                                            .router
+                                            .record_result(
+                                                &provider.id,
+                                                app_type_str,
+                                                used_half_open_permit,
+                                                true,
+                                                None,
+                                            )
+                                            .await;
+                                    }
 
-                                    {
+                                    if self.routing_state_enabled() {
                                         let mut current_providers =
                                             self.current_providers.write().await;
                                         current_providers.insert(
@@ -705,7 +808,7 @@ impl RequestForwarder {
                                         );
                                     }
 
-                                    {
+                                    if self.routing_state_enabled() {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
@@ -749,33 +852,39 @@ impl RequestForwarder {
                                     };
 
                                     if is_provider_error {
-                                        let _ = self
-                                            .router
-                                            .record_result(
-                                                &provider.id,
-                                                app_type_str,
-                                                used_half_open_permit,
-                                                false,
-                                                Some(retry_err.to_string()),
-                                            )
-                                            .await;
+                                        if self.routing_state_enabled() {
+                                            let _ = self
+                                                .router
+                                                .record_result(
+                                                    &provider.id,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                    false,
+                                                    Some(retry_err.to_string()),
+                                                )
+                                                .await;
+                                        }
                                     } else {
-                                        self.router
-                                            .release_permit_neutral(
-                                                &provider.id,
-                                                app_type_str,
-                                                used_half_open_permit,
-                                            )
-                                            .await;
+                                        if self.routing_state_enabled() {
+                                            self.router
+                                                .release_permit_neutral(
+                                                    &provider.id,
+                                                    app_type_str,
+                                                    used_half_open_permit,
+                                                )
+                                                .await;
+                                        }
                                     }
 
-                                    let mut status = self.status.write().await;
-                                    status.failed_requests += 1;
-                                    status.last_error = Some(retry_err.to_string());
-                                    if status.total_requests > 0 {
-                                        status.success_rate = (status.success_requests as f32
-                                            / status.total_requests as f32)
-                                            * 100.0;
+                                    if self.routing_state_enabled() {
+                                        let mut status = self.status.write().await;
+                                        status.failed_requests += 1;
+                                        status.last_error = Some(retry_err.to_string());
+                                        if status.total_requests > 0 {
+                                            status.success_rate = (status.success_requests as f32
+                                                / status.total_requests as f32)
+                                                * 100.0;
+                                        }
                                     }
                                     return Err(ForwardError {
                                         error: retry_err,
@@ -787,20 +896,24 @@ impl RequestForwarder {
                     }
 
                     if signature_rectifier_non_retryable_client_error {
-                        self.router
-                            .release_permit_neutral(
-                                &provider.id,
-                                app_type_str,
-                                used_half_open_permit,
-                            )
-                            .await;
-                        let mut status = self.status.write().await;
-                        status.failed_requests += 1;
-                        status.last_error = Some(e.to_string());
-                        if status.total_requests > 0 {
-                            status.success_rate = (status.success_requests as f32
-                                / status.total_requests as f32)
-                                * 100.0;
+                        if self.routing_state_enabled() {
+                            self.router
+                                .release_permit_neutral(
+                                    &provider.id,
+                                    app_type_str,
+                                    used_half_open_permit,
+                                )
+                                .await;
+                        }
+                        if self.routing_state_enabled() {
+                            let mut status = self.status.write().await;
+                            status.failed_requests += 1;
+                            status.last_error = Some(e.to_string());
+                            if status.total_requests > 0 {
+                                status.success_rate = (status.success_requests as f32
+                                    / status.total_requests as f32)
+                                    * 100.0;
+                            }
                         }
                         return Err(ForwardError {
                             error: e,
@@ -809,16 +922,18 @@ impl RequestForwarder {
                     }
 
                     // 失败：记录失败并更新熔断器
-                    let _ = self
-                        .router
-                        .record_result(
-                            &provider.id,
-                            app_type_str,
-                            used_half_open_permit,
-                            false,
-                            Some(e.to_string()),
-                        )
-                        .await;
+                    if self.routing_state_enabled() {
+                        let _ = self
+                            .router
+                            .record_result(
+                                &provider.id,
+                                app_type_str,
+                                used_half_open_permit,
+                                false,
+                                Some(e.to_string()),
+                            )
+                            .await;
+                    }
 
                     // 分类错误
                     let category = Self::categorize_proxy_error(&e, provider);
@@ -826,7 +941,7 @@ impl RequestForwarder {
                     match category {
                         ErrorCategory::Retryable => {
                             // 可重试：更新错误信息，继续尝试下一个供应商
-                            {
+                            if self.routing_state_enabled() {
                                 let mut status = self.status.write().await;
                                 status.last_error =
                                     Some(format!("Provider {} 失败: {}", provider.name, e));
@@ -847,7 +962,7 @@ impl RequestForwarder {
                         }
                         ErrorCategory::NonRetryable => {
                             // 不可重试：直接返回错误
-                            {
+                            if self.routing_state_enabled() {
                                 let mut status = self.status.write().await;
                                 status.failed_requests += 1;
                                 status.last_error = Some(e.to_string());
@@ -869,7 +984,7 @@ impl RequestForwarder {
 
         if attempted_providers == 0 {
             // providers 列表非空，但全部被熔断器拒绝（典型：HalfOpen 探测名额被占用）
-            {
+            if self.routing_state_enabled() {
                 let mut status = self.status.write().await;
                 status.failed_requests += 1;
                 status.last_error = Some("所有供应商暂时不可用（熔断器限制）".to_string());
@@ -885,7 +1000,7 @@ impl RequestForwarder {
         }
 
         // 所有供应商都失败了
-        {
+        if self.routing_state_enabled() {
             let mut status = self.status.write().await;
             status.failed_requests += 1;
             status.last_error = Some("所有供应商都失败".to_string());
@@ -933,7 +1048,9 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，未知 route 直接报错，不走默认模型兜底。
-        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
+        let mapped_body = if self.stack_request {
+            body.clone()
+        } else if matches!(app_type, AppType::ClaudeDesktop) {
             crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
                 .map_err(|e| ProxyError::ConfigError(e.to_string()))?
         } else {
@@ -1192,6 +1309,45 @@ impl RequestForwarder {
         } else {
             mapped_body
         };
+
+        // Codex 远程压缩，以及同一线程里别家回合留下的状态（见 `codex_compaction`）。
+        // Chat / Anthropic 转换在转换器里处理；这里管原样转发的两种上游：官方清掉
+        // CC Switch 产出、官方一定会拒的条目，原生 Responses 第三方把压缩触发和
+        // CC Switch 包装的压缩摘要改成普通消息。看不出来源的密文原样发出，被拒后由
+        // `opaque_state_rectifier` 处理。请求里没有这些条目时逐字节不变。
+        if matches!(app_type, AppType::Codex)
+            && !codex_responses_to_chat
+            && !codex_responses_to_anthropic
+        {
+            if codex_official_auth_passthrough {
+                if super::providers::codex_compaction::scrub_ccswitch_state_for_official(
+                    &mut request_body,
+                ) {
+                    log::debug!(
+                        "[Codex] Scrubbed third-party turn state before the official upstream (provider={})",
+                        provider.id
+                    );
+                }
+            } else if super::providers::codex_compaction::prepare_native_third_party_request(
+                &mut request_body,
+            ) {
+                log::debug!(
+                    "[Codex] Rewrote compaction items for a native Responses upstream (provider={})",
+                    provider.id
+                );
+            }
+        }
+
+        if self.stack_request
+            && matches!(app_type, AppType::Codex)
+            && !codex_responses_to_chat
+            && !codex_responses_to_anthropic
+        {
+            let model = request_body.get("model").and_then(Value::as_str);
+            if super::providers::codex_stack_upstream_rejects_web_search(provider, model) {
+                super::providers::strip_codex_hosted_web_search(&mut request_body);
+            }
+        }
 
         if matches!(app_type, AppType::Codex | AppType::GrokBuild)
             && !codex_responses_to_chat
@@ -1508,7 +1664,12 @@ impl RequestForwarder {
                 continue;
             }
 
-            if codex_responses_to_anthropic && is_codex_client_fingerprint_header(key_str) {
+            if (codex_responses_to_anthropic
+                || (self.stack_request
+                    && matches!(app_type, AppType::Codex)
+                    && !codex_official_auth_passthrough))
+                && is_codex_client_fingerprint_header(key_str)
+            {
                 continue;
             }
 
@@ -2157,6 +2318,7 @@ fn is_codex_client_fingerprint_header(key: &str) -> bool {
             | "openai-beta"
             | "openai-organization"
             | "openai-project"
+            | "version"
     ) || key.starts_with("x-stainless-")
         || key.starts_with("x-codex-")
 }
@@ -3376,6 +3538,7 @@ mod tests {
         ));
         assert!(is_codex_client_fingerprint_header("x-stainless-runtime"));
         assert!(!is_codex_client_fingerprint_header("anthropic-version"));
+        assert!(is_codex_client_fingerprint_header("version"));
         assert_eq!(strip_one_m_suffix("claude-opus-4-6[1m]"), "claude-opus-4-6");
     }
 

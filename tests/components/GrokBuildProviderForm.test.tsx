@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
+import { renderWithQueryClient as render } from "../utils/testQueryClient";
 import userEvent from "@testing-library/user-event";
 import { parse as parseToml } from "smol-toml";
 import { describe, expect, it, vi } from "vitest";
@@ -21,6 +22,33 @@ vi.mock("@/components/JsonEditor", () => ({
 }));
 
 describe("GrokBuildProviderForm", () => {
+  it("preserves the live global baseline across preset changes", async () => {
+    const user = userEvent.setup();
+    render(
+      <GrokBuildProviderForm
+        submitLabel="Save"
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        providerLiveBase={{
+          config:
+            "[ui]\ntheme = 'live-theme'\n[mcp_servers.mine]\ncommand = 'local'\n",
+        }}
+      />,
+    );
+    const readConfig = () =>
+      parseToml(
+        (screen.getByLabelText("raw-config") as HTMLTextAreaElement).value,
+      );
+    expect(readConfig()).toMatchObject({
+      ui: { theme: "live-theme" },
+      mcp_servers: { mine: { command: "local" } },
+    });
+    await user.click(screen.getByRole("button", { name: /PatewayAI/ }));
+    expect(readConfig()).toMatchObject({
+      ui: { theme: "live-theme" },
+      mcp_servers: { mine: { command: "local" } },
+    });
+  });
   it("offers curated Grok Build presets and applies one", async () => {
     const user = userEvent.setup();
     const { container } = render(
@@ -67,7 +95,7 @@ describe("GrokBuildProviderForm", () => {
     fireEvent.change(baseUrlInput!, {
       target: { value: "https://relay.example.com/v1" },
     });
-    fireEvent.change(screen.getByLabelText("API Key"), {
+    fireEvent.change(screen.getByLabelText("API Key *"), {
       target: { value: "secret-key" },
     });
     await user.click(screen.getByRole("button", { name: "Save" }));

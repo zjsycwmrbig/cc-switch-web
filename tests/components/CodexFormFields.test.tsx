@@ -1,7 +1,11 @@
+import { renderWithQueryClient as render } from "../utils/testQueryClient";
 import type { ReactNode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { CodexFormFields } from "@/components/providers/forms/CodexFormFields";
+import { http, HttpResponse } from "msw";
+import { server } from "../msw/server";
+import { MODELS_DEV_API_URL } from "@/lib/modelsDev";
 
 const fetchXaiOauthModelsMock = vi.hoisted(() => vi.fn());
 const fetchModelsForConfigMock = vi.hoisted(() => vi.fn());
@@ -32,7 +36,10 @@ vi.mock("@/components/providers/forms/XaiOAuthSection", () => ({
   ),
 }));
 
-vi.mock("@/components/providers/forms/shared", () => ({
+vi.mock("@/components/providers/forms/shared", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/components/providers/forms/shared")
+  >()),
   ApiKeySection: () => <div data-testid="api-key-field" />,
   EndpointField: () => <div data-testid="endpoint-field" />,
   ModelInputWithFetch: ({ fetchedModels }: { fetchedModels: unknown[] }) => (
@@ -169,6 +176,26 @@ describe("CodexFormFields", () => {
   });
 
   it("默认模型合并目录与远端建议，并可加入模型映射", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    server.use(
+      http.get(MODELS_DEV_API_URL, () =>
+        HttpResponse.json({
+          example: {
+            api: "https://example.com/v1",
+            models: {
+              "outside-model": { limit: { context: 9000 } },
+              "remote-model": {
+                limit: { context: 64000 },
+                modalities: { input: ["text", "image"] },
+                reasoning_options: [
+                  { type: "discrete", values: ["low", "high"] },
+                ],
+              },
+            },
+          },
+        }),
+      ),
+    );
     fetchModelsForConfigMock.mockResolvedValueOnce([
       { id: "mapped-model" },
       { id: "remote-model", ownedBy: "remote" },
@@ -234,6 +261,28 @@ describe("CodexFormFields", () => {
         expect.objectContaining({
           model: "outside-model",
           displayName: "outside-model",
+          contextWindow: "9000",
+        }),
+      ]),
+    );
+    fireEvent.click(
+      screen.getAllByRole("button", {
+        name: "providerForm.searchModelAriaLabel",
+      })[0],
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "remote-model" }),
+    );
+    await waitFor(() =>
+      expect(onCatalogModelsChange).toHaveBeenLastCalledWith([
+        expect.objectContaining({
+          model: "remote-model",
+          contextWindow: "64000",
+          inputModalities: ["text", "image"],
+        }),
+        expect.objectContaining({
+          model: "outside-model",
+          contextWindow: "9000",
         }),
       ]),
     );

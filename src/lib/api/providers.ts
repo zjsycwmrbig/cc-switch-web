@@ -6,6 +6,15 @@ import type {
 } from "@/types";
 import type { AppId } from "./types";
 
+export interface ProviderEditorSave {
+  base: Record<string, unknown>;
+  onConflict: "refuse" | "keepMine" | "keepTheirs";
+}
+export interface ProviderEditorView {
+  settings: Record<string, unknown>;
+  inactive: { path: string[]; value: unknown }[];
+}
+
 export interface ProviderSortUpdate {
   id: string;
   sortIndex: number;
@@ -20,6 +29,32 @@ export interface OpenTerminalOptions {
 }
 
 export const providersApi = {
+  async getCodexEditorView(
+    settings: Record<string, unknown>,
+    providerId?: string,
+    category?: string,
+  ): Promise<ProviderEditorView> {
+    return invoke("get_codex_editor_view", { settings, providerId, category });
+  },
+  async getGrokEditorView(
+    settings: Record<string, unknown>,
+    providerId?: string,
+    category?: string,
+  ): Promise<ProviderEditorView> {
+    return invoke("get_grok_editor_view", { settings, providerId, category });
+  },
+  async getGeminiEditorView(
+    settings: Record<string, unknown>,
+    providerId?: string,
+    category?: string,
+  ): Promise<ProviderEditorView> {
+    return invoke("get_gemini_editor_view", { settings, providerId, category });
+  },
+  async getClaudeEditorView(
+    settings: Record<string, unknown>,
+  ): Promise<ProviderEditorView> {
+    return invoke("get_claude_editor_view", { settings });
+  },
   async getAll(appId: AppId): Promise<Record<string, Provider>> {
     return await invoke("get_providers", { app: appId });
   },
@@ -32,7 +67,32 @@ export const providersApi = {
     provider: Provider,
     appId: AppId,
     addToLive?: boolean,
+    editorSave?: ProviderEditorSave,
   ): Promise<boolean> {
+    if (appId === "codex" && editorSave)
+      return invoke("save_codex_editor", {
+        provider,
+        editor: editorSave,
+        add: true,
+      });
+    if (appId === "grokbuild" && editorSave)
+      return invoke("save_grok_editor", {
+        provider,
+        editor: editorSave,
+        add: true,
+      });
+    if (appId === "gemini" && editorSave)
+      return invoke("save_gemini_editor", {
+        provider,
+        editor: editorSave,
+        add: true,
+      });
+    if (appId === "claude" && editorSave)
+      return invoke("save_claude_editor", {
+        provider,
+        editor: editorSave,
+        add: true,
+      });
     return await invoke("add_provider", { provider, app: appId, addToLive });
   },
 
@@ -40,8 +100,37 @@ export const providersApi = {
     provider: Provider,
     appId: AppId,
     originalId?: string,
+    editorSave?: ProviderEditorSave,
   ): Promise<boolean> {
-    return await invoke("update_provider", { provider, app: appId, originalId });
+    if (appId === "codex" && editorSave)
+      return invoke("save_codex_editor", {
+        provider,
+        editor: editorSave,
+        add: false,
+      });
+    if (appId === "grokbuild" && editorSave)
+      return invoke("save_grok_editor", {
+        provider,
+        editor: editorSave,
+        add: false,
+      });
+    if (appId === "gemini" && editorSave)
+      return invoke("save_gemini_editor", {
+        provider,
+        editor: editorSave,
+        add: false,
+      });
+    if (appId === "claude" && editorSave)
+      return invoke("save_claude_editor", {
+        provider,
+        editor: editorSave,
+        add: false,
+      });
+    return await invoke("update_provider", {
+      provider,
+      app: appId,
+      originalId,
+    });
   },
 
   async delete(id: string, appId: AppId): Promise<boolean> {

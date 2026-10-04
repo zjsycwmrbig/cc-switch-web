@@ -15,6 +15,8 @@ export function ProviderEmptyState({
   onImport,
 }: ProviderEmptyStateProps) {
   const { t } = useTranslation();
+  // MiniMax Code 自动合并原生自定义供应商，不提供手动导入入口。
+  const isMcode = appId === "mcode";
   const showSnippetHint =
     appId === "claude" || appId === "codex" || appId === "gemini";
 
@@ -29,10 +31,14 @@ export function ProviderEmptyState({
         })}
       </div>
       <h3 className="mt-3 text-xl font-semibold tracking-tight">
-        {t("provider.noProviders")}
+        {t(isMcode ? "mcode.empty.title" : "provider.noProviders")}
       </h3>
       <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
-        {t("provider.noProvidersDescription")}
+        {t(
+          isMcode
+            ? "mcode.empty.description"
+            : "provider.noProvidersDescription",
+        )}
       </p>
       {showSnippetHint && (
         <p className="mt-1 max-w-lg text-sm leading-6 text-muted-foreground">

@@ -1,3 +1,5 @@
+import { RequestDetailPanel } from "./RequestDetailPanel";
+import { TablePagination } from "./TablePagination";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -19,10 +21,11 @@ import {
 } from "@/components/ui/select";
 import { useRequestLogs } from "@/lib/query/usage";
 import type { LogFilters, UsageRangeSelection } from "@/types/usage";
-import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import {
   formatOutputTokensPerSecond,
+  formatEstimatedTokensPerSecond,
   fmtInt,
   fmtUsd,
   getLocaleFromLanguage,
@@ -49,7 +52,7 @@ export function RequestLogTable({
   const [appliedFilters, setAppliedFilters] = useState<LogFilters>({});
   const [draftFilters, setDraftFilters] = useState<LogFilters>({});
   const [page, setPage] = useState(0);
-  const [pageInput, setPageInput] = useState("");
+  const [selectedRequest, setSelectedRequest] = useState<string | null>(null);
   const pageSize = 20;
 
   const dashboardAppTypeActive = dashboardAppType && dashboardAppType !== "all";
@@ -57,7 +60,11 @@ export function RequestLogTable({
     ? { ...appliedFilters, appType: dashboardAppType }
     : appliedFilters;
 
-  const { data: result, isLoading } = useRequestLogs({
+  const {
+    data: result,
+    isLoading,
+    isPlaceholderData,
+  } = useRequestLogs({
     filters: effectiveFilters,
     range,
     page,
@@ -69,7 +76,7 @@ export function RequestLogTable({
 
   const logs = result?.data ?? [];
   const total = result?.total ?? 0;
-  const totalPages = Math.ceil(total / pageSize);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   useEffect(() => {
     setPage(0);
@@ -79,6 +86,11 @@ export function RequestLogTable({
     range.customStartDate,
     range.preset,
   ]);
+
+  useEffect(() => {
+    if (result && !isPlaceholderData)
+      setPage((current) => Math.min(current, totalPages - 1));
+  }, [result, isPlaceholderData, totalPages]);
 
   const handleSearch = () => {
     setAppliedFilters(draftFilters);
@@ -106,20 +118,17 @@ export function RequestLogTable({
     setPage(0);
   };
 
-  const handleGoToPage = () => {
-    const trimmed = pageInput.trim();
-    if (!/^\d+$/.test(trimmed)) return;
-    const parsed = Number(trimmed);
-    if (parsed < 1 || parsed > totalPages) return;
-    setPage(parsed - 1);
-    setPageInput("");
-  };
-
   const language = i18n.resolvedLanguage || i18n.language || "en";
   const locale = getLocaleFromLanguage(language);
 
   return (
     <div className="space-y-4">
+      {selectedRequest && (
+        <RequestDetailPanel
+          requestId={selectedRequest}
+          onClose={() => setSelectedRequest(null)}
+        />
+      )}
       <div className="rounded-lg border bg-card/50 p-2 backdrop-blur-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           <Select
@@ -284,18 +293,33 @@ export function RequestLogTable({
                 ) : (
                   logs.map((log) => (
                     <TableRow key={log.requestId}>
-                      <TableCell className="text-center whitespace-nowrap text-xs px-1.5">
-                        {new Date(log.createdAt * 1000).toLocaleString(locale, {
-                          month: "2-digit",
-                          day: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
+                      <TableCell className="w-px text-center whitespace-nowrap text-xs px-1.5">
+                        <button
+                          type="button"
+                          className="hover:underline focus-visible:underline"
+                          aria-label={`${t("usage.requestDetail")}: ${log.requestId}`}
+                          onClick={() => setSelectedRequest(log.requestId)}
+                        >
+                          {new Date(log.createdAt * 1000).toLocaleString(
+                            locale,
+                            {
+                              month: "2-digit",
+                              day: "2-digit",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            },
+                          )}
+                        </button>
                       </TableCell>
-                      <TableCell className="text-center">
-                        {log.providerName || t("usage.unknownProvider")}
+                      <TableCell className="w-[18%] max-w-0 text-center">
+                        <span
+                          className="block truncate"
+                          title={log.providerName}
+                        >
+                          {log.providerName || t("usage.unknownProvider")}
+                        </span>
                       </TableCell>
-                      <TableCell className="text-center font-mono text-xs max-w-[200px]">
+                      <TableCell className="w-[22%] max-w-0 text-center font-mono text-xs">
                         <div
                           className="truncate"
                           title={
@@ -340,7 +364,12 @@ export function RequestLogTable({
                         <div className="tabular-nums">
                           {fmtInt(log.outputTokens, locale)}
                           {(() => {
-                            const tpsStr = formatOutputTokensPerSecond(log);
+                            const exact = formatOutputTokensPerSecond(log);
+                            const estimated =
+                              formatEstimatedTokensPerSecond(log);
+                            const tpsStr =
+                              exact ??
+                              (estimated == null ? null : `≈${estimated}`);
                             if (tpsStr == null) return null;
                             return (
                               <span className="text-muted-foreground text-xs">
@@ -393,85 +422,12 @@ export function RequestLogTable({
             </Table>
           </div>
 
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>{t("usage.totalRecords", { total })}</span>
-            <div className="flex items-center gap-1">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              {(() => {
-                const pages: (number | string)[] = [];
-                if (totalPages <= 9) {
-                  for (let i = 0; i < totalPages; i++) pages.push(i);
-                } else {
-                  const pageSet = new Set<number>();
-                  for (let i = 0; i < 3; i++) pageSet.add(i);
-                  for (let i = totalPages - 3; i < totalPages; i++) {
-                    pageSet.add(i);
-                  }
-                  for (
-                    let i = Math.max(0, page - 1);
-                    i <= Math.min(totalPages - 1, page + 1);
-                    i++
-                  ) {
-                    pageSet.add(i);
-                  }
-                  const sorted = Array.from(pageSet).sort((a, b) => a - b);
-                  for (let i = 0; i < sorted.length; i++) {
-                    if (i > 0 && sorted[i] - sorted[i - 1] > 1) {
-                      pages.push(`ellipsis-${i}`);
-                    }
-                    pages.push(sorted[i]);
-                  }
-                }
-                return pages.map((p) =>
-                  typeof p === "string" ? (
-                    <span key={p} className="px-2 text-muted-foreground">
-                      ...
-                    </span>
-                  ) : (
-                    <Button
-                      key={p}
-                      variant={p === page ? "default" : "outline"}
-                      size="sm"
-                      className="h-8 w-8 p-0"
-                      onClick={() => setPage(p)}
-                    >
-                      {p + 1}
-                    </Button>
-                  ),
-                );
-              })()}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={page >= totalPages - 1}
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-              <div className="ml-2 flex items-center gap-1">
-                <Input
-                  type="text"
-                  value={pageInput}
-                  onChange={(e) => setPageInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleGoToPage();
-                  }}
-                  placeholder={t("usage.pageInputPlaceholder")}
-                  className="h-8 w-16 text-center text-xs"
-                />
-                <Button variant="outline" size="sm" onClick={handleGoToPage}>
-                  {t("usage.goToPage")}
-                </Button>
-              </div>
-            </div>
-          </div>
+          <TablePagination
+            page={page}
+            totalPages={totalPages}
+            total={total}
+            onPageChange={setPage}
+          />
         </>
       )}
     </div>

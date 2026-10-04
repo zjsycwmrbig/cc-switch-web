@@ -37,6 +37,8 @@ export function useManagedAuth(authProvider: ManagedAuthProvider) {
   const {
     data: authStatus,
     isLoading: isLoadingStatus,
+    isSuccess: isStatusSuccess,
+    isError: isStatusError,
     refetch: refetchStatus,
   } = useQuery<ManagedAuthStatus>({
     queryKey,
@@ -326,6 +328,8 @@ export function useManagedAuth(authProvider: ManagedAuthProvider) {
   return {
     authStatus,
     isLoadingStatus,
+    isStatusSuccess,
+    isStatusError,
     accounts,
     hasAnyAccount: accounts.length > 0,
     isAuthenticated: authStatus?.authenticated ?? false,

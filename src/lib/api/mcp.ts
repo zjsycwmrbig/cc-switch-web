@@ -5,7 +5,9 @@ import type {
 } from "@/types";
 import type { AppId } from "./types";
 
+export interface McpAppSyncOutcome { app: string; ok: boolean; error?: string; }
 export const mcpApi = {
+  async resyncToApps(apps?: AppId[]): Promise<McpAppSyncOutcome[]> { return invoke("resync_mcp_to_apps", { apps }); },
   /**
    * 获取所有 MCP 服务器（统一结构）
    */
