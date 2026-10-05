@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "cc-switch-web"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-stream",

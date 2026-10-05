@@ -54,6 +54,7 @@ pub fn parse_env_file(content: &str) -> HashMap<String, String> {
 }
 
 /// 将键值对序列化为 .env 格式
+#[cfg(test)]
 pub fn serialize_env_file(map: &HashMap<String, String>) -> String {
     let mut lines = Vec::new();
 

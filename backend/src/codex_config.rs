@@ -1038,6 +1038,7 @@ pub fn delete_codex_provider_config(
 }
 
 /// 原子写 Codex 的 `auth.json` 与 `config.toml`，在第二步失败时回滚第一步
+#[cfg(test)]
 pub fn write_codex_live_atomic(
     auth: &Value,
     config_text_opt: Option<&str>,
@@ -3195,6 +3196,7 @@ fn codex_provider_table_declares_auth(table: &dyn toml_edit::TableLike) -> bool 
 /// third-party endpoint. Configs without any routing directive are fine:
 /// they leave Codex on the official provider, and the top-level token is
 /// cc-switch's own record (extract/backfill), never read by Codex.
+#[cfg(test)]
 fn codex_config_routes_third_party_without_token_slot(config_text: &str) -> bool {
     let Ok(doc) = config_text.parse::<DocumentMut>() else {
         // Syntactically invalid TOML is rejected later by the write validators.
@@ -3227,6 +3229,7 @@ fn codex_config_routes_third_party_without_token_slot(config_text: &str) -> bool
 /// (other built-ins never read the OAuth login). With a token present the
 /// injected bearer short-circuits the fallback instead (bridge contract),
 /// so this predicate only matters on the no-token path.
+#[cfg(test)]
 fn codex_config_falls_back_to_official_auth_for_third_party(config_text: &str) -> bool {
     let Ok(doc) = config_text.parse::<DocumentMut>() else {
         // Syntactically invalid TOML is rejected later by the write validators.
@@ -3455,6 +3458,7 @@ fn backfill_codex_custom_provider_names(config_text: &str) -> Result<Option<Stri
 /// instead of writing a config Codex refuses to start on. Deliberately
 /// called only from plan_codex_live_write: the gate-less paths (proxy
 /// backup/restore) must not fail closed on the user's own backup.
+#[cfg(test)]
 fn preflight_codex_provider_table_conflicts(config_text: &str) -> Result<(), AppError> {
     if !config_text.contains("model_providers") {
         return Ok(());
@@ -4240,11 +4244,14 @@ pub fn strip_codex_mcp_servers_from_settings(settings: &mut Value) -> Result<(),
 /// committing any state, then execute the same computation for the real
 /// write. Keeping validation and execution in one builder makes it
 /// impossible for the two to drift apart.
+// 旧整份写入计划仅用于迁移兼容回归；生产写入使用 provider::codex_direct。
+#[cfg(test)]
 struct CodexLiveWritePlan {
     config_text: Option<String>,
     remove_auth_file: bool,
 }
 
+#[cfg(test)]
 fn plan_codex_live_write(
     category: Option<&str>,
     auth: &Value,
@@ -4387,6 +4394,7 @@ fn plan_codex_live_write(
 /// this to fail a provider switch BEFORE committing `current`: a write-layer
 /// refusal after `current` moved would let the next switch backfill the old
 /// live config into the new provider's DB row.
+#[cfg(test)]
 pub fn preflight_codex_live_write(
     category: Option<&str>,
     auth: &Value,

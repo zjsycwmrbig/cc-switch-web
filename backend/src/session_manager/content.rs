@@ -602,23 +602,6 @@ fn project_dir_for(source: &ValidatedSource) -> Option<PathBuf> {
     Some(dir)
 }
 
-/// `reveal_session_path` 的路径校验：绝对路径或 `file://` URL，且必须已存在。
-/// 只在文件管理器里定位，不打开文件，因此不限制目录。
-pub fn resolve_reveal_path(path: &str) -> Result<PathBuf, String> {
-    let path = if path.starts_with("file://") {
-        url::Url::parse(path)
-            .ok()
-            .and_then(|url| url.to_file_path().ok())
-            .ok_or("路径无效")?
-    } else {
-        PathBuf::from(path)
-    };
-    if !path.is_absolute() {
-        return Err("路径无效".to_string());
-    }
-    path.canonicalize().map_err(|_| "路径不存在".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1123,16 +1106,6 @@ mod tests {
         assert!(
             resolve_content_ref(&source, &sqlite("part; DROP TABLE part", "p1", "data")).is_err()
         );
-    }
-
-    #[test]
-    fn reveal_path_requires_existing_absolute_path() {
-        let dir = tempdir().unwrap();
-        let file = dir.path().join("a.txt");
-        std::fs::write(&file, "x").unwrap();
-        assert!(resolve_reveal_path(&file.to_string_lossy()).is_ok());
-        assert!(resolve_reveal_path("relative/a.txt").is_err());
-        assert!(resolve_reveal_path(&dir.path().join("missing").to_string_lossy()).is_err());
     }
 
     #[test]

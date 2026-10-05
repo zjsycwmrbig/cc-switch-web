@@ -74,6 +74,9 @@ pub fn run(
         recovered: recover(store, guard, commit_target)?,
         ..OperationReport::default()
     };
+    if let Some(outcome) = &report.recovered {
+        log::debug!("操作 {op} 前恢复未完成写入：{outcome:?}");
+    }
 
     // 1. 在内存里算好每个文件；任何一个解析失败都不写。
     let mut plans = Vec::with_capacity(changes.len());

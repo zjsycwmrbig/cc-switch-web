@@ -6,6 +6,7 @@ use crate::config::{get_home_dir, write_text_file_private};
 use crate::error::AppError;
 
 const DEFAULT_API_BACKEND: &str = "responses";
+#[cfg(test)]
 use crate::provider::Provider;
 
 pub const OFFICIAL_PROVIDER_ID: &str = "grokbuild-official";
@@ -197,6 +198,7 @@ pub fn extract_credentials(config_toml: &str) -> Option<(String, String)> {
     Some((config.base_url, api_key))
 }
 
+#[cfg(test)]
 pub fn extract_inline_api_key(config_toml: &str) -> Option<String> {
     extract_model_config(config_toml)?.api_key
 }
@@ -258,6 +260,7 @@ pub fn apply_proxy_takeover(
     update_selected_model_string(&updated, "api_backend", DEFAULT_API_BACKEND)
 }
 
+#[cfg(test)]
 pub fn update_api_key(config_toml: &str, api_key: &str) -> Result<String, AppError> {
     update_selected_model_string(config_toml, "api_key", api_key)
 }
@@ -358,6 +361,7 @@ pub fn read_grok_live_settings() -> Result<Value, AppError> {
     Ok(json!({ "config": config }))
 }
 
+#[cfg(test)]
 pub fn write_grok_provider_live(provider: &Provider) -> Result<(), AppError> {
     let settings = provider.settings_config.as_object().ok_or_else(|| {
         AppError::localized(

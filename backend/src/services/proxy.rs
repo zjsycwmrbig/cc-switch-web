@@ -23,6 +23,8 @@ use tokio::sync::RwLock;
 
 /// 用于接管 Live 配置时的占位符（避免客户端提示缺少 key，同时不泄露真实 Token）
 const PROXY_TOKEN_PLACEHOLDER: &str = "PROXY_MANAGED";
+// 旧接管入口仅保留作兼容回归；生产模式切换由 mode::controller 管理。
+#[cfg(test)]
 const PROXY_TAKEOVER_APPS: [&str; 4] = ["claude", "codex", "gemini", "grokbuild"];
 
 /// 代理接管模式下需要从 Claude Live 配置中移除的"模型覆盖"字段。
@@ -296,6 +298,7 @@ impl ProxyService {
     ///
     /// - 开启：自动启动代理服务，仅接管当前 app 的 Live 配置
     /// - 关闭：仅恢复当前 app 的 Live 配置；若无其它接管，则自动停止代理服务
+    #[cfg(test)]
     pub async fn set_takeover_for_app(&self, app_type: &str, enabled: bool) -> Result<(), String> {
         let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
         let app_type_str = app.as_str();
@@ -444,6 +447,7 @@ impl ProxyService {
     ///
     /// 在清空 Live Token 之前调用，确保数据库中的 Provider 配置有最新的 Token。
     /// 这样代理才能从数据库读取到正确的认证信息。
+    #[cfg(test)]
     async fn sync_live_to_provider(&self, app_type: &AppType) -> Result<(), String> {
         let live_config = match app_type {
             // C-Phase0 脚手架：claude-desktop 运行时尚未实现
@@ -471,6 +475,7 @@ impl ProxyService {
             .await
     }
 
+    #[cfg(test)]
     async fn sync_live_config_to_provider(
         &self,
         app_type: &AppType,
@@ -763,6 +768,7 @@ impl ProxyService {
     /// 停止代理服务器（恢复 Live 配置，用户手动关闭时使用）
     ///
     /// 会清除 settings 表中的代理状态，下次启动不会自动恢复。
+    #[cfg(test)]
     pub async fn stop_with_restore(&self) -> Result<(), String> {
         // 1. 停止代理服务器（即使未运行也继续执行恢复逻辑）
         if let Err(e) = self.stop().await {
@@ -797,6 +803,7 @@ impl ProxyService {
     }
 
     /// 备份指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
+    #[cfg(test)]
     async fn backup_live_config_strict(&self, app_type: &AppType) -> Result<(), String> {
         let (app_type_str, config) = match app_type {
             // C-Phase0 脚手架：claude-desktop 运行时尚未实现
@@ -917,6 +924,7 @@ impl ProxyService {
         );
     }
 
+    #[cfg(test)]
     fn apply_claude_takeover_fields_with_policy(
         live_config: &mut Value,
         proxy_url: &str,
@@ -1206,6 +1214,7 @@ impl ProxyService {
     }
 
     /// 恢复指定应用的 Live 配置（若无备份则不做任何操作）
+    #[cfg(test)]
     async fn restore_live_config_for_app(&self, app_type: &AppType) -> Result<(), String> {
         match app_type {
             // C-Phase0 脚手架：claude-desktop 运行时尚未实现
@@ -1266,6 +1275,7 @@ impl ProxyService {
     }
 
     /// 恢复原始 Live 配置
+    #[cfg(test)]
     async fn restore_live_configs(&self) -> Result<(), String> {
         let mut errors = Vec::new();
 
@@ -1290,6 +1300,7 @@ impl ProxyService {
         }
     }
 
+    #[cfg(test)]
     async fn restore_live_config_for_app_with_fallback(
         &self,
         app_type: &AppType,
@@ -1923,6 +1934,7 @@ impl ProxyService {
         target_obj.remove("auth");
     }
 
+    #[cfg(test)]
     async fn ensure_current_codex_managed_account_exists(&self) -> Result<(), String> {
         let Some(provider_id) =
             crate::settings::get_effective_current_provider(self.db.as_ref(), &AppType::Codex)

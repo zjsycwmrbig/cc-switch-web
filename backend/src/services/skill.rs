@@ -2077,14 +2077,6 @@ impl SkillService {
 
     // ========== 发现功能（保留原有逻辑）==========
 
-    /// 列出所有可发现的技能（从仓库获取）
-    pub async fn discover_available(
-        &self,
-        repos: Vec<SkillRepo>,
-    ) -> Result<Vec<DiscoverableSkill>> {
-        Ok(self.discover_available_report(repos).await?.skills)
-    }
-
     /// 从仓库获取技能列表
     async fn fetch_repo_skills(&self, repo: &SkillRepo) -> Result<Vec<DiscoverableSkill>> {
         let (temp_guard, resolved_branch) =
@@ -4336,16 +4328,6 @@ mod tests {
             "unexpected error: {}",
             failure.error
         );
-
-        // 旧接口只取 skills，行为不变
-        let skills = service
-            .discover_available(vec![
-                repo("owner", "repo", true),
-                repo("bad owner!", "x", true),
-            ])
-            .await
-            .expect("discover");
-        assert_eq!(skills.len(), 1);
     }
 
     #[tokio::test]

@@ -1,20 +1,26 @@
 //! TOML 补丁器（Codex、Grok Build 的 `config.toml`），基于 `toml_edit`：注释、空行、
 //! 键的写法和表的位置都原样保留，只改补丁点名的键。
 
+#[cfg(test)]
 use std::collections::HashSet;
 use std::path::Path;
 
-use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
+use toml_edit::{DocumentMut, Value};
+#[cfg(test)]
+use toml_edit::{Item, Table, TableLike};
 
 use super::{decode_utf8, line_column, KeyPath, LivePatch, LiveWriteError};
 
 /// 按谓词清空的作用域：父表里所有命中谓词的键。
+// 通用补丁保留为格式/布局回归夹具；生产使用 CodexConfigPatch/GrokConfigPatch。
+#[cfg(test)]
 #[derive(Clone)]
 pub struct TomlClearScope {
     pub parent: KeyPath,
     pub is_floor: fn(&str) -> bool,
 }
 
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub struct TomlPatch {
     /// 先清空的关键字段。目标值里也有的键不删，留给 `set` 原位改值。
@@ -29,6 +35,7 @@ pub struct TomlPatch {
     pub remove_if: Vec<(KeyPath, Vec<Value>)>,
 }
 
+#[cfg(test)]
 impl TomlPatch {
     pub fn apply_to(&self, path: &Path, doc: &mut DocumentMut) -> Result<(), LiveWriteError> {
         let targets: HashSet<&KeyPath> = self.set.iter().map(|(key_path, _)| key_path).collect();
@@ -116,7 +123,6 @@ impl<T: TomlDocPatch> LivePatch for T {
 }
 
 /// 在同一份文档上依次应用几个补丁（比如先应用编辑器里的改动，再换关键字段）。
-#[allow(dead_code)] // 后续应用投影及模式迁移将使用此接口，先保持上游契约。
 pub struct TomlSteps<'a>(pub Vec<&'a dyn TomlDocPatch>);
 
 impl TomlDocPatch for TomlSteps<'_> {
@@ -125,6 +131,7 @@ impl TomlDocPatch for TomlSteps<'_> {
     }
 }
 
+#[cfg(test)]
 impl TomlDocPatch for TomlPatch {
     fn apply_to(&self, path: &Path, doc: &mut DocumentMut) -> Result<(), LiveWriteError> {
         Self::apply_to(self, path, doc)
@@ -161,6 +168,7 @@ pub fn same_value(left: &Value, right: &Value) -> bool {
 }
 
 /// 原位替换时沿用旧条目的空白、注释和表的位置，替换后这一行（这张表）不挪动。
+#[cfg(test)]
 fn keep_layout(old: &Item, new: &mut Item) {
     match (old, new) {
         (Item::Value(old), Item::Value(new)) => *new.decor_mut() = old.decor().clone(),
@@ -174,6 +182,7 @@ fn keep_layout(old: &Item, new: &mut Item) {
     }
 }
 
+#[cfg(test)]
 fn split(key_path: &KeyPath) -> (&[String], &String) {
     key_path
         .split_last()
@@ -190,6 +199,7 @@ pub fn shape_error(path: &Path, segments: &[String]) -> LiveWriteError {
 }
 
 /// 沿路径找到表（标准表或内联表）；中途缺失返回 `None`，中途不是表报错。
+#[cfg(test)]
 fn table_at_mut<'a>(
     path: &Path,
     root: &'a mut Table,
@@ -208,6 +218,7 @@ fn table_at_mut<'a>(
 }
 
 /// 沿路径找到表，缺失的层级建成隐式标准表（不单独输出 `[a]` 表头）。
+#[cfg(test)]
 fn ensure_table_mut<'a>(
     path: &Path,
     root: &'a mut Table,

@@ -521,6 +521,7 @@ impl Database {
     }
 
     /// 清空所有Provider健康状态（代理停止时调用）
+    #[cfg(test)]
     pub async fn clear_all_provider_health(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
 
@@ -591,6 +592,7 @@ impl Database {
     }
 
     /// 删除所有 Live 配置备份
+    #[cfg(test)]
     pub async fn delete_all_live_backups(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
 

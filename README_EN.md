@@ -87,9 +87,13 @@ Open [http://localhost:8890](http://localhost:8890). Web data persists in the `c
 
 ## Version
 
-The current repository version is `2.2.0`. This release adds the MiniMax Code app and role-based Claude model mapping, incremental session usage scanning with subscription usage, and Codex OAuth account isolation within shared workspaces, while syncing the latest upstream Provider presets and proxy protocol fixes. See `CHANGELOG.md` and `docs-dev/web-parity-post-fd14f9c4-2026-09.md` for release details and the upstream migration ledger.
+The current repository version is `3.0.0`. This major update introduces key-field configuration writes and conflict resolution, Direct/Routing/Aggregation modes, global navigation and an account center, plus structured session reading, usage analysis, and resource management. See the [CHANGELOG](CHANGELOG.md) for details. Version metadata and documentation are updated; release packages and the Release have not been published.
 
-This working tree completes the applicable upstream changes from `f8788719..a189980f` (v4.0.0). They are not released; the repository version remains `2.2.0`. Of 195 commits, 176 are ported or adapted for Web and 19 are inapplicable desktop, release, documentation-layout, or Web-specific differences. See the [migration ledger](docs-dev/web-parity-post-f8788719-2026-10.md) for dispositions and targeted validation.
+This version completes the applicable Web migration from upstream `f8788719..a189980f` (v4.0.0). Of 195 commits, 176 are ported or adapted for Web and 19 are inapplicable desktop, release, documentation-layout, or Web-specific differences. See the [migration ledger](docs-dev/web-parity-post-f8788719-2026-10.md) for dispositions and validation.
+
+Upgrade notes: legacy shared configuration snippets are no longer merged or copied back wholesale. New requests no longer apply cost multipliers; historical amounts retain their original basis. Provider and preset lists use A–Z name order, with manual ranking and commercial identity badges removed. Failover queues retain their execution priority.
+
+Windows validation: 1385 frontend tests passed with 2 existing skips; 2480 Rust tests passed with 5 existing ignored tests. TypeScript and Rust checks for all targets passed, with zero Rust compiler warnings. Release builds, Docker, Linux/macOS compilation, and real-account integration were not run in this cycle.
 
 The global sidebar opens MCP, Skills, Prompts, universal providers, Sessions, Usage, Accounts, Apps, and Settings. Expansion overlays content without reflow; mobile uses a drawer. Accounts groups Copilot, ChatGPT, and xAI accounts, quotas, and provider references, listing affected providers before removal. Managed ChatGPT models can be fetched directly; Copilot Enterprise domain sign-in remains unsupported. Hermes keeps separate drafts for its two memory files. See [global pages and resources](docs/web-global-resources-guide-zh.md) (Chinese) for operations and APIs.
 
