@@ -88,8 +88,11 @@ interface CodexFormFieldsProps {
   autoSelect: boolean;
   onAutoSelectChange: (checked: boolean) => void;
 
-  takeoverEnabled: boolean;
-  onTakeoverEnabledChange: (enabled: boolean) => void;
+  // Grok Build 的高级路由选项；Codex 模型目录使用独立开关。
+  takeoverEnabled?: boolean;
+  onTakeoverEnabledChange?: (enabled: boolean) => void;
+  catalogEnabled?: boolean;
+  onCatalogEnabledChange?: (enabled: boolean) => void;
 
   // API Format（跟随上游 cc-switch 1c82b8a3）
   apiFormat: CodexApiFormat;
@@ -187,8 +190,10 @@ export function CodexFormFields({
   onCustomEndpointsChange,
   autoSelect,
   onAutoSelectChange,
-  takeoverEnabled,
+  takeoverEnabled = false,
   onTakeoverEnabledChange,
+  catalogEnabled = false,
+  onCatalogEnabledChange,
   apiFormat,
   onApiFormatChange,
   shouldShowModelField = true,
@@ -219,11 +224,27 @@ export function CodexFormFields({
   const isChatFormat = apiFormat === "openai_chat";
   const isGrokBuild = appId === "grokbuild";
   const canEditCatalog = Boolean(onCatalogModelsChange);
+  const showChatOptions =
+    shouldShowModelField && isChatFormat && (!isGrokBuild || takeoverEnabled);
+  const optionsEnabled = isGrokBuild ? takeoverEnabled : catalogEnabled;
+  const optionsToggleLabel = isGrokBuild
+    ? "codexConfig.localRoutingToggle"
+    : "codexConfig.catalogToggle";
+  const optionsToggleHint = isGrokBuild
+    ? takeoverEnabled
+      ? "codexConfig.localRoutingOnHint"
+      : "codexConfig.localRoutingOffHint"
+    : catalogEnabled
+      ? "codexConfig.catalogOnHint"
+      : "codexConfig.catalogOffHint";
   const hasRequestOverrides = Boolean(
     localProxyHeadersOverride.trim() || localProxyBodyOverride.trim(),
   );
   const hasAnyAdvancedValue =
-    !!customUserAgent || hasRequestOverrides || takeoverEnabled;
+    !!customUserAgent ||
+    hasRequestOverrides ||
+    optionsEnabled ||
+    (!isGrokBuild && isChatFormat);
   const [advancedExpanded, setAdvancedExpanded] = useState(hasAnyAdvancedValue);
 
   useEffect(() => {
@@ -628,27 +649,29 @@ export function CodexFormFields({
                   </p>
                 </div>
 
-                <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
-                  <div className="space-y-1">
-                    <FormLabel>{t("codexConfig.localRoutingToggle")}</FormLabel>
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      {t(
-                        takeoverEnabled
-                          ? "codexConfig.localRoutingOnHint"
-                          : "codexConfig.localRoutingOffHint",
-                      )}
-                    </p>
+                {(isGrokBuild || canEditCatalog) && (
+                  <div className="flex items-center justify-between gap-4 border-t border-border-default pt-3">
+                    <div className="space-y-1">
+                      <FormLabel>{t(optionsToggleLabel)}</FormLabel>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {t(optionsToggleHint)}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={optionsEnabled}
+                      onCheckedChange={
+                        isGrokBuild
+                          ? onTakeoverEnabledChange
+                          : onCatalogEnabledChange
+                      }
+                      aria-label={t(optionsToggleLabel)}
+                    />
                   </div>
-                  <Switch
-                    checked={takeoverEnabled}
-                    onCheckedChange={onTakeoverEnabledChange}
-                    aria-label={t("codexConfig.localRoutingToggle")}
-                  />
-                </div>
+                )}
               </div>
             )}
 
-            {takeoverEnabled && shouldShowModelField && isChatFormat && (
+            {showChatOptions && (
               <div className="space-y-4 border-t border-border-default pt-3">
                 <div className="space-y-2">
                   <FormLabel>
@@ -723,7 +746,7 @@ export function CodexFormFields({
               </div>
             )}
 
-            {takeoverEnabled && shouldShowModelField && canEditCatalog && (
+            {catalogEnabled && shouldShowModelField && canEditCatalog && (
               <div className="space-y-3 border-t border-border-default pt-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -836,7 +859,7 @@ export function CodexFormFields({
 
             <div
               className={
-                shouldShowSpeedTest || takeoverEnabled
+                shouldShowSpeedTest || optionsEnabled
                   ? "space-y-3 border-t border-border-default pt-3"
                   : "space-y-3"
               }

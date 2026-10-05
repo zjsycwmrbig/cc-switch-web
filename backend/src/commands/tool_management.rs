@@ -5,7 +5,9 @@ fn shell_single_quote(value: &str) -> String {
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 #[cfg(target_os = "windows")]

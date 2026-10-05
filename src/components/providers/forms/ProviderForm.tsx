@@ -600,7 +600,7 @@ function ProviderFormFull({
         ) ?? "openai_responses"
       );
     });
-  const [codexTakeoverEnabled, setCodexTakeoverEnabled] = useState(
+  const [codexCatalogEnabled, setCodexCatalogEnabled] = useState(
     () => codexCatalogCountFromSettings(initialData?.settingsConfig) > 0,
   );
 
@@ -641,7 +641,7 @@ function ProviderFormFull({
         template.auth,
         overlayCodexProviderConfig(providerLiveBase?.config, template.config),
       );
-      setCodexTakeoverEnabled(false);
+      setCodexCatalogEnabled(false);
     }
   }, [
     appId,
@@ -1296,14 +1296,14 @@ function ProviderFormFull({
       try {
         const authJson = JSON.parse(codexAuth);
         // 跟随上游 cc-switch 1c82b8a3：第三方 Codex provider 保存时把 TOML 的
-        // wire_api 归一为 "responses"——客户端始终用 Responses 协议跟代理对话，
-        // 真实路由是否转 Chat 由 meta.apiFormat 决定。
+        // wire_api 归一为 "responses"——原生 Responses 可直连；
+        // 需要协议转换时，代理根据 meta.apiFormat 处理。
         let normalizedCodexConfig =
           category !== "official" && (codexConfig ?? "").trim()
             ? setCodexWireApi(codexConfig ?? "", "responses")
             : (codexConfig ?? "");
         const normalizedCatalogModels =
-          category !== "official" && codexTakeoverEnabled
+          category !== "official" && codexCatalogEnabled
             ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
             : [];
         if (
@@ -1516,14 +1516,12 @@ function ProviderFormFull({
       codexChatReasoning:
         appId === "codex" &&
         category !== "official" &&
-        codexTakeoverEnabled &&
         localCodexApiFormat === "openai_chat"
           ? normalizeCodexChatReasoningForSave(codexChatReasoning)
           : undefined,
       promptCacheRouting:
         appId === "codex" &&
         category !== "official" &&
-        codexTakeoverEnabled &&
         localCodexApiFormat === "openai_chat" &&
         promptCacheRouting !== "auto"
           ? promptCacheRouting
@@ -1675,7 +1673,7 @@ function ProviderFormFull({
           codexApiFormatFromWireApi(extractCodexWireApi(template.config)) ??
             "openai_responses",
         );
-        setCodexTakeoverEnabled(false);
+        setCodexCatalogEnabled(false);
       }
       if (appId === "gemini") {
         const base = overlayGeminiProviderFields(providerLiveBase ?? {}, {});
@@ -1723,7 +1721,7 @@ function ProviderFormFull({
           codexApiFormatFromWireApi(extractCodexWireApi(config)) ??
           "openai_responses",
       );
-      setCodexTakeoverEnabled((preset.modelCatalog?.length ?? 0) > 0);
+      setCodexCatalogEnabled((preset.modelCatalog?.length ?? 0) > 0);
 
       form.reset({
         name: preset.nameKey ? t(preset.nameKey) : preset.name,
@@ -2204,8 +2202,8 @@ function ProviderFormFull({
                 }
                 autoSelect={endpointAutoSelect}
                 onAutoSelectChange={setEndpointAutoSelect}
-                takeoverEnabled={codexTakeoverEnabled}
-                onTakeoverEnabledChange={setCodexTakeoverEnabled}
+                catalogEnabled={codexCatalogEnabled}
+                onCatalogEnabledChange={setCodexCatalogEnabled}
                 apiFormat={localCodexApiFormat}
                 onApiFormatChange={handleCodexApiFormatChange}
                 shouldShowModelField={category !== "official"}

@@ -70,8 +70,8 @@ function renderXaiOauthFields() {
       onEndpointModalToggle={vi.fn()}
       autoSelect={false}
       onAutoSelectChange={vi.fn()}
-      takeoverEnabled={false}
-      onTakeoverEnabledChange={vi.fn()}
+      catalogEnabled={false}
+      onCatalogEnabledChange={vi.fn()}
       apiFormat="openai_responses"
       onApiFormatChange={vi.fn()}
       promptCacheRouting="auto"
@@ -129,8 +129,8 @@ describe("CodexFormFields", () => {
         onEndpointModalToggle={vi.fn()}
         autoSelect={false}
         onAutoSelectChange={vi.fn()}
-        takeoverEnabled
-        onTakeoverEnabledChange={vi.fn()}
+        catalogEnabled
+        onCatalogEnabledChange={vi.fn()}
         apiFormat="openai_responses"
         onApiFormatChange={vi.fn()}
         promptCacheRouting="auto"
@@ -217,8 +217,8 @@ describe("CodexFormFields", () => {
         onEndpointModalToggle={vi.fn()}
         autoSelect={false}
         onAutoSelectChange={vi.fn()}
-        takeoverEnabled
-        onTakeoverEnabledChange={vi.fn()}
+        catalogEnabled
+        onCatalogEnabledChange={vi.fn()}
         apiFormat="openai_responses"
         onApiFormatChange={vi.fn()}
         promptCacheRouting="auto"

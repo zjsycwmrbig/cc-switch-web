@@ -181,6 +181,51 @@ fn switches_keep_global_comments_and_user_tables_without_backfill() {
         row("a").settings_config
     );
 }
+
+#[test]
+#[serial]
+fn direct_responses_switch_writes_catalog_and_keeps_upstream_url() {
+    let f = Fixture::new();
+    seed("approval_policy = 'on-request'\n");
+    let direct = provider(
+        "direct",
+        json!({
+            "auth": {"OPENAI_API_KEY": "test-key"},
+            "config": "model = 'mimo-v2.5-pro'\nmodel_provider = 'direct'\n[model_providers.direct]\nbase_url = 'https://direct.example/v1'\nwire_api = 'responses'\n",
+            "modelCatalog": {"models": [{
+                "model": "mimo-v2.5-pro",
+                "displayName": "MiMo",
+                "contextWindow": 262144
+            }]}
+        }),
+    );
+    f.state.db.save_provider("codex", &direct).unwrap();
+    ProviderService::switch(&f.state, AppType::Codex, "direct").unwrap();
+
+    let config: toml::Value = toml::from_str(&live_text()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("mimo-v2.5-pro"));
+    assert_eq!(config["approval_policy"].as_str(), Some("on-request"));
+    let route = &config["model_providers"][config["model_provider"].as_str().unwrap()];
+    assert_eq!(
+        route["base_url"].as_str(),
+        Some("https://direct.example/v1")
+    );
+    assert_eq!(route["wire_api"].as_str(), Some("responses"));
+    // Codex 按 config.toml 所在目录解析相对引用。
+    let catalog_path = crate::codex_config::get_codex_config_path()
+        .parent()
+        .unwrap()
+        .join(config["model_catalog_json"].as_str().unwrap());
+    assert!(catalog_path
+        .canonicalize()
+        .unwrap()
+        .starts_with(f._dir.path().canonicalize().unwrap()));
+    let catalog: Value = serde_json::from_slice(&std::fs::read(catalog_path).unwrap()).unwrap();
+    assert_eq!(catalog["models"][0]["slug"], "mimo-v2.5-pro");
+    assert_eq!(catalog["models"][0]["display_name"], "MiMo");
+    assert_eq!(catalog["models"][0]["context_window"], 262144);
+}
+
 #[test]
 #[serial]
 fn corrupt_login_stash_refuses_without_changing_files_or_pointer() {

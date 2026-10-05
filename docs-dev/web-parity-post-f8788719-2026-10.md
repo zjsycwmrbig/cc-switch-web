@@ -401,3 +401,17 @@
 CHANGELOG 将本轮内容整理为 `3.0.0` 条目，补充旧配置片段、费用倍率、供应商排序的升级注意事项及最终验证结果。中、英、日 README 同步版本、核心功能、升级说明、测试结果和未验证范围，保留无商业身份标签及 A–Z 排序约束。
 
 版本一致性、锁文件依赖不变、本地 Markdown 链接与 `git diff --check` 均检查通过；`cargo metadata --locked --offline --no-deps` 确认 Rust 项目版本为 `3.0.0` 且无需更新锁文件。此次仅修改版本声明与文档，复用前述代码验证结果，未重复编译或全量测试。未新增提交、标签、发布包或 Release。
+
+
+## 11. 发布后 CI 与 Issue #6 修复（2026-10-05）
+
+用户已要求提交、推送和打标签：`adaab7fc` 提交及 `v3.0.0` 已推送。随后按“修完 CI 一起修 #6”的授权处理以下问题；本轮不移动既有标签，也不评论或关闭 Issue。
+
+- GitHub Web CI `37246189193` 的 Windows 检查通过，Linux/macOS 因 `mcode.rs` 引用了 Web 不存在的 `session_manager::terminal` 编译失败；Web Package `37246189100` 的 Linux/macOS 和 Docker 发布同因失败，Release 未生成。修复为 Web 内部 POSIX 命令转义函数，Windows 测试也编译该函数；`PathBuf` 导入限定 Windows，清理 Unix 无用导入。
+- #6 的直连模型目录后端已实现，问题在于表单将目录启用称为“需要本地路由映射”。Codex 改用独立目录状态与开关，三语提示说明 Responses 可直连；Chat 思考与缓存参数不再受目录开关控制。Grok Build 保留其原有开关语义。
+- 回归覆盖 Responses 目录编辑保存、默认实际模型回填、路由需求判定、关闭目录后 Chat 参数保留，以及真实直连切换写出的上游地址与目录文件。后端集成使用临时 HOME 和内存数据库；不使用真实账号。
+- 正式路由指南和 CHANGELOG 的 Unreleased 同步说明；修复不声称已包含在原 `v3.0.0` 标签中。
+
+本地验证：前端 4 个文件、31 项通过，最终表单整理后相关 13 项复测通过；TypeScript 检查通过。Rust 定向 27 项通过，服务二进制 `cargo check --locked --manifest-path backend/Cargo.toml --bin cc-switch-web` 通过，0 警告。新增集成测试按 Codex 约定相对于 `config.toml` 解析目录引用，读取真实临时文件并验证显示名、请求模型及窗口。Prettier、受影响 Rust 文件格式与 `git diff --check` 通过，CodeGraph 已同步。
+
+日志：`%TEMP%/ccswitch-issue6-vitest.log`、`ccswitch-issue6-form-final.log`、`ccswitch-issue6-tsc.log`、`ccswitch-ci-issue6-rust3.log`、`ccswitch-ci-issue6-check.log`。本轮未重跑全量测试或本地 Docker／发布构建；Linux/macOS 编译与容器验收由推送后 GitHub Web CI 验证，原标签的 Web Package 不会因 main 更新自动重跑。

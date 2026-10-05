@@ -7,6 +7,9 @@ import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { createTestQueryClient } from "../utils/testQueryClient";
 import { server } from "../msw/server";
 import { setSettings } from "../msw/state";
+import { parse as parseToml } from "smol-toml";
+import type { ProviderFormProps } from "@/components/providers/forms/ProviderForm";
+import { providerNeedsRouting } from "@/utils/providerCapabilities";
 
 vi.mock("@/components/JsonEditor", () => ({
   default: ({ value }: { value: string }) => (
@@ -44,6 +47,142 @@ vi.mock("@/components/providers/forms/ProviderPresetSelector", () => ({
 }));
 
 describe("Codex editor global baseline", () => {
+  it("原生 Responses 保存自定义模型目录后仍可直连", async () => {
+    setSettings({ commonConfigConfirmed: true });
+    const onSubmit = vi.fn<ProviderFormProps["onSubmit"]>();
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="codex"
+          initialData={{
+            name: "Direct Responses",
+            category: "custom",
+            settingsConfig: {
+              auth: { OPENAI_API_KEY: "sk-test" },
+              config:
+                'model_provider = "custom"\n[model_providers.custom]\nname = "Direct"\nbase_url = "https://example.com/v1"\nwire_api = "responses"\n',
+            },
+          }}
+          submitLabel="save-provider"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "providerForm.advancedOptionsToggle",
+      }),
+    );
+    expect(
+      screen.queryByRole("switch", { name: "codexConfig.localRoutingToggle" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("switch", { name: "codexConfig.catalogToggle" }),
+    );
+    expect(screen.getByText("codexConfig.catalogOnHint")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "codexConfig.addCatalogModel" }),
+    );
+    fireEvent.change(
+      screen.getByLabelText("codexConfig.catalogColumnDisplay"),
+      { target: { value: "MiMo" } },
+    );
+    fireEvent.change(screen.getByLabelText("codexConfig.catalogColumnModel"), {
+      target: { value: "mimo-v2.5-pro" },
+    });
+    fireEvent.change(
+      screen.getByLabelText("codexConfig.catalogColumnContext"),
+      { target: { value: "262144" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "save-provider" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.modelCatalog.models).toEqual([
+      expect.objectContaining({
+        model: "mimo-v2.5-pro",
+        displayName: "MiMo",
+        contextWindow: 262144,
+      }),
+    ]);
+    expect(parseToml(settingsConfig.config)).toMatchObject({
+      model: "mimo-v2.5-pro",
+      model_providers: {
+        custom: { base_url: "https://example.com/v1", wire_api: "responses" },
+      },
+    });
+    expect(
+      providerNeedsRouting("codex", {
+        id: "direct",
+        name: submitted.name,
+        settingsConfig,
+        meta: submitted.meta,
+      }),
+    ).toBe(false);
+  });
+
+  it("关闭目录仍保留 Chat 的思考与缓存参数", async () => {
+    setSettings({ commonConfigConfirmed: true });
+    const onSubmit = vi.fn<ProviderFormProps["onSubmit"]>();
+    const reasoning = { supportsThinking: true, supportsEffort: true };
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <ProviderForm
+          appId="codex"
+          initialData={{
+            name: "Chat provider",
+            category: "custom",
+            settingsConfig: {
+              auth: { OPENAI_API_KEY: "sk-test" },
+              config:
+                'model = "chat-model"\nmodel_provider = "custom"\n[model_providers.custom]\nname = "Chat"\nbase_url = "https://example.com/v1"\nwire_api = "responses"\n',
+              modelCatalog: { models: [{ model: "chat-model" }] },
+            },
+            meta: {
+              apiFormat: "openai_chat",
+              codexChatReasoning: reasoning,
+              promptCacheRouting: "disabled",
+            },
+          }}
+          submitLabel="save-provider"
+          onSubmit={onSubmit}
+          onCancel={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: "codexConfig.catalogToggle" }),
+    );
+    expect(
+      screen.queryByLabelText("codexConfig.catalogColumnModel"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("codexConfig.promptCacheRoutingLabel"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("codexConfig.reasoningModeToggle"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "save-provider" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const submitted = onSubmit.mock.calls[0][0];
+    const settingsConfig = JSON.parse(submitted.settingsConfig);
+    expect(settingsConfig.modelCatalog).toBeUndefined();
+    expect(submitted.meta).toMatchObject({
+      apiFormat: "openai_chat",
+      codexChatReasoning: reasoning,
+      promptCacheRouting: "disabled",
+    });
+    expect(
+      providerNeedsRouting("codex", {
+        id: "chat",
+        name: submitted.name,
+        settingsConfig,
+        meta: submitted.meta,
+      }),
+    ).toBe(true);
+  });
+
   it("retains live globals when choosing a preset and returning to custom", async () => {
     setSettings({ commonConfigConfirmed: true });
     const snippetApps: string[] = [];

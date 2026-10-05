@@ -122,14 +122,22 @@ describe("providerNeedsRouting", () => {
     },
   );
 
-  it("Codex Responses 可直连", () => {
-    expect(
-      providerNeedsRouting(
-        "codex",
-        provider({ settingsConfig: { config: codexConfig("responses") } }),
-      ),
-    ).toBe(false);
-  });
+  it.each([
+    undefined,
+    { models: [{ model: "mimo-v2.5-pro", displayName: "MiMo" }] },
+  ])(
+    "Codex Responses 无论是否有模型目录都可直连（目录：%j）",
+    (modelCatalog) => {
+      expect(
+        providerNeedsRouting(
+          "codex",
+          provider({
+            settingsConfig: { config: codexConfig("responses"), modelCatalog },
+          }),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("Grok Build Chat 需要路由，Responses 可直连", () => {
     expect(

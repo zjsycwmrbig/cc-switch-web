@@ -33,12 +33,18 @@ pub fn scan_sessions() -> Vec<SessionMeta> {
     }
 }
 
+// Web 不依赖桌面 terminal 模块；在 Windows 测试中也编译 POSIX 分支，避免漏掉跨平台回归。
+#[cfg(any(not(windows), test))]
+fn posix_resume_command(data_dir: &Path) -> String {
+    format!(
+        "env MINIMAX_DATA_DIR='{}' mcode",
+        data_dir.to_string_lossy().replace('\'', r"'\''")
+    )
+}
+
 fn scan(conn: &Connection, data_dir: &Path) -> rusqlite::Result<Vec<SessionMeta>> {
     #[cfg(not(windows))]
-    let command = format!(
-        "env MINIMAX_DATA_DIR={} mcode",
-        crate::session_manager::terminal::shell_escape(&data_dir.to_string_lossy())
-    );
+    let command = posix_resume_command(data_dir);
     #[cfg(windows)]
     let command = format!(
         "$env:MINIMAX_DATA_DIR = '{}'; mcode",
@@ -133,6 +139,18 @@ fn read_messages(conn: &Connection, id: &str) -> rusqlite::Result<Vec<SessionMes
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn posix_resume_command_keeps_path_literal() {
+        assert_eq!(
+            posix_resume_command(Path::new("/tmp/MiniMax Code's $(printf expanded)")),
+            r"env MINIMAX_DATA_DIR='/tmp/MiniMax Code'\''s $(printf expanded)' mcode"
+        );
+        assert_eq!(
+            posix_resume_command(Path::new("")),
+            "env MINIMAX_DATA_DIR='' mcode"
+        );
+    }
+
     #[test]
     fn mcode_history_uses_visible_roots_and_display_messages() {
         let conn = Connection::open_in_memory().unwrap();
