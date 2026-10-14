@@ -118,19 +118,19 @@ export const WEB_AUTH_REQUIRED_EVENT = "cc-switch-web-auth-required";
 
 export function getWebAccessKey(): string | null {
   try {
-    return sessionStorage.getItem(WEB_ACCESS_KEY_STORAGE_KEY);
+    return localStorage.getItem(WEB_ACCESS_KEY_STORAGE_KEY);
   } catch {
     return null;
   }
 }
 
 export function setWebAccessKey(accessKey: string): void {
-  sessionStorage.setItem(WEB_ACCESS_KEY_STORAGE_KEY, accessKey);
+  localStorage.setItem(WEB_ACCESS_KEY_STORAGE_KEY, accessKey);
 }
 
 export function clearWebAccessKey(): void {
   try {
-    sessionStorage.removeItem(WEB_ACCESS_KEY_STORAGE_KEY);
+    localStorage.removeItem(WEB_ACCESS_KEY_STORAGE_KEY);
   } catch {
     // Storage may be unavailable in hardened browser modes.
   }
@@ -1483,6 +1483,34 @@ export async function downloadWebConfigExport(
     blob: await response.blob(),
   };
 }
+
+export async function downloadWebModelFile(
+  installer = false,
+): Promise<ConfigDownloadResult> {
+  const path = `/api/model-catalog/codex${installer ? "/install.py" : ""}`;
+  const response = await fetch(`${getWebApiBase()}${path}`, {
+    headers: webRequestHeaders("application/json,text/plain,*/*"),
+    cache: "no-store",
+  });
+  handleUnauthorized(response);
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, `HTTP ${response.status} for GET ${path}`));
+  }
+  return {
+    fileName: installer ? "cc-switch-install-models.py" : "cc-switch-all-models.json",
+    blob: await response.blob(),
+  };
+}
+
+export interface WebClientModelPool {
+  models: string[];
+  availableModels: string[];
+  sources: Record<string, string[]>;
+  providerCount: number;
+}
+
+export const fetchWebClientModelPool = () => requestJson<WebClientModelPool>("/api/model-catalog/codex/pool");
+export const saveWebClientModelPool = (models: string[]) => requestWithBody<WebClientModelPool>("/api/model-catalog/codex/pool", "PUT", { models });
 
 export async function importWebConfigUpload(
   file: File,

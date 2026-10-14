@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-const MIN_ACCESS_KEY_LENGTH: usize = 16;
+const MIN_ACCESS_KEY_LENGTH: usize = 1;
 
 #[derive(Clone)]
 pub(crate) struct WebAccessKey {
