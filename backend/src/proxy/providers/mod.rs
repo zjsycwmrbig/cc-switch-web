@@ -59,7 +59,9 @@ pub use claude::{
 };
 pub use codex::{
     codex_stack_upstream_rejects_web_search, strip_codex_hosted_web_search,
-    apply_codex_chat_upstream_model, apply_codex_upstream_model, codex_provider_upstream_model,
+    apply_codex_chat_upstream_model, apply_codex_upstream_model,
+    apply_codex_native_upstream_model, codex_provider_model_mapping,
+    codex_provider_upstream_model, CodexModelRoute, CodexModelRouteSource,
     inject_codex_chat_prompt_cache_key, is_codex_official_provider,
     provider_needs_responses_late_arguments_repair, provider_needs_responses_namespace_flatten,
     resolve_codex_catalog_tool_profile, resolve_codex_chat_reasoning_config,

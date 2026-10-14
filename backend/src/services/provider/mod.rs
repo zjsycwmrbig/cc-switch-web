@@ -129,7 +129,54 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
 /// 接管占位符即为接管；否则仅在 enabled、仍有备份且代理进程确实在运行时才视为
 /// 接管。Web 端的更新 / 重投影调用方已持有该应用的切换锁，接管激活不可能与之
 /// 并发，因此不需要上游的“切换进行中”判定。
+/// live 的 Codex 路由是否已经指向本机代理端口。
+///
+/// 远程主机统一路由到一台 cc-switch 的部署里，本机的 config.toml 被指向
+/// http://127.0.0.1:<代理端口>/v1：既没有代理接管写的占位符，也没有 Live 备份。
+/// 若不识别这种情况，保存供应商或切换供应商会把 live 指回供应商真实地址，
+/// 客户端就绕过了代理。
+fn codex_live_routes_to_own_proxy(state: &AppState) -> bool {
+    let config = match futures::executor::block_on(state.proxy_service.get_config()) {
+        Ok(config) => config,
+        Err(_) => return false,
+    };
+    let live = match crate::codex_config::read_codex_live_settings() {
+        Ok(live) => live,
+        Err(_) => return false,
+    };
+    let Some(text) = live.get("config").and_then(Value::as_str) else {
+        return false;
+    };
+    let port = config.listen_port;
+    let mut needles = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let address = config.listen_address.trim();
+    if !address.is_empty() && address != "0.0.0.0" && address != "127.0.0.1" && address != "localhost"
+    {
+        needles.push(format!("{address}:{port}"));
+    }
+    text.lines().any(|line| {
+        line.contains("base_url") && needles.iter().any(|needle| line.contains(needle.as_str()))
+    })
+}
+
 pub(crate) fn proxy_owns_live_config(state: &AppState, app_type: &AppType) -> (bool, bool) {
+    // live 的 Codex 路由已经指向本机代理时，路由归代理所有：保存供应商不改写 live。
+    // 必须放在 mode 判定之前：这台机型的 mode 记录是 direct，但 live 实际指向本机代理。
+    if matches!(app_type, AppType::Codex) && codex_live_routes_to_own_proxy(state) {
+        let has_live_backup =
+            match futures::executor::block_on(state.db.get_live_backup(app_type.as_str())) {
+                Ok(backup) => backup.is_some(),
+                Err(err) => {
+                    log::warn!(
+                        "读取 {} Live 备份失败，按无备份处理: {err}",
+                        app_type.as_str()
+                    );
+                    false
+                }
+            };
+        log::info!("[Codex] proxy_owns_live_config 命中本机代理路由: (true, {has_live_backup})");
+        return (true, has_live_backup);
+    }
     let mode = crate::mode::current::mode_state(app_type);
     if mode.mode.is_some() {
         return (mode.is_proxy(), false);
@@ -2577,9 +2624,12 @@ impl ProviderService {
                 .ok()
                 .flatten()
                 .is_some();
-        let live_taken_over = state
-            .proxy_service
-            .detect_takeover_in_live_config_for_app(&app_type);
+        let codex_live_is_own_route =
+            matches!(app_type, AppType::Codex) && codex_live_routes_to_own_proxy(state);
+        let live_taken_over = codex_live_is_own_route
+            || state
+                .proxy_service
+                .detect_takeover_in_live_config_for_app(&app_type);
         let should_hot_switch = is_app_taken_over || live_taken_over;
 
         if should_hot_switch
@@ -2632,7 +2682,7 @@ impl ProviderService {
                 ) {
                     log::warn!("同步 Claude 接管 Live 失败（不影响切换结果）: {e}");
                 }
-            } else if matches!(app_type, AppType::Codex) {
+            } else if matches!(app_type, AppType::Codex) && !codex_live_is_own_route {
                 futures::executor::block_on(state.proxy_service.reapply_codex_takeover_live())
                     .map_err(|e| AppError::Message(format!("刷新 Codex 接管配置失败: {e}")))?;
             }

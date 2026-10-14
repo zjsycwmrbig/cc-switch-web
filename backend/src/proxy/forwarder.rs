@@ -1307,6 +1307,27 @@ impl RequestForwarder {
                 adapter.transform_request(mapped_body, provider)?
             }
         } else {
+            // Codex 原生 Responses 透传：把请求里的模型按“当前供应商”解析，
+            // 这样切换供应商就等于切换模型，客户端 config.toml 不必跟着改。
+            if matches!(app_type, AppType::Codex) {
+                let request_model = mapped_body
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(route) =
+                    super::providers::apply_codex_native_upstream_model(provider, &mut mapped_body)
+                {
+                    if request_model.as_deref() != Some(route.model.as_str()) {
+                        log::info!(
+                            "[Codex] 模型按当前供应商解析: {} -> {} (provider={}, 规则={})",
+                            request_model.as_deref().unwrap_or("-"),
+                            route.model,
+                            provider.name,
+                            route.source.label()
+                        );
+                    }
+                }
+            }
             mapped_body
         };
 

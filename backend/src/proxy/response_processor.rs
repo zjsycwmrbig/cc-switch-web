@@ -38,6 +38,22 @@ pub(crate) fn strip_entity_headers_for_rebuilt_body(headers: &mut HeaderMap) {
 /// `body_timeout`: 整包超时。当非零时用 `tokio::time::timeout` 包住 `.bytes()` 调用，
 /// 防止上游发完响应头后卡住 body 导致请求永远挂住。
 /// 传入 `Duration::ZERO` 表示不启用超时（故障转移关闭时）。
+/// 逐跳（hop-by-hop）响应头：由本机连接自身拥有，透传给客户端会让 hyper
+/// 拒绝回写（例如 body 长度已知时仍带 transfer-encoding 会直接断开连接）。
+pub(crate) fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+    for name in [
+        axum::http::header::TRANSFER_ENCODING,
+        axum::http::header::CONNECTION,
+        axum::http::header::TRAILER,
+        axum::http::header::TE,
+        axum::http::header::UPGRADE,
+    ] {
+        headers.remove(name);
+    }
+    headers.remove("keep-alive");
+    headers.remove("proxy-connection");
+}
+
 pub(crate) async fn read_decoded_body(
     response: ProxyResponse,
     tag: &str,
@@ -173,8 +189,9 @@ pub async fn handle_non_streaming(
         } else {
             Duration::ZERO
         };
-    let (response_headers, status, body_bytes) =
+    let (mut response_headers, status, body_bytes) =
         read_decoded_body(response, ctx.tag, body_timeout).await?;
+    strip_hop_by_hop_headers(&mut response_headers);
 
     log::debug!(
         "[{}] 上游响应体内容: {}",
