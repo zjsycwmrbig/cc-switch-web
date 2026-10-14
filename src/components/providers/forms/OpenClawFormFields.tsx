@@ -21,6 +21,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { generateUUID } from "@/utils/uuid";
 import { openclawApiProtocols } from "@/config/openclawProviderPresets";
 import type { ProviderCategory, OpenClawModel } from "@/types";
 import { useCommittableRef } from "@/hooks/useLatestRef";
@@ -82,7 +83,7 @@ export function OpenClawFormFields({
   const getModelKeys = useCallback(() => {
     // Grow keys array if models were added externally
     while (modelKeysRef.current.length < models.length) {
-      modelKeysRef.current.push(crypto.randomUUID());
+      modelKeysRef.current.push(generateUUID());
     }
     // Shrink if models were removed externally
     if (modelKeysRef.current.length > models.length) {
@@ -107,7 +108,7 @@ export function OpenClawFormFields({
 
   // Add a new model entry
   const handleAddModel = () => {
-    modelKeysRef.current.push(crypto.randomUUID());
+    modelKeysRef.current.push(generateUUID());
     onModelsChange([
       ...models,
       {

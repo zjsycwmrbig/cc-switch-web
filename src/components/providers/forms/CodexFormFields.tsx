@@ -46,6 +46,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { generateUUID } from "@/utils/uuid";
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
 import type {
@@ -109,6 +110,9 @@ interface CodexFormFieldsProps {
   onPromptCacheRoutingChange: (value: PromptCacheRoutingMode) => void;
   catalogModels?: CodexCatalogModel[];
   onCatalogModelsChange?: (models: CodexCatalogModel[]) => void;
+  /** 客户端请求模型 → 上游模型：只在两者不同名时才落库 */
+  catalogMappings?: Record<string, string>;
+  onCatalogMappingsChange?: (mappings: Record<string, string>) => void;
 
   // Speed Test Endpoints
   speedTestEndpoints: EndpointCandidate[];
@@ -125,7 +129,7 @@ type CodexCatalogRow = CodexCatalogModel & { rowId: string };
 
 function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
   return {
-    rowId: crypto.randomUUID(),
+    rowId: generateUUID(),
     model: seed?.model ?? "",
     displayName: seed?.displayName ?? "",
     contextWindow: seed?.contextWindow ?? "",
@@ -205,6 +209,8 @@ export function CodexFormFields({
   onPromptCacheRoutingChange,
   catalogModels = [],
   onCatalogModelsChange,
+  catalogMappings = {},
+  onCatalogMappingsChange,
   speedTestEndpoints,
   customUserAgent,
   onCustomUserAgentChange,
@@ -224,6 +230,7 @@ export function CodexFormFields({
   const isChatFormat = apiFormat === "openai_chat";
   const isGrokBuild = appId === "grokbuild";
   const canEditCatalog = Boolean(onCatalogModelsChange);
+  const canEditMapping = Boolean(onCatalogMappingsChange);
   const showChatOptions =
     shouldShowModelField && isChatFormat && (!isGrokBuild || takeoverEnabled);
   const optionsEnabled = isGrokBuild ? takeoverEnabled : catalogEnabled;
@@ -338,7 +345,58 @@ export function CodexFormFields({
     [catalogRowsRef, commitCatalogRows, fillModelMetadata],
   );
 
+  // 请求模型改了名，挂在旧名字上的上游映射跟着搬过去；删空则移除
+  const rekeyCatalogMapping = useCallback(
+    (previousModel: string, nextModel: string) => {
+      if (!onCatalogMappingsChange) return;
+      const previousKey = previousModel.trim();
+      const previousTarget = previousKey
+        ? catalogMappings[previousKey]
+        : undefined;
+      if (!previousTarget) return;
+      const nextKey = nextModel.trim();
+      if (nextKey.toLowerCase() === previousKey.toLowerCase()) return;
+      const next = { ...catalogMappings };
+      delete next[previousKey];
+      if (nextKey) next[nextKey] = previousTarget;
+      onCatalogMappingsChange(next);
+    },
+    [catalogMappings, onCatalogMappingsChange],
+  );
+
+  const setCatalogUpstreamOverride = useCallback(
+    (requestModel: string, upstream: string) => {
+      if (!onCatalogMappingsChange) return;
+      const key = requestModel.trim();
+      if (!key) return;
+      const next = { ...catalogMappings };
+      const target = upstream.trim();
+      if (!target || target.toLowerCase() === key.toLowerCase()) {
+        delete next[key];
+      } else {
+        next[key] = target;
+      }
+      onCatalogMappingsChange(next);
+    },
+    [catalogMappings, onCatalogMappingsChange],
+  );
+
+  const handleCatalogModelInput = (
+    index: number,
+    previousModel: string,
+    nextModel: string,
+  ) => {
+    setCatalogRows((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, model: nextModel } : item,
+      ),
+    );
+    rekeyCatalogMapping(previousModel, nextModel);
+  };
+
   const selectFetchedCatalogModel = (rowId: string, modelId: string) => {
+    const previousModel =
+      catalogRowsRef.current.find((row) => row.rowId === rowId)?.model ?? "";
     commitCatalogRows(
       catalogRowsRef.current.map((row) =>
         row.rowId === rowId
@@ -350,6 +408,7 @@ export function CodexFormFields({
           : row,
       ),
     );
+    rekeyCatalogMapping(previousModel, modelId);
     fillCatalogRowMetadata(rowId, modelId);
   };
 
@@ -775,7 +834,7 @@ export function CodexFormFields({
                 {catalogRows.map((row, index) => (
                   <div
                     key={row.rowId}
-                    className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_36px]"
+                    className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_1fr_140px_36px]"
                   >
                     <Input
                       value={row.displayName ?? ""}
@@ -797,12 +856,10 @@ export function CodexFormFields({
                       <Input
                         value={row.model}
                         onChange={(event) =>
-                          setCatalogRows((current) =>
-                            current.map((item, itemIndex) =>
-                              itemIndex === index
-                                ? { ...item, model: event.target.value }
-                                : item,
-                            ),
+                          handleCatalogModelInput(
+                            index,
+                            row.model,
+                            event.target.value,
                           )
                         }
                         placeholder={t("codexConfig.catalogModelPlaceholder")}
@@ -817,6 +874,18 @@ export function CodexFormFields({
                         />
                       )}
                     </div>
+                    <Input
+                      value={catalogMappings[row.model.trim()] ?? ""}
+                      onChange={(event) =>
+                        setCatalogUpstreamOverride(
+                          row.model,
+                          event.target.value,
+                        )
+                      }
+                      disabled={!row.model.trim() || !canEditMapping}
+                      placeholder={t("codexConfig.catalogUpstreamPlaceholder")}
+                      aria-label={t("codexConfig.catalogColumnUpstream")}
+                    />
                     <Input
                       type="number"
                       min={1}
@@ -843,17 +912,21 @@ export function CodexFormFields({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      onClick={() =>
+                      onClick={() => {
+                        setCatalogUpstreamOverride(row.model, "");
                         setCatalogRows((current) =>
                           current.filter((_, itemIndex) => itemIndex !== index),
-                        )
-                      }
+                        );
+                      }}
                       title={t("common.delete")}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
                 ))}
+                <p className="text-xs text-muted-foreground">
+                  {t("codexConfig.catalogUpstreamHint")}
+                </p>
               </div>
             )}
 

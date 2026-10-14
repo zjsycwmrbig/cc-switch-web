@@ -27,6 +27,9 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexCatalogModels, setCodexCatalogModels] = useState<
     CodexCatalogModel[]
   >([]);
+  const [codexModelMapping, setCodexModelMapping] = useState<
+    Record<string, string>
+  >({});
   const [codexAuthError, setCodexAuthError] = useState("");
 
   const isUpdatingCodexBaseUrlRef = useRef(false);
@@ -110,6 +113,29 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
             };
           })
           .filter((item: CodexCatalogModel) => item.model.trim()),
+      );
+
+      // 显式映射：客户端请求模型 → 上游模型（网页端「上游模型」列按行写入）
+      const rawMapping = (config as any).modelMapping;
+      setCodexModelMapping(
+        rawMapping && typeof rawMapping === "object" && !Array.isArray(rawMapping)
+          ? Object.fromEntries(
+              Object.entries(rawMapping as Record<string, unknown>)
+                .map(
+                  ([from, to]) =>
+                    [
+                      from.trim(),
+                      typeof to === "string" ? to.trim() : "",
+                    ] as const,
+                )
+                .filter(
+                  ([from, to]) =>
+                    from.length > 0 &&
+                    to.length > 0 &&
+                    from.toLowerCase() !== to.toLowerCase(),
+                ),
+            )
+          : {},
       );
 
       // 提取 Base URL
@@ -282,11 +308,13 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       auth: Record<string, unknown>,
       config: string,
       modelCatalogModels: CodexCatalogModel[] = [],
+      modelMapping: Record<string, string> = {},
     ) => {
       const authString = JSON.stringify(auth, null, 2);
       setCodexAuth(authString);
       setCodexConfig(config);
       setCodexCatalogModels(modelCatalogModels);
+      setCodexModelMapping(modelMapping);
 
       const baseUrl = extractCodexBaseUrl(config);
       if (baseUrl) {
@@ -321,10 +349,12 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     codexBaseUrl,
     codexModelName,
     codexCatalogModels,
+    codexModelMapping,
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
     setCodexCatalogModels,
+    setCodexModelMapping,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,

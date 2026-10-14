@@ -51,6 +51,7 @@ import { cn } from "@/lib/utils";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
+import { ModelPoolPanel } from "@/components/providers/ModelPoolPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
@@ -846,6 +847,12 @@ function App() {
                         app={activeApp}
                         providers={providers}
                         state={appMode}
+                      />
+                    )}
+                    {activeApp === "codex" && (
+                      <ModelPoolPanel
+                        providers={providers}
+                        currentProviderId={currentProviderId}
                       />
                     )}
                     <ProviderList

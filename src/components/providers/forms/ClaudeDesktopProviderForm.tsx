@@ -51,6 +51,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { generateUUID } from "@/utils/uuid";
 import { claudeDesktopApi } from "@/lib/api/claudeDesktop";
 import type { ClaudeDesktopDefaultRoute } from "@/types/claudeDesktop";
 import { resolveManagedAccountId } from "@/lib/authBinding";
@@ -156,7 +157,7 @@ function fallbackCatalogRouteId(usedRoutes: Set<string>) {
 
 function createRouteRow(row: RouteRowValues): RouteRow {
   return {
-    rowId: crypto.randomUUID(),
+    rowId: generateUUID(),
     ...row,
   };
 }

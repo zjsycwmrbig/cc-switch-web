@@ -35,6 +35,7 @@ mod store;
 mod usage_script;
 mod web_auth;
 mod web_server;
+mod web_model_catalog;
 
 pub(crate) use commands::*;
 pub use web_server::{run_web_server, run_web_server_with_options, WebServerOptions};

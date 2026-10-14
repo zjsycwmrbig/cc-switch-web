@@ -1,6 +1,7 @@
 import { normalizeAggregationModels } from "./ClaudeAggregationModels";
 import type { ClaudeStackModel } from "@/types";
 import { overlayCodexProviderConfig } from "@/utils/codexEditorOverlay";
+import { generateUUID } from "@/utils/uuid";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -572,10 +573,12 @@ function ProviderFormFull({
     codexBaseUrl,
     codexModelName,
     codexCatalogModels,
+    codexModelMapping,
     codexAuthError,
     setCodexAuth,
     setCodexConfig,
     setCodexCatalogModels,
+    setCodexModelMapping,
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelNameChange,
@@ -1322,9 +1325,29 @@ function ProviderFormFull({
           auth: unknown;
           config: string;
           modelCatalog?: { models: CodexCatalogModel[] };
+          modelMapping?: Record<string, string>;
         };
         if (normalizedCatalogModels.length > 0) {
           configObj.modelCatalog = { models: normalizedCatalogModels };
+        }
+        // 「上游模型」列：只存和请求名不同的行，同名透传由代理默认处理
+        const modelMappingEntries = Object.fromEntries(
+          Object.entries(codexModelMapping ?? {})
+            .map(
+              ([from, to]) => [from.trim(), String(to ?? "").trim()] as const,
+            )
+            .filter(
+              ([from, to]) =>
+                from.length > 0 &&
+                to.length > 0 &&
+                from.toLowerCase() !== to.toLowerCase(),
+            ),
+        );
+        if (
+          category !== "official" &&
+          Object.keys(modelMappingEntries).length > 0
+        ) {
+          configObj.modelMapping = modelMappingEntries;
         }
         settingsConfig = JSON.stringify(configObj);
       } catch (err) {
@@ -1398,7 +1421,7 @@ function ProviderFormFull({
       if (isAnyOmoCategory) {
         if (!isEditMode) {
           const prefix = category === "omo" ? "omo" : "omo-slim";
-          payload.providerKey = `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+          payload.providerKey = `${prefix}-${generateUUID().slice(0, 8)}`;
         }
       } else {
         payload.providerKey = opencodeForm.opencodeProviderKey;
@@ -2215,6 +2238,8 @@ function ProviderFormFull({
                 onPromptCacheRoutingChange={setPromptCacheRouting}
                 catalogModels={codexCatalogModels}
                 onCatalogModelsChange={setCodexCatalogModels}
+                catalogMappings={codexModelMapping}
+                onCatalogMappingsChange={setCodexModelMapping}
                 speedTestEndpoints={speedTestEndpoints}
                 customUserAgent={customUserAgent}
                 onCustomUserAgentChange={setCustomUserAgent}

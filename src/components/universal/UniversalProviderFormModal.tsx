@@ -1,4 +1,5 @@
 import { sortProvidersByName } from "@/utils/providerSort";
+import { generateUUID } from "@/utils/uuid";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
@@ -206,7 +207,7 @@ requires_openai_auth = true`;
         }
       : createUniversalProviderFromPreset(
           selectedPreset || universalProviderPresets[0],
-          crypto.randomUUID(),
+          generateUUID(),
           baseUrl.trim(),
           apiKey.trim(),
           name.trim(),
@@ -265,7 +266,7 @@ requires_openai_auth = true`;
         }
       : createUniversalProviderFromPreset(
           selectedPreset || universalProviderPresets[0],
-          crypto.randomUUID(),
+          generateUUID(),
           baseUrl.trim(),
           apiKey.trim(),
           name.trim(),

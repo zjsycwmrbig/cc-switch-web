@@ -20,6 +20,7 @@ import {
   showFetchModelsError,
   type FetchedModel,
 } from "@/lib/api/model-fetch";
+import { generateUUID } from "@/utils/uuid";
 import {
   hermesApiModes,
   type HermesApiMode,
@@ -115,7 +116,7 @@ export function HermesFormFields({
   // rows doesn't re-mount unrelated inputs (would drop focus mid-typing).
   const modelKeysRef = useRef<string[]>([]);
   while (modelKeysRef.current.length < models.length) {
-    modelKeysRef.current.push(crypto.randomUUID());
+    modelKeysRef.current.push(generateUUID());
   }
   if (modelKeysRef.current.length > models.length) {
     modelKeysRef.current.length = models.length;
@@ -132,7 +133,7 @@ export function HermesFormFields({
   };
 
   const handleAddModel = () => {
-    modelKeysRef.current.push(crypto.randomUUID());
+    modelKeysRef.current.push(generateUUID());
     onModelsChange([
       ...models,
       { id: "", name: "", context_length: undefined },
