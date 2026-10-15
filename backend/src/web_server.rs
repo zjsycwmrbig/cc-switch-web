@@ -4214,6 +4214,12 @@ async fn shutdown_signal() {
 pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<(), String> {
     let access_key = WebAccessKey::from_env()?;
     let db = Arc::new(Database::init().map_err(|e| format!("database init failed: {e}"))?);
+    // 在后台任务、OAuth 刷新及模型发现开始前恢复用户保存的出站代理。
+    // 否则界面显示已配置，重启后的实际请求却使用未初始化的直连客户端。
+    let outbound_proxy = db.get_global_proxy_url()
+        .map_err(|e| format!("load outbound proxy failed: {e}"))?;
+    crate::proxy::http_client::init(outbound_proxy.as_deref())
+        .map_err(|e| format!("initialize outbound proxy failed: {e}"))?;
     crate::mode::operation::recover_on_startup(db.as_ref());
     match db.init_default_skill_repos() {
         Ok(count) if count > 0 => {

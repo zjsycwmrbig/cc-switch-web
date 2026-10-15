@@ -112,7 +112,16 @@ pub enum CodexOAuthError {
 
 impl From<reqwest::Error> for CodexOAuthError {
     fn from(err: reqwest::Error) -> Self {
-        CodexOAuthError::NetworkError(err.to_string())
+        use std::error::Error;
+        let mut message = err.to_string();
+        let mut cause = err.source();
+        for _ in 0..4 {
+            let Some(error) = cause else { break };
+            message.push_str(": ");
+            message.push_str(&error.to_string());
+            cause = error.source();
+        }
+        CodexOAuthError::NetworkError(message)
     }
 }
 
@@ -745,23 +754,7 @@ impl CodexOAuthManager {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            let refresh_error_code = extract_refresh_error_code(&text);
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN
-                || matches!(
-                    refresh_error_code.as_deref(),
-                    Some(
-                        "refresh_token_expired"
-                            | "refresh_token_reused"
-                            | "refresh_token_invalidated"
-                    )
-                )
-            {
-                return Err(CodexOAuthError::RefreshTokenInvalid);
-            }
-            return Err(CodexOAuthError::TokenFetchFailed(format!(
-                "Refresh 失败: {status} - {text}"
-            )));
+            return Err(classify_refresh_failure(status, &text, refresh_token));
         }
 
         response
@@ -2158,6 +2151,25 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     now_ms + secs * 1000
 }
 
+fn classify_refresh_failure(status: reqwest::StatusCode, body: &str, refresh_token: &str) -> CodexOAuthError {
+    let code = extract_refresh_error_code(body).unwrap_or_else(|| "unknown".into());
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let message = parsed.as_ref().and_then(|value| {
+        value.pointer("/error/message").and_then(serde_json::Value::as_str)
+            .or_else(|| value.get("error_description").and_then(serde_json::Value::as_str))
+    }).unwrap_or(body);
+    let message = if refresh_token.is_empty() { message.to_string() }
+        else { message.replace(refresh_token, "[REDACTED]") };
+    let message: String = message.chars().take(500).collect();
+    log::warn!("[CodexOAuth] 刷新接口拒绝: status={status}, code={code}, message={message}");
+    // 403 也可能是地区限制、网关或风控；只有明确的 refresh-token 错误才触发凭据恢复。
+    if matches!(code.as_str(), "refresh_token_expired" | "refresh_token_reused" | "refresh_token_invalidated") {
+        CodexOAuthError::RefreshTokenInvalid
+    } else {
+        CodexOAuthError::TokenFetchFailed(format!("刷新接口返回 HTTP {status}，code={code}: {message}"))
+    }
+}
+
 fn extract_refresh_error_code(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     value
@@ -3525,6 +3537,20 @@ mod tests {
 
         assert!(matches!(result, Err(CodexOAuthError::ExpiredToken)));
         assert!(manager.list_accounts().await.is_empty());
+    }
+
+    #[test]
+    fn refresh_failures_preserve_non_credential_rejection_and_redact_token() {
+        let error = classify_refresh_failure(reqwest::StatusCode::FORBIDDEN,
+            r#"{"error":{"code":"unsupported_country_region_territory","message":"region denied"}}"#, "secret-refresh");
+        assert!(matches!(error, CodexOAuthError::TokenFetchFailed(message)
+            if message.contains("403") && message.contains("unsupported_country_region_territory")));
+        let error = classify_refresh_failure(reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error":{"code":"token_expired","message":"bad secret-refresh"}}"#, "secret-refresh");
+        assert!(matches!(error, CodexOAuthError::TokenFetchFailed(message)
+            if message.contains("token_expired") && !message.contains("secret-refresh")));
+        assert!(matches!(classify_refresh_failure(reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":"refresh_token_reused"}}"#, "secret"), CodexOAuthError::RefreshTokenInvalid));
     }
 
     #[test]
