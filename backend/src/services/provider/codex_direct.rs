@@ -1042,7 +1042,9 @@ pub(crate) async fn off_runtime<T: Send + 'static>(
 
 /// 官方做路由、发布了 Stack 模型：目录里要写全官方模型。
 pub(crate) fn needs_official_rows(route: &Provider, stack: &[Member]) -> bool {
-    !stack.is_empty() && is_official(route)
+    // 官方在 Stack 里也一样：它没有配置可解析，模型行只能从官方列表来。
+    !stack.is_empty()
+        && (is_official(route) || stack.iter().any(|member| is_official(&member.provider)))
 }
 
 /// 按未加锁读到的内容预测这次操作之后 Codex 会用的登录（能取官方列表的才返回）。钥匙串
@@ -1194,6 +1196,8 @@ fn stack_catalog(
             }
         })
         .collect();
+    // 官方成员自己不能从配置里解析模型（卡上没有模型列表），用这次取到的官方行。
+    let official_rows = prepared.native.as_ref().and_then(NativeRows::rows);
     let members: Vec<CodexStackCatalogMember<'_>> = inputs
         .iter()
         .map(|(member, config_text, profile)| CodexStackCatalogMember {
@@ -1204,6 +1208,7 @@ fn stack_catalog(
                 config_text,
                 profile: *profile,
             },
+            native: is_official(&member.provider).then_some(official_rows).flatten(),
         })
         .collect();
     plan_codex_stack_catalog(route_row, &members).map(Some)

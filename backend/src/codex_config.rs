@@ -8975,6 +8975,8 @@ pub(crate) struct CodexStackCatalogMember<'a> {
     pub key: &'a str,
     pub provider_name: &'a str,
     pub row: CodexCatalogRow<'a>,
+    /// 官方成员的模型行：官方目录不是从配置解析出来的，已经归一化好，直接用。
+    pub native: Option<&'a [Value]>,
 }
 
 /// 合并目录里路由那家的行。
@@ -9025,7 +9027,16 @@ pub(crate) fn plan_codex_stack_catalog(
         }
     };
     for member in stack {
-        for mut entry in codex_stack_third_party_rows(&member.row)? {
+        // 官方成员的行来自官方账号（或本机 Codex 列表），不从配置解析；隐藏的模型不入目录。
+        let rows = match member.native {
+            Some(native) => native
+                .iter()
+                .filter(|row| row.get("visibility").and_then(Value::as_str) != Some("hide"))
+                .cloned()
+                .collect(),
+            None => codex_stack_third_party_rows(&member.row)?,
+        };
+        for mut entry in rows {
             let Some(obj) = entry.as_object_mut() else {
                 continue;
             };
@@ -9437,6 +9448,46 @@ mod official_mirror_tests {
     }
 
     #[test]
+    fn official_stack_member_publishes_its_own_rows_and_skips_hidden() {
+        let route = json!({ "modelCatalog": { "models": [{ "model": "gpt-6-sol" }] } });
+        let official = json!({ "auth": {}, "config": "" });
+        let native = vec![
+            json!({
+                "slug": "gpt-6-sol",
+                "display_name": "GPT-6 Sol",
+                "visibility": "list",
+                "use_responses_lite": true,
+            }),
+            json!({ "slug": "gpt-6-hidden", "display_name": "Hidden", "visibility": "hide" }),
+        ];
+        let models = plan_codex_stack_catalog(
+            CodexStackRoute::ThirdParty(CodexCatalogRow {
+                settings: &route,
+                config_text: "",
+                profile: CodexCatalogToolProfile::NativeResponses,
+            }),
+            &[CodexStackCatalogMember {
+                key: "openai",
+                provider_name: "OpenAI Official",
+                row: CodexCatalogRow {
+                    settings: &official,
+                    config_text: "",
+                    profile: CodexCatalogToolProfile::NativeResponses,
+                },
+                native: Some(&native),
+            }],
+        )
+        .unwrap()["models"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let slugs: Vec<&str> = models.iter().filter_map(|row| row["slug"].as_str()).collect();
+        assert_eq!(slugs, vec!["gpt-6-sol", "ccs-openai/gpt-6-sol"]);
+        // 官方行的 Lite 协议对第三方不可用，合并时按第三方关闭。
+        assert_eq!(models[1]["use_responses_lite"], json!(false));
+    }
+
+    #[test]
     fn stacked_gpt_rows_mirror_under_their_prefixed_id() {
         let models = with_official_models(official_gpt_rows(), || {
             let route = json!({ "modelCatalog": { "models": [{ "model": "gpt-6-sol" }] } });
@@ -9455,6 +9506,7 @@ mod official_mirror_tests {
                         config_text: "",
                         profile: CodexCatalogToolProfile::ProxyChat,
                     },
+                    native: None,
                 }],
             )
             .unwrap()["models"]
