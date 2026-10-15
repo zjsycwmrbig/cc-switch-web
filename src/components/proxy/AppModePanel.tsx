@@ -108,7 +108,11 @@ export function AppModePanel({
       </p>
       {selected === "aggregation" && (
         <p className="text-sm text-muted-foreground">
-          {t("webMode.officialDefaultAdvice")}
+          {t(
+            app === "codex"
+              ? "webMode.officialProxyAdvice"
+              : "webMode.officialDefaultAdvice",
+          )}
         </p>
       )}
       {app === "claude" && active === "aggregation" && (

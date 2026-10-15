@@ -469,18 +469,6 @@ pub fn apply_codex_chat_upstream_model(
 /// 已经确认协议类型时复用同一模型替换逻辑（如 Anthropic bridge）。
 pub fn apply_codex_upstream_model(provider: &Provider, body: &mut JsonValue) -> Option<String> {
     let catalog_model_ids = codex_provider_catalog_model_ids(provider);
-    let mapping = codex_provider_model_mapping(provider);
-    let mapping_target = body
-        .get("model")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .and_then(|model| codex_provider_mapping_target(&mapping, model))
-        .map(ToString::to_string);
-    if let Some(target) = mapping_target {
-        body["model"] = JsonValue::String(target.clone());
-        return Some(target);
-    }
     if let Some(request_model) = body
         .get("model")
         .and_then(|value| value.as_str())
@@ -495,168 +483,6 @@ pub fn apply_codex_upstream_model(provider: &Provider, body: &mut JsonValue) -> 
     let upstream_model = codex_provider_upstream_model(provider)?;
     body["model"] = JsonValue::String(upstream_model.clone());
     Some(upstream_model)
-}
-
-/// 客户端可以固定发这些档位别名，代理转发前替换成当前供应商的真实模型。
-pub const CODEX_MODEL_ALIASES: &[&str] = &["cc-auto", "cc-switch-auto"];
-
-/// 供应商行里显式写的「客户端请求模型 → 上游模型」映射。
-///
-/// 数据放在 `settingsConfig.modelMapping`：`{"客户端模型": "上游模型"}`。网页端的模型映射
-/// 表按行写入，只有上游名和请求名不同的行才落库。同名（不区分大小写）和空值的条目在这里
-/// 丢掉，省得代理白查一遍。
-pub fn codex_provider_model_mapping(provider: &Provider) -> Vec<(String, String)> {
-    provider
-        .settings_config
-        .get("modelMapping")
-        .and_then(|value| value.as_object())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|(from, to)| {
-                    let from = from.trim();
-                    let to = to.as_str()?.trim();
-                    (!from.is_empty() && !to.is_empty() && !from.eq_ignore_ascii_case(to))
-                        .then(|| (from.to_string(), to.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// 命中的显式映射目标，按不区分大小写匹配请求模型。
-fn codex_provider_mapping_target<'a>(
-    mapping: &'a [(String, String)],
-    request_model: &str,
-) -> Option<&'a str> {
-    mapping
-        .iter()
-        .find(|(from, _)| from.eq_ignore_ascii_case(request_model))
-        .map(|(_, to)| to.as_str())
-}
-
-/// 一次模型解析的结果：真正发给上游的模型名，和这次是哪条规则命中的。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexModelRoute {
-    pub model: String,
-    pub source: CodexModelRouteSource,
-}
-
-/// 模型解析命中的规则，用来在日志里说清「这个模型为什么变成那个模型」。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodexModelRouteSource {
-    /// 请求的是档位别名：用当前供应商的默认模型
-    Alias,
-    /// 供应商行里显式写的映射
-    Mapping,
-    /// 命中供应商模型目录：原样发给上游
-    Catalog,
-    /// 供应商没配模型目录：原样透传（旧行为）
-    Passthrough,
-    /// 目录里没有这个模型：回落到供应商默认模型
-    Fallback,
-}
-
-impl CodexModelRouteSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Alias => "别名",
-            Self::Mapping => "显式映射",
-            Self::Catalog => "目录命中",
-            Self::Passthrough => "原样透传",
-            Self::Fallback => "回落默认",
-        }
-    }
-}
-
-/// 追加别名：环境变量 `CC_SWITCH_WEB_CODEX_MODEL_ALIASES`（逗号分隔）。
-fn codex_model_aliases() -> Vec<String> {
-    let mut aliases: Vec<String> = CODEX_MODEL_ALIASES
-        .iter()
-        .map(|alias| (*alias).to_string())
-        .collect();
-    if let Ok(extra) = std::env::var("CC_SWITCH_WEB_CODEX_MODEL_ALIASES") {
-        aliases.extend(
-            extra
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(str::to_string),
-        );
-    }
-    aliases
-}
-
-/// 原生 Responses 直连（`wire_api = "responses"` 的透传路径）的模型解析。
-///
-/// 目的：让「切换供应商」等价于「切换模型」，各客户端的 `config.toml` 不必跟着改。
-/// - 供应商行里写了显式映射，且请求模型命中 → 换成映射里的上游模型
-/// - 请求模型是档位别名（默认 `cc-auto` / `cc-switch-auto`）→ 用当前供应商的 `model`
-/// - 供应商配了模型目录且请求模型在目录里 → 原样透传（仍可临时指定具体模型）
-/// - 供应商配了模型目录但请求模型不在其中 → 回落到该供应商的 `model`
-/// - 供应商没配模型目录且请求模型不是别名 → 原样透传（与旧行为一致）
-pub fn apply_codex_native_upstream_model(
-    provider: &Provider,
-    body: &mut JsonValue,
-) -> Option<CodexModelRoute> {
-    let request_model = body
-        .get("model")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(ToString::to_string)?;
-
-    let is_alias = codex_model_aliases()
-        .iter()
-        .any(|alias| alias.eq_ignore_ascii_case(&request_model));
-    let catalog_model_ids = codex_provider_catalog_model_ids(provider);
-    let known_model = catalog_model_ids.contains(request_model.as_str());
-
-    if !is_alias {
-        let mapping = codex_provider_model_mapping(provider);
-        if let Some(target) = codex_provider_mapping_target(&mapping, &request_model) {
-            let target = target.to_string();
-            body["model"] = JsonValue::String(target.clone());
-            return Some(CodexModelRoute {
-                model: target,
-                source: CodexModelRouteSource::Mapping,
-            });
-        }
-        if known_model {
-            return Some(CodexModelRoute {
-                model: request_model,
-                source: CodexModelRouteSource::Catalog,
-            });
-        }
-        if catalog_model_ids.is_empty() {
-            return Some(CodexModelRoute {
-                model: request_model,
-                source: CodexModelRouteSource::Passthrough,
-            });
-        }
-    }
-
-    let upstream_model = codex_provider_upstream_model(provider)?;
-    if upstream_model.eq_ignore_ascii_case(&request_model) {
-        return Some(CodexModelRoute {
-            model: request_model,
-            source: if is_alias {
-                CodexModelRouteSource::Alias
-            } else {
-                CodexModelRouteSource::Fallback
-            },
-        });
-    }
-
-    body["model"] = JsonValue::String(upstream_model.clone());
-    Some(CodexModelRoute {
-        model: upstream_model,
-        source: if is_alias {
-            CodexModelRouteSource::Alias
-        } else {
-            CodexModelRouteSource::Fallback
-        },
-    })
 }
 
 /// Stack 请求的上游拒收 Codex 的托管 `web_search`：按这家的地址和模型品牌判断，和它做
@@ -1185,6 +1011,11 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        // 官方凭据由服务端账号管理器逐请求注入，客户端只连接代理。
+        if is_codex_official_provider(provider) {
+            return Some(AuthInfo::new("codex_oauth_placeholder".into(), AuthStrategy::CodexOAuth));
+        }
+
         if provider.is_xai_oauth() {
             return Some(AuthInfo::new(
                 "xai_oauth_placeholder".to_string(),

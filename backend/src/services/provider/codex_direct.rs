@@ -130,7 +130,11 @@ pub(crate) fn prepare(
     owner: &Owner<'_>,
     target: &Target<'_>,
 ) -> Result<Prepared, AppError> {
-    let provider = target_provider(target);
+    // 代理模式的账号由服务端持有，不把托管登录写到客户端 auth.json。
+    let provider = match target {
+        Target::Direct(provider) => *provider,
+        Target::Proxy { .. } => None,
+    };
     let target_account = provider.and_then(managed_account);
     let outgoing = owner
         .provider()
@@ -415,26 +419,17 @@ pub(crate) fn plan(
             },
             Some(_),
         ) => {
+            let mut table = proxy_route_table(ROUTE_ID, base_url, false);
             if official {
-                let auth = match &managed_login {
-                    Some(login) => AuthGoal::Managed(login.clone()),
-                    None => AuthGoal::Official(row_auth(route)),
-                };
-                (
-                    RouteWrite::OfficialProxy {
-                        base_url: base_url.to_string(),
-                        unified: crate::settings::unify_codex_session_history(),
-                    },
-                    None,
-                    auth,
-                )
-            } else {
-                (
-                    RouteWrite::Custom(proxy_route_table(ROUTE_ID, base_url, false)),
-                    Some(RouteAuth::Bearer),
-                    AuthGoal::KeepNative,
-                )
+                table["name"] = toml_edit::value("OpenAI");
+                table["requires_openai_auth"] = toml_edit::value(false);
             }
+            if let Ok(key) = std::env::var("CC_SWITCH_WEB_ACCESS_KEY") {
+                if !key.is_empty() {
+                    table["experimental_bearer_token"] = toml_edit::value(key);
+                }
+            }
+            (RouteWrite::Custom(table), if official { None } else { Some(RouteAuth::Bearer) }, AuthGoal::KeepNative)
         }
     };
 

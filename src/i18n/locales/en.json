@@ -1494,18 +1494,15 @@
     "reasoningModeHint": "Enable when the upstream Chat Completions API supports toggling thinking on/off. Providers like Kimi, GLM and Qwen usually fall into this category.",
     "reasoningEffortToggle": "Supports Reasoning Effort",
     "reasoningEffortHint": "Enable when the upstream supports thinking-depth control such as low/high/max. Enabling this also turns on thinking mode and converts Codex's reasoning.effort into the upstream Chat parameter.",
-    "modelMappingTitle": "Model Mapping",
-    "modelMappingHint": "Display names appear in the /model menu; the actual request model is what the client sends, and the upstream model is what the current provider really receives. Leave it empty to forward the same name. Restart Codex after changes to refresh the list.",
+    "modelMappingTitle": "Model catalog",
+    "modelMappingHint": "Display names appear in /model; actual request models are upstream model IDs. Native Responses supports this catalog with a direct connection, without local routing. Restart Codex after changes to refresh the list.",
     "addCatalogModel": "Add Model",
     "catalogColumnDisplay": "Menu Display Name",
     "catalogColumnModel": "Actual Request Model",
-    "catalogColumnUpstream": "Upstream Model",
     "catalogColumnContext": "Context Window",
     "catalogDisplayNamePlaceholder": "e.g., DeepSeek V4 Flash",
     "catalogModelPlaceholder": "e.g., deepseek-v4-flash",
-    "catalogUpstreamPlaceholder": "empty = same name",
     "contextWindowPlaceholder": "e.g., 128000",
-    "catalogUpstreamHint": "Fill Upstream Model only when the option should keep working after switching providers: the proxy rewrites the selected model to it before forwarding. Models missing from this column fall back to the current provider's default model.",
     "contextWindow1M": "1M Context Window",
     "autoCompactLimit": "Auto Compact Limit",
     "autoCompactLimitHint": "Auto-compacts history when context reaches this token limit"
@@ -3546,8 +3543,8 @@
       "aggregation": "Combine providers’ models in the client model list. Join or remove members on cards; choose the default provider from the more menu."
     },
     "notice": {
-      "routeOwnsCatalog": "The default provider manages its own catalog; other members are not published.",
-      "configOwnsCatalog": "The client uses its own model catalog, so the generated aggregation catalog is not active.",
+      "routeOwnsCatalog": "The client uses a separate model catalog. After changing aggregation members or models, run the sync command below on each remote host.",
+      "configOwnsCatalog": "The client uses a separate model catalog. After changing aggregation members or models, run the sync command below on each remote host.",
       "officialModelsBundled": "Using the models bundled with Codex; account-specific models may be missing.",
       "officialModelsUnavailable": "Official models are unavailable; aggregated models cannot be published yet."
     },
@@ -3563,7 +3560,8 @@
     "saveRestart": "Save and restart service",
     "rebindHint": "Saving the listen address restarts the service. If binding fails, the previous address is restored.",
     "officialDefaultAdvice": "Consider using an official account as the aggregation default for requests without an aggregated model ID.",
-    "claudeModelsRestart": "Restart Claude Code after changing aggregation models or members to refresh its model catalog."
+    "claudeModelsRestart": "Restart Claude Code after changing aggregation models or members to refresh its model catalog.",
+    "officialProxyAdvice": "CC Switch manages official account login and refresh. Aggregated models route by provider; remote clients do not need a separate login."
   },
   "quota": {
     "tierShort": "{{label}} {{value}}%",
@@ -3868,5 +3866,14 @@
       "refresh": "Refresh quota",
       "refreshAria": "Refresh quota for {{login}}"
     }
+  },
+  "aggregationSync": {
+    "title": "Sync aggregated models",
+    "description": "Sync models from aggregation members to remote Codex. Each model includes its provider and routes directly to that provider.",
+    "copy": "Copy sync command",
+    "download": "Download models",
+    "copied": "Sync command copied",
+    "copyManually": "Select and copy the command below",
+    "reload": "Run on the remote host to back up configuration, update the model catalog and restart the Codex daemon. Reopen existing CLI sessions or reload the VS Code remote window."
   }
 }

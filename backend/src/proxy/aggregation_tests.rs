@@ -10,6 +10,78 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[tokio::test]
+#[serial_test::serial]
+async fn codex_aggregation_keeps_selected_model_across_protocols() {
+    let _home = crate::mode::controller::tests::Fixture::new();
+    for format in ["openai_responses", "openai_chat", "anthropic"] {
+        let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sink = captured.clone();
+        let app = Router::new().fallback(post(move |Json(body): Json<Value>| {
+            let sink = sink.clone();
+            async move {
+                sink.lock().await.push(body);
+                Json(json!({"id":"test","object":"chat.completion","type":"message","role":"assistant",
+                    "model":"chosen-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                    "usage":{"input_tokens":1,"output_tokens":1,"prompt_tokens":1,"completion_tokens":1}}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let state = ProxyState::for_test(Arc::new(crate::database::Database::memory().unwrap()));
+        let mut provider = Provider::with_id(
+            "member".into(),
+            "Member".into(),
+            json!({
+                "base_url":format!("http://127.0.0.1:{port}/v1"),"auth":{"OPENAI_API_KEY":"upstream"},
+                "model":"wrong-default","modelCatalog":{"models":[{"model":"wrong-default"}]},
+                "modelMapping":{"chosen-model":"wrong-mapping"}
+            }),
+            None,
+        );
+        provider.meta = Some(serde_json::from_value(json!({"apiFormat":format})).unwrap());
+        state.db.save_provider("codex", &provider).unwrap();
+        let body = json!({"model":"chosen-model","instructions":"Be brief","stream":false,
+            "input":[{"role":"user","content":"hello"}]});
+        let ctx = RequestContext::new_with_stack(
+            &state,
+            &body,
+            &HeaderMap::new(),
+            AppType::Codex,
+            "Codex",
+            "codex",
+            Some(crate::mode::stack::StackTarget {
+                provider,
+                upstream_model: "chosen-model".into(),
+                original_model: "ccs-member/chosen-model".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let result = ctx
+            .create_forwarder(&state)
+            .forward_with_retry(
+                &AppType::Codex,
+                "/responses",
+                body,
+                HeaderMap::new(),
+                Extensions::new(),
+                ctx.get_providers(),
+            )
+            .await;
+        assert!(result.is_ok(), "{format} failed");
+        let requests = captured.lock().await;
+        assert_eq!(requests.len(), 1, "{format}");
+        assert_eq!(requests[0]["model"], "chosen-model", "{format}");
+        assert!(state.current_providers.read().await.is_empty());
+        task.abort();
+    }
+}
+
 #[derive(Clone)]
 struct Upstream {
     replies: Arc<Mutex<VecDeque<StatusCode>>>,

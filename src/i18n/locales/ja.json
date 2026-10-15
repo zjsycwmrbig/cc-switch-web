@@ -1494,18 +1494,15 @@
     "reasoningModeHint": "上流の Chat Completions API が思考（thinking）のオン/オフ切り替えに対応している場合に有効化します。Kimi、GLM、Qwen などが通常このタイプに該当します。",
     "reasoningEffortToggle": "思考レベルに対応",
     "reasoningEffortHint": "上流が low/high/max などの思考の深さの制御に対応している場合に有効化します。有効にすると思考モードも自動的にオンになり、Codex の reasoning.effort を上流の Chat パラメータに変換します。",
-    "modelMappingTitle": "モデルマッピング",
-    "modelMappingHint": "表示名は /model メニューに表示されます。実際のリクエストモデルはクライアントが送る名前、上流モデルは現在のプロバイダが実際に受け取る名前です。空欄なら同じ名前のまま転送します。変更後、リストを更新するには Codex を再起動してください。",
+    "modelMappingTitle": "モデル一覧",
+    "modelMappingHint": "表示名は /model に表示され、実際のリクエストモデルには上流のモデル ID を指定します。ネイティブ Responses ではローカルルーティングなしで直結利用できます。変更後、リストを更新するには Codex を再起動してください。",
     "addCatalogModel": "モデルを追加",
     "catalogColumnDisplay": "メニュー表示名",
     "catalogColumnModel": "実際のリクエストモデル",
-    "catalogColumnUpstream": "上流モデル",
     "catalogColumnContext": "コンテキストウィンドウ",
     "catalogDisplayNamePlaceholder": "例: DeepSeek V4 Flash",
     "catalogModelPlaceholder": "例: deepseek-v4-flash",
-    "catalogUpstreamPlaceholder": "空欄 = 同じ名前で転送",
     "contextWindowPlaceholder": "例: 128000",
-    "catalogUpstreamHint": "プロバイダを切り替えてもこの選択肢を使い続けたい場合だけ上流モデルを入力します。プロキシは転送前に選択されたモデルをその名前に書き換えます。この列にないモデルは、現在のプロバイダの既定モデルにフォールバックします。",
     "contextWindow1M": "1M コンテキストウィンドウ",
     "autoCompactLimit": "自動圧縮しきい値",
     "autoCompactLimitHint": "コンテキストトークン数がこのしきい値に達すると履歴を自動圧縮"
@@ -3546,8 +3543,8 @@
       "aggregation": "複数のプロバイダーのモデルをクライアントに集約します。カードで参加・解除し、その他のメニューで既定を設定します。"
     },
     "notice": {
-      "routeOwnsCatalog": "既定のプロバイダーが独自のモデル一覧を管理しているため、他のメンバーは公開されません。",
-      "configOwnsCatalog": "クライアントに独自のモデル一覧が指定されているため、生成した一覧は無効です。",
+      "routeOwnsCatalog": "クライアントは独立したモデル一覧を使用します。集約メンバーやモデルの変更後、下の同期コマンドを各リモートホストで実行してください。",
+      "configOwnsCatalog": "クライアントは独立したモデル一覧を使用します。集約メンバーやモデルの変更後、下の同期コマンドを各リモートホストで実行してください。",
       "officialModelsBundled": "Codex 同梱のモデル一覧を使用中です。アカウント専用モデルが含まれない場合があります。",
       "officialModelsUnavailable": "公式モデル一覧を取得できず、集約モデルはまだ利用できません。"
     },
@@ -3563,7 +3560,8 @@
     "saveRestart": "保存してサービスを再起動",
     "rebindHint": "待受アドレスを保存すると再起動します。バインドに失敗すると元のアドレスに戻ります。",
     "officialDefaultAdvice": "集約モデル ID のないリクエストには、公式アカウントを集約の既定に設定することをお勧めします。",
-    "claudeModelsRestart": "集約モデルやメンバーを変更した後は、Claude Code を再起動してモデル一覧を更新してください。"
+    "claudeModelsRestart": "集約モデルやメンバーを変更した後は、Claude Code を再起動してモデル一覧を更新してください。",
+    "officialProxyAdvice": "公式アカウントのログインと更新は CC Switch が管理します。集約モデルはプロバイダー別に転送し、リモートで個別ログインする必要はありません。"
   },
   "quota": {
     "tierShort": "{{label}} {{value}}%",
@@ -3868,5 +3866,14 @@
       "refresh": "残量を更新",
       "refreshAria": "{{login}} の残量を更新"
     }
+  },
+  "aggregationSync": {
+    "title": "集約モデルを同期",
+    "description": "集約に追加したプロバイダーのモデルをリモート Codex に同期します。同じモデルもプロバイダー別に表示し、選択先に直接転送します。",
+    "copy": "同期コマンドをコピー",
+    "download": "モデルをダウンロード",
+    "copied": "同期コマンドをコピーしました",
+    "copyManually": "下のコマンドを選択してコピーしてください",
+    "reload": "リモートで実行すると、設定のバックアップ、モデル一覧の更新、Codex デーモンの再起動を行います。既存の CLI は開き直し、VS Code のリモートウィンドウは再読み込みしてください。"
   }
 }

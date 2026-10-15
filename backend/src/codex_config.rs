@@ -9078,7 +9078,7 @@ pub(crate) fn plan_codex_stack_catalog(
 }
 
 /// 一家第三方供应商在合并目录里的行（`comp_hash` 保持模板的值）。
-fn codex_stack_third_party_rows(row: &CodexCatalogRow<'_>) -> Result<Vec<Value>, AppError> {
+pub(crate) fn codex_stack_third_party_rows(row: &CodexCatalogRow<'_>) -> Result<Vec<Value>, AppError> {
     let specs = codex_published_specs(row.settings, row.config_text);
     if specs.is_empty() {
         return Ok(Vec::new());

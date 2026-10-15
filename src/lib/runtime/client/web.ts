@@ -1484,33 +1484,20 @@ export async function downloadWebConfigExport(
   };
 }
 
-export async function downloadWebModelFile(
-  installer = false,
-): Promise<ConfigDownloadResult> {
-  const path = `/api/model-catalog/codex${installer ? "/install.py" : ""}`;
+export async function downloadWebAggregationModels(): Promise<ConfigDownloadResult> {
+  const path = "/api/model-catalog/codex/aggregation";
   const response = await fetch(`${getWebApiBase()}${path}`, {
-    headers: webRequestHeaders("application/json,text/plain,*/*"),
+    headers: webRequestHeaders("application/json"),
     cache: "no-store",
   });
   handleUnauthorized(response);
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, `HTTP ${response.status} for GET ${path}`));
-  }
+  if (!response.ok)
+    throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
   return {
-    fileName: installer ? "cc-switch-install-models.py" : "cc-switch-all-models.json",
+    fileName: "cc-switch-aggregation-models.json",
     blob: await response.blob(),
   };
 }
-
-export interface WebClientModelPool {
-  models: string[];
-  availableModels: string[];
-  sources: Record<string, string[]>;
-  providerCount: number;
-}
-
-export const fetchWebClientModelPool = () => requestJson<WebClientModelPool>("/api/model-catalog/codex/pool");
-export const saveWebClientModelPool = (models: string[]) => requestWithBody<WebClientModelPool>("/api/model-catalog/codex/pool", "PUT", { models });
 
 export async function importWebConfigUpload(
   file: File,

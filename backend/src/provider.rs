@@ -105,9 +105,9 @@ impl Provider {
     /// 这类供应商的真实 token 由代理在出站时通过 OAuth 注入到
     /// `Authorization` 头，不依赖 settings 里的 `ANTHROPIC_AUTH_TOKEN`。
     /// 第三方托管 OAuth（xai_oauth、github_copilot 等）：真实凭据由本地代理逐请求
-    /// 注入，卡片本身无 key，存储的配置只是上游快照。`codex_oauth` 刻意排除——
-    /// auth.json 中的官方 ChatGPT 登录就是它的凭据，`requires_openai_auth = true`
-    /// 回退是其正确形态（上游 c88b00fa）。
+    /// 注入，卡片本身无 key，存储的配置只是上游快照。这里描述的是直连配置投影；
+    /// Codex 官方直连仍使用原生登录。代理模式另由 codex_direct 和 CodexAdapter
+    /// 使用服务端托管账号注入，不依赖客户端 auth.json。
     pub fn uses_proxy_injected_oauth(&self) -> bool {
         self.is_xai_oauth() || self.is_github_copilot()
     }

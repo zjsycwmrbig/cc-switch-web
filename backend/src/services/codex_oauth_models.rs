@@ -18,6 +18,11 @@ pub async fn fetch_models_with_token(
     token: &str,
     account_id: &str,
 ) -> Result<Vec<FetchedModel>, String> {
+    Ok(parse_models(fetch_catalog_with_token(token, account_id).await?))
+}
+
+/// 保留窗口、工具能力和指令等原生字段，供聚合目录导出使用。
+pub async fn fetch_catalog_with_token(token: &str, account_id: &str) -> Result<Value, String> {
     let client = crate::proxy::http_client::get();
     let response = build_models_request(&client, token, account_id)
         .send()
@@ -42,7 +47,7 @@ pub async fn fetch_models_with_token(
         .await
         .map_err(|e| format!("Failed to parse response: {e}"))?;
 
-    Ok(parse_models(value))
+    Ok(value)
 }
 
 fn build_models_request(

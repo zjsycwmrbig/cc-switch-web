@@ -794,7 +794,7 @@ async fn view_for_test(state: &AppState) -> &'static str {
 
 #[tokio::test]
 #[serial]
-async fn official_codex_routing_keeps_history_bucket_and_detects_only_our_proxy() {
+async fn official_codex_proxy_uses_gateway_and_restores_direct_config() {
     use crate::services::provider::{codex_official_models as models, ProviderService};
     struct ResetModels;
     impl Drop for ResetModels {
@@ -844,7 +844,8 @@ async fn official_codex_routing_keeps_history_bucket_and_detects_only_our_proxy(
         enter(state, &AppType::Codex, Some("official"))
             .await
             .unwrap();
-        assert_eq!(selector(), bucket);
+        assert_eq!(selector().as_deref(), Some("custom"));
+        assert!(!crate::codex_config::get_codex_auth_path().exists());
         assert!(state
             .proxy_service
             .detect_takeover_in_live_config_for_app(&AppType::Codex));

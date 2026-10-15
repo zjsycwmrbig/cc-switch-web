@@ -51,7 +51,7 @@ import { cn } from "@/lib/utils";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProfileSwitcher } from "@/components/profiles/ProfileSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
-import { ModelPoolPanel } from "@/components/providers/ModelPoolPanel";
+import { AggregationSyncPanel } from "@/components/providers/AggregationSyncPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
@@ -849,11 +849,8 @@ function App() {
                         state={appMode}
                       />
                     )}
-                    {activeApp === "codex" && (
-                      <ModelPoolPanel
-                        providers={providers}
-                        currentProviderId={currentProviderId}
-                      />
+                    {activeApp === "codex" && appMode.data?.mode === "aggregation" && (
+                      <AggregationSyncPanel />
                     )}
                     <ProviderList
                       modeView={appMode.data}

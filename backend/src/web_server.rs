@@ -3134,33 +3134,16 @@ async fn get_providers(
     }))
 }
 
-async fn export_all_codex_models(
-    State(state): State<WebApiState>,
-) -> Result<Response, ApiError> {
-    let app_state = state.app_state.clone();
-    let catalog = tokio::task::spawn_blocking(move || {
-        let providers = crate::commands::get_providers_internal(app_state.as_ref(), "codex".into())
-            .map_err(crate::error::AppError::Message)?;
-        let saved = app_state.db.get_setting(crate::web_model_catalog::POOL_SETTING)?;
-        let selected = crate::web_model_catalog::selected_pool(&providers, saved.as_deref())?;
-        crate::web_model_catalog::export_all(&providers, &selected)
-    }).await.map_err(|e| ApiError::internal(format!("模型导出任务失败：{e}")))?
-        .map_err(|e| ApiError::internal(format!("全部供应商模型导出失败：{e}")))?;
+async fn export_aggregated_codex_models(State(state): State<WebApiState>) -> Result<Response, ApiError> {
+    let catalog = crate::web_model_catalog::export_aggregation(&state.app_state).await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
     let body = serde_json::to_string_pretty(&catalog)
-        .map_err(|e| ApiError::internal(format!("模型目录序列化失败：{e}")))?;
+        .map_err(|e| ApiError::internal(format!("聚合模型序列化失败：{e}")))?;
     Ok(([
         (header::CONTENT_TYPE, "application/json; charset=utf-8"),
-        (header::CONTENT_DISPOSITION, "attachment; filename=\"cc-switch-all-models.json\""),
+        (header::CONTENT_DISPOSITION, "attachment; filename=\"cc-switch-aggregation-models.json\""),
         (header::CACHE_CONTROL, "no-store"),
     ], body).into_response())
-}
-
-async fn download_codex_model_installer() -> Response {
-    ([
-        (header::CONTENT_TYPE, "text/x-python; charset=utf-8"),
-        (header::CONTENT_DISPOSITION, "attachment; filename=\"cc-switch-install-models.py\""),
-        (header::CACHE_CONTROL, "no-store"),
-    ], include_str!("../scripts/cc-switch-install-models.py")).into_response()
 }
 
 /// 只保留 URL 和密钥里安全的字符，避免生成的脚本被引号或替换符打断。
@@ -3191,29 +3174,6 @@ async fn download_codex_model_shell_installer(headers: HeaderMap) -> Response {
         (header::CONTENT_DISPOSITION, "attachment; filename=\"cc-switch-update-models.sh\""),
         (header::CACHE_CONTROL, "no-store"),
     ], script).into_response()
-}
-
-#[derive(Deserialize)]
-struct CodexClientModelPoolPayload { models: Vec<String> }
-
-async fn get_codex_client_model_pool(State(state): State<WebApiState>) -> Result<Json<Value>, ApiError> {
-    let providers = crate::commands::get_providers_internal(state.app_state.as_ref(), "codex".into())
-        .map_err(ApiError::internal)?;
-    let saved = state.app_state.db.get_setting(crate::web_model_catalog::POOL_SETTING)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    let models = crate::web_model_catalog::selected_pool(&providers, saved.as_deref())
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    let sources = crate::web_model_catalog::available_models(&providers);
-    Ok(Json(json!({"models": models, "availableModels": sources.keys().collect::<Vec<_>>(), "sources": sources, "providerCount": providers.len()})))
-}
-
-async fn save_codex_client_model_pool(State(state): State<WebApiState>, Json(payload): Json<CodexClientModelPoolPayload>) -> Result<Json<Value>, ApiError> {
-    let models = crate::web_model_catalog::normalize_pool(payload.models)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let text = serde_json::to_string(&models).map_err(|e| ApiError::internal(e.to_string()))?;
-    state.app_state.db.set_setting(crate::web_model_catalog::POOL_SETTING, &text)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    get_codex_client_model_pool(State(state)).await
 }
 
 async fn get_current_provider(
@@ -4329,10 +4289,8 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         .route("/api/auth/status", get(web_auth_status))
         .route("/api/auth/verify", get(verify_web_access_key))
         .route("/api/config/export", get(export_config_download))
-        .route("/api/model-catalog/codex", get(export_all_codex_models))
-        .route("/api/model-catalog/codex/pool", get(get_codex_client_model_pool).put(save_codex_client_model_pool))
-        .route("/api/model-catalog/codex/install.py", get(download_codex_model_installer))
-        .route("/api/model-catalog/codex/install.sh", get(download_codex_model_shell_installer))
+        .route("/api/model-catalog/codex/aggregation", get(export_aggregated_codex_models))
+        .route("/api/model-catalog/codex/aggregation/install.sh", get(download_codex_model_shell_installer))
         .route("/api/config/import", post(import_config_upload))
         .route(
             "/api/settings/migrate-from-cc-switch",

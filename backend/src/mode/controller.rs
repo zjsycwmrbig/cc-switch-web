@@ -624,9 +624,7 @@ pub async fn check_codex_official_models(state: &AppState) {
 }
 
 fn add_default(app: &AppType, roster: &mut StackState, row: &Provider) {
-    if !stack::supports_stack(app)
-        || (matches!(app, AppType::Codex) && codex_direct::is_official(row))
-    {
+    if !stack::supports_stack(app) {
         return;
     }
     stack::allocate_key(roster, row);
@@ -652,9 +650,7 @@ pub async fn set_stack_member(
     let mut roster = state::stack(&DeviceStore::for_device(), app.as_str())?;
     if present {
         let row = provider(state, app, id)?;
-        if row.category.as_deref() == Some("official")
-            || (matches!(app, AppType::Codex) && codex_direct::is_official(&row))
-        {
+        if row.category.as_deref() == Some("official") && !matches!(app, AppType::Codex) {
             return Err(AppError::Message(
                 "官方账号可作为默认路由，不能作为聚合成员".into(),
             ));
