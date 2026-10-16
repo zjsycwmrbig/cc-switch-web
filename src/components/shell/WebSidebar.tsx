@@ -73,6 +73,11 @@ export const WebSidebar = memo(function WebSidebar({
     onAppChange(app);
     selectView("providers");
   };
+  /** 供应商这一行负责跳转并展开应用列表，收起由右侧箭头单独控制，避免一次点击把自己关掉。 */
+  const selectProviders = () => {
+    toggleApps(true);
+    selectView("providers");
+  };
   const item = (id: GlobalView, label: string, icon: ReactNode) => (
     <button
       key={id}
@@ -138,26 +143,33 @@ export const WebSidebar = memo(function WebSidebar({
           </span>
         </button>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-hidden">
+          {session &&
+            item(
+              "models",
+              "模型与接入",
+              <Layers className="h-4 w-4 shrink-0" />,
+            )}
+          {session &&
+            item(
+              "allocations",
+              "额度分配",
+              <Share2 className="h-4 w-4 shrink-0" />,
+            )}
+          {item("usage", t("nav.usage"), <BarChart2 className="h-4 w-4 shrink-0" />)}
           <div
-            className={cn("rounded-md", currentView === "providers" && "bg-accent")}
+            className={cn(
+              "flex items-center rounded-md",
+              currentView === "providers" && "bg-accent",
+            )}
           >
             <button
               type="button"
               aria-label="供应商"
               title={railHidden ? "供应商" : undefined}
               aria-current={currentView === "providers" ? "page" : undefined}
-              aria-expanded={providerGroupOpen}
-              onClick={() => {
-                if (railHidden) {
-                  toggle();
-                  toggleApps(true);
-                } else {
-                  toggleApps(!appsOpen);
-                }
-                selectView("providers");
-              }}
+              onClick={selectProviders}
               className={cn(
-                "flex h-9 w-full shrink-0 items-center gap-3 rounded-md px-3 text-sm hover:bg-accent",
+                "flex h-9 min-w-0 flex-1 items-center gap-3 rounded-md px-3 text-sm hover:bg-accent",
                 currentView === "providers" && "font-medium",
               )}
             >
@@ -166,60 +178,56 @@ export const WebSidebar = memo(function WebSidebar({
                 name={APP_DISPLAY_NAME[activeApp]}
                 size={16}
               />
-              <span className={cn("whitespace-nowrap", railHidden && "sr-only")}>
+              <span className={cn("truncate", railHidden && "sr-only")}>
                 供应商
               </span>
-              {!railHidden && (
+            </button>
+            {!railHidden && (
+              <button
+                type="button"
+                aria-label={appsOpen ? "收起应用列表" : "展开应用列表"}
+                aria-expanded={appsOpen}
+                onClick={() => toggleApps(!appsOpen)}
+                className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background/60 hover:text-foreground"
+              >
                 <ChevronRight
                   className={cn(
-                    "ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                    "h-4 w-4 transition-transform",
                     providerGroupOpen && "rotate-90",
                   )}
                 />
-              )}
-            </button>
-            {providerGroupOpen && (
-              <div className="mb-1 ml-4 space-y-0.5 border-l border-border pl-2">
-                {apps.map((app) => (
-                  <button
-                    key={app}
-                    type="button"
-                    onClick={() => selectApp(app)}
-                    aria-current={appActive(app) ? "page" : undefined}
-                    className={cn(
-                      "flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground",
-                      appActive(app) &&
-                        "bg-background font-medium text-foreground shadow-sm",
-                    )}
-                  >
-                    <ProviderIcon
-                      className={appActive(app) ? "" : "grayscale opacity-60"}
-                      icon={APP_ICON_NAME[app]}
-                      name={APP_DISPLAY_NAME[app]}
-                      size={16}
-                    />
-                    <span className="truncate">{APP_DISPLAY_NAME[app]}</span>
-                  </button>
-                ))}
-              </div>
+              </button>
             )}
           </div>
-          {session &&
-            item(
-              "models",
-              "模型与接入",
-              <Layers className="h-4 w-4 shrink-0" />,
-            )}
-          {item("usage", t("nav.usage"), <BarChart2 className="h-4 w-4 shrink-0" />)}
+          {providerGroupOpen && (
+            <div className="ml-4 space-y-0.5 border-l border-border pl-2">
+              {apps.map((app) => (
+                <button
+                  key={app}
+                  type="button"
+                  onClick={() => selectApp(app)}
+                  aria-current={appActive(app) ? "page" : undefined}
+                  className={cn(
+                    "flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground",
+                    appActive(app) &&
+                      "bg-background font-medium text-foreground shadow-sm",
+                  )}
+                >
+                  <ProviderIcon
+                    className={appActive(app) ? "" : "grayscale opacity-60"}
+                    icon={APP_ICON_NAME[app]}
+                    name={APP_DISPLAY_NAME[app]}
+                    size={16}
+                  />
+                  <span className="truncate">{APP_DISPLAY_NAME[app]}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </nav>
         <div className="mt-2 space-y-1 border-t border-border pt-2">
           {session && (
             <>
-              {item(
-                "allocations",
-                "额度分配",
-                <Share2 className="h-4 w-4 shrink-0" />,
-              )}
               {session.me.user.role === "admin" &&
                 item("admin", "用户与额度", <Users className="h-4 w-4 shrink-0" />)}
               {item(
