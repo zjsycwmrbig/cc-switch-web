@@ -1,16 +1,14 @@
 import { useUnitSession } from "./session";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Users } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { unit, type Resource } from "./client";
 export function ResourceCardTools({
   resource,
-  onShare,
 }: {
   resource: Resource;
-  onShare: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const query = useQueryClient();
@@ -58,10 +56,6 @@ export function ResourceCardTools({
     ) : null;
   return (
     <div className="mt-2 flex justify-end gap-1">
-      <Button variant="ghost" size="sm" onClick={onShare}>
-        <Users className="mr-1 h-4 w-4" />
-        分享与额度
-      </Button>
       <Button
         variant="ghost"
         size="sm"

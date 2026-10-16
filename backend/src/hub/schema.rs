@@ -32,6 +32,18 @@ CREATE TABLE IF NOT EXISTS hub_grants (
  allowed INTEGER NOT NULL DEFAULT 1, budget TEXT NOT NULL DEFAULT '{}', models TEXT NOT NULL DEFAULT '[]',
  expires_at INTEGER, PRIMARY KEY(resource_id,user_id)
 );
+CREATE TABLE IF NOT EXISTS hub_share_codes (
+ id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES hub_resources(id),
+ created_by TEXT NOT NULL REFERENCES hub_users(id), token_hash TEXT NOT NULL UNIQUE,
+ budget TEXT NOT NULL DEFAULT '{}', models TEXT NOT NULL DEFAULT '[]', expires_at INTEGER,
+ max_claims INTEGER NOT NULL DEFAULT 1, claimed_count INTEGER NOT NULL DEFAULT 0,
+ active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS hub_share_code_resource ON hub_share_codes(resource_id,created_at);
+CREATE TABLE IF NOT EXISTS hub_share_claims (
+ share_id TEXT NOT NULL REFERENCES hub_share_codes(id), user_id TEXT NOT NULL REFERENCES hub_users(id),
+ claimed_at INTEGER NOT NULL, PRIMARY KEY(share_id,user_id)
+);
 CREATE TABLE IF NOT EXISTS hub_preferences (user_id TEXT PRIMARY KEY REFERENCES hub_users(id), value TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS hub_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hub_account_owners (account_id TEXT NOT NULL, auth_provider TEXT NOT NULL,

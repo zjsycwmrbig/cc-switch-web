@@ -12,8 +12,9 @@ use crate::{
     store::AppState,
 };
 use rusqlite::params;
+use std::collections::HashSet;
 use std::future::IntoFuture;
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use tokio::sync::RwLock;
 
 fn database() -> Arc<Database> {
@@ -81,6 +82,40 @@ fn resource(
     conn(db).unwrap().execute("INSERT INTO hub_resources(id,provider_id,app_type,owner_id,route_key,published,models,official,account_id,created_at) VALUES(?1,?1,'codex',?2,?1,1,?3,?4,?5,?6)",params![key,owner,r#"[{"slug":"test-model","display_name":"Test"}]"#,official,if official{Some(format!("account-{key}"))}else{None},now()]).unwrap();
     resources::get(db, key).unwrap()
 }
+fn share_code(
+    db: &Database,
+    id: &str,
+    resource: &str,
+    owner: &str,
+    token: &str,
+    max_claims: i64,
+    claimed_count: i64,
+    expires_at: Option<i64>,
+    active: bool,
+) {
+    conn(db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_share_codes(
+                id,resource_id,created_by,token_hash,budget,models,expires_at,
+                max_claims,claimed_count,active,created_at
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                id,
+                resource,
+                owner,
+                auth::hash(token),
+                r#"{"requests":5,"tokens":1000}"#,
+                r#"["test-model"]"#,
+                expires_at,
+                max_claims,
+                claimed_count,
+                active,
+                now()
+            ],
+        )
+        .unwrap();
+}
 #[test]
 fn public_private_and_model_specific_grants_are_enforced() {
     let db = database();
@@ -88,7 +123,7 @@ fn public_private_and_model_specific_grants_are_enforced() {
     let alice = identity("alice");
     assert!(resources::usable(&db, &alice, &r, "test-model").is_ok());
     r.policy.visibility = "selected".into();
-    assert!(resources::grant(&db, &alice, &r, None).is_err());
+    assert!(resources::grant(&db, &alice, &r, Some("test-model")).is_err());
     conn(&db).unwrap().execute("INSERT INTO hub_grants(resource_id,user_id,allowed,models,budget) VALUES('test','alice',1,'[\"test-model\"]','{\"requests\":5}')",[]).unwrap();
     assert_eq!(
         resources::grant(&db, &alice, &r, Some("test-model"))
@@ -98,12 +133,268 @@ fn public_private_and_model_specific_grants_are_enforced() {
     );
     assert!(resources::grant(&db, &alice, &r, Some("another")).is_err());
     r.policy.visibility = "private".into();
-    assert!(resources::grant(&db, &alice, &r, None).is_err());
+    assert!(resources::grant(&db, &identity("bob"), &r, None).is_err());
+    assert_eq!(
+        resources::grant(&db, &alice, &r, Some("test-model"))
+            .unwrap()
+            .requests,
+        Some(5)
+    );
     assert!(resources::grant(&db, &identity("admin"), &r, None)
         .unwrap()
         .requests
         .is_none());
 }
+
+#[test]
+fn share_codes_enforce_lifecycle_and_create_explicit_grants() {
+    let db = database();
+    let mut r = resource(&db, "test", "admin", "https://example.com/v1", false);
+    r.policy.visibility = "private".into();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET policy=?1 WHERE id='test'",
+            [json_text(&r.policy)],
+        )
+        .unwrap();
+    share_code(
+        &db,
+        "active",
+        "test",
+        "admin",
+        "ccu_share_token_active",
+        2,
+        0,
+        Some(now() + 60),
+        true,
+    );
+    share_code(
+        &db,
+        "expired",
+        "test",
+        "admin",
+        "ccu_share_token_expired",
+        2,
+        0,
+        Some(now() - 1),
+        true,
+    );
+    share_code(
+        &db,
+        "revoked",
+        "test",
+        "admin",
+        "ccu_share_token_revoked",
+        2,
+        0,
+        None,
+        false,
+    );
+    share_code(
+        &db,
+        "exhausted",
+        "test",
+        "admin",
+        "ccu_share_token_exhausted",
+        1,
+        1,
+        None,
+        true,
+    );
+    let state = app(db.clone());
+    let alice = identity("alice");
+    let claimed =
+        api::claim_share_code(&state, &alice, "ccu_share_token_active").unwrap();
+    assert_eq!(claimed["resourceId"], "test");
+    assert_eq!(claimed["budget"]["requests"], 5);
+    assert!(api::claim_share_code(&state, &alice, "ccu_share_token_active").is_err());
+    assert!(
+        api::claim_share_code(&state, &identity("bob"), "ccu_share_token_expired")
+            .is_err()
+    );
+    assert!(
+        api::claim_share_code(&state, &identity("bob"), "ccu_share_token_revoked")
+            .is_err()
+    );
+    assert!(
+        api::claim_share_code(&state, &identity("bob"), "ccu_share_token_exhausted")
+            .is_err()
+    );
+    assert_eq!(
+        resources::grant(&db, &alice, &r, Some("test-model"))
+            .unwrap()
+            .requests,
+        Some(5)
+    );
+    let (grant_budget, grant_models): (String, String) = conn(&db)
+        .unwrap()
+        .query_row(
+            "SELECT budget,models FROM hub_grants WHERE resource_id='test' AND user_id='alice'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(parse::<Budget>(&grant_budget).tokens, Some(1000));
+    assert_eq!(parse::<Vec<String>>(&grant_models), vec!["test-model"]);
+}
+
+#[test]
+fn concurrent_share_claims_allow_exactly_one_winner() {
+    let db = database();
+    resource(&db, "test", "admin", "https://example.com/v1", false);
+    share_code(
+        &db,
+        "once",
+        "test",
+        "admin",
+        "ccu_share_token_once",
+        1,
+        0,
+        Some(now() + 60),
+        true,
+    );
+    let state = app(db.clone());
+    let start = Arc::new(Barrier::new(3));
+    let workers = ["alice", "bob"]
+        .into_iter()
+        .map(|name| {
+            let state = state.clone();
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                api::claim_share_code(&state, &identity(name), "ccu_share_token_once")
+            })
+        })
+        .collect::<Vec<_>>();
+    start.wait();
+    let results = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let (claimed_count, grants): (i64, i64) = conn(&db)
+        .unwrap()
+        .query_row(
+            "SELECT
+                (SELECT claimed_count FROM hub_share_codes WHERE id='once'),
+                (SELECT COUNT(*) FROM hub_grants WHERE resource_id='test')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((claimed_count, grants), (1, 1));
+}
+
+#[tokio::test]
+async fn profile_overview_only_returns_visible_or_authorized_suppliers() {
+    let db = database();
+    let mine = resource(&db, "mine", "alice", "https://example.com/v1", false);
+    let mine_policy = Policy {
+        shared_budget: Budget {
+            requests: Some(11),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET policy=?1 WHERE id='mine'",
+            [json_text(&mine_policy)],
+        )
+        .unwrap();
+    let shared_bucket = format!("shared:mine:{}", metering::period("month"));
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_buckets(id,used_requests,reserved_requests)
+             VALUES(?1,3,1)",
+            [&shared_bucket],
+        )
+        .unwrap();
+    resource(&db, "public", "admin", "https://example.com/v2", false);
+    let hidden = resource(&db, "hidden", "admin", "https://example.com/v3", false);
+    let selected = resource(&db, "selected", "admin", "https://example.com/v4", false);
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET policy=?1 WHERE id IN ('hidden','selected')",
+            [json_text(&Policy {
+                visibility: "private".into(),
+                ..Default::default()
+            })],
+        )
+        .unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models)
+             VALUES(?1,'alice',1,'{\"requests\":7}','[]')",
+            [&selected.id],
+        )
+        .unwrap();
+    let encoded = auth::password_hash("test-password-123").unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_users SET password_hash=?1 WHERE id='alice'",
+            [encoded],
+        )
+        .unwrap();
+    let state = app(db);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, api::routes(state)).into_future());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let login = client
+        .post(format!("{base}/api/unit/auth/login"))
+        .json(&json!({"username":"alice","password":"test-password-123"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let response = client
+        .get(format!("{base}/api/unit/profile/overview"))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let suppliers = body["suppliers"].as_array().unwrap();
+    let ids = suppliers
+        .iter()
+        .filter_map(|supplier| supplier["id"].as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(ids, HashSet::from(["mine", "public", "selected"]));
+    let mine = suppliers
+        .iter()
+        .find(|supplier| supplier["id"] == mine.id)
+        .unwrap();
+    assert_eq!(mine["owned"], true);
+    assert_eq!(mine["balanceKind"], "sharedPool");
+    assert_eq!(mine["budget"]["requests"], 11);
+    assert_eq!(mine["usage"]["requests"], 3);
+    assert_eq!(mine["usage"]["reservedRequests"], 1);
+    assert_eq!(mine["remaining"]["requests"], 7);
+    let selected = suppliers
+        .iter()
+        .find(|supplier| supplier["id"] == selected.id)
+        .unwrap();
+    assert_eq!(selected["owned"], false);
+    assert_eq!(selected["budget"]["requests"], 7);
+    assert!(!ids.contains(hidden.id.as_str()));
+    task.abort();
+}
+
 #[test]
 fn reservations_serialize_competing_requests_and_settle_once() {
     let db = database();

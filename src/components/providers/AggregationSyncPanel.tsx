@@ -105,14 +105,18 @@ export function AggregationSyncPanel({
           ? "同步你有权使用且已选择的聚合模型。命令使用你的设备密钥，调用记录和额度归属你的账号。"
           : t("aggregationSync.description")}
       </p>
-      {session && (
+      {session && (onPersonalModels || onDevices) && (
         <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={onPersonalModels}>
-            选择我的模型
-          </Button>
-          <Button size="sm" variant="ghost" onClick={onDevices}>
-            管理设备密钥
-          </Button>
+          {onPersonalModels && (
+            <Button size="sm" variant="ghost" onClick={onPersonalModels}>
+              选择我的模型
+            </Button>
+          )}
+          {onDevices && (
+            <Button size="sm" variant="ghost" onClick={onDevices}>
+              管理设备密钥
+            </Button>
+          )}
         </div>
       )}
       {command && (

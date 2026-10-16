@@ -90,9 +90,6 @@ pub fn grant(
     if user.id == r.owner_id {
         return Ok(Budget::default());
     }
-    if r.policy.visibility == "private" || (user.role == "legacy" && r.owner_id != "admin") {
-        return Err(Error::forbidden());
-    }
     let override_rule:Option<(bool,String,String,Option<i64>)>=conn(db)?.query_row("SELECT allowed,budget,models,expires_at FROM hub_grants WHERE resource_id=?1 AND user_id=?2",params![r.id,user.id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
     let budget = match override_rule {
         Some((true, budget, models, expires)) if expires.is_none_or(|t| t > now()) => {
@@ -105,6 +102,11 @@ pub fn grant(
             parse(&budget)
         }
         Some(_) => return Err(Error::forbidden()),
+        None if r.policy.visibility == "private"
+            || (user.role == "legacy" && r.owner_id != "admin") =>
+        {
+            return Err(Error::forbidden())
+        }
         None if r.policy.visibility == "public" => r.policy.default_budget.clone(),
         _ => return Err(Error::forbidden()),
     };

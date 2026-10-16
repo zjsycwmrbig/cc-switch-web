@@ -182,6 +182,26 @@ export function RequestLogTable({
           <div className="relative min-w-[140px] flex-1">
             <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
+              placeholder={t("usage.searchUserPlaceholder", {
+                defaultValue: "Search user...",
+              })}
+              className="h-8 bg-background pl-7 text-xs"
+              value={draftFilters.username || ""}
+              onChange={(e) =>
+                setDraftFilters({
+                  ...draftFilters,
+                  username: e.target.value || undefined,
+                })
+              }
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSearch();
+              }}
+            />
+          </div>
+
+          <div className="relative min-w-[140px] flex-1">
+            <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
               placeholder={t("usage.searchProviderPlaceholder")}
               className="h-8 bg-background pl-7 text-xs"
               value={draftFilters.providerName || ""}
@@ -255,6 +275,9 @@ export function RequestLogTable({
                     {t("usage.time")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
+                    {t("usage.user", { defaultValue: "User" })}
+                  </TableHead>
+                  <TableHead className="text-center whitespace-nowrap">
                     {t("usage.provider")}
                   </TableHead>
                   <TableHead className="text-center whitespace-nowrap">
@@ -284,7 +307,7 @@ export function RequestLogTable({
                 {logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="text-center text-muted-foreground"
                     >
                       {t("usage.noData")}
@@ -311,6 +334,22 @@ export function RequestLogTable({
                           )}
                         </button>
                       </TableCell>
+                      <TableCell className="w-[12%] max-w-0 text-center">
+                        <span
+                          className="block truncate font-medium"
+                          title={log.username || "-"}
+                        >
+                          {log.username || "-"}
+                        </span>
+                        {log.device && (
+                          <span
+                            className="block truncate text-xs text-muted-foreground"
+                            title={log.device}
+                          >
+                            {log.device}
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell className="w-[18%] max-w-0 text-center">
                         <span
                           className="block truncate"
@@ -318,14 +357,6 @@ export function RequestLogTable({
                         >
                           {log.providerName || t("usage.unknownProvider")}
                         </span>
-                        {log.username && (
-                          <span
-                            className="block truncate text-xs text-muted-foreground"
-                            title={`${log.username} · ${log.device || "未命名设备"}`}
-                          >
-                            {log.username} · {log.device || "未命名设备"}
-                          </span>
-                        )}
                       </TableCell>
                       <TableCell className="w-[22%] max-w-0 text-center font-mono text-xs">
                         <div

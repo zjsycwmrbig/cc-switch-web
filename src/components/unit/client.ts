@@ -37,6 +37,14 @@ export interface Budget {
   tokens?: number | null;
   credits?: number | null;
 }
+export interface Usage {
+  requests?: number;
+  tokens?: number;
+  credits?: number;
+  reservedRequests?: number;
+  reservedTokens?: number;
+  reservedCredits?: number;
+}
 export interface Policy {
   visibility: string;
   period: string;
@@ -141,6 +149,45 @@ export interface RequestRow {
   output_tokens: number;
   cost_credits?: number;
   error_code?: string;
+}
+export interface ShareCode {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  budget: Budget;
+  models: string[];
+  expiresAt?: number | null;
+  maxClaims: number;
+  claimedCount: number;
+  active: boolean;
+  createdAt: number;
+  token?: string;
+  url?: string;
+}
+export interface SupplierUsage {
+  id: string;
+  name: string;
+  appType: string;
+  ownerId: string;
+  ownerName: string;
+  owned: boolean;
+  period: string;
+  periodKey: string;
+  budget: Budget;
+  usage: Usage;
+  remaining: Budget;
+  balanceKind: "sharedPool" | "personalGrant";
+  sharedBudget: Budget;
+  sharedUsage: Usage;
+}
+export interface ProfileOverview {
+  usage: {
+    budget: Budget;
+    period: string;
+    periodKey: string;
+    usage: Usage;
+  };
+  suppliers: SupplierUsage[];
 }
 export interface UserRow {
   id: string;

@@ -41,7 +41,6 @@ import { settingsApi } from "@/lib/api/settings";
 import { invalidatePiProviderCaches } from "@/lib/query/pi";
 
 interface ProviderListProps {
-  onShare?: (provider: Provider) => void;
   modeView?: AppModeView;
   modePending?: boolean;
   onAggregationMember?: (id: string, enabled: boolean) => void;
@@ -68,7 +67,6 @@ interface ProviderListProps {
 }
 
 export function ProviderList({
-  onShare,
   modeView,
   modePending,
   onAggregationMember,
@@ -402,9 +400,9 @@ export function ProviderList({
     );
   }
 
-  const renderProviderList = () => (
+  const renderProviderCards = (list: Provider[]) => (
     <div className="space-y-4">
-      {filteredProviders.map((provider) => {
+      {list.map((provider) => {
         const isOmo = provider.category === "omo";
         const isOmoSlim = provider.category === "omo-slim";
         const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
@@ -429,7 +427,6 @@ export function ProviderList({
             isInConfig={isProviderInConfig(provider.id)}
             isOmo={isOmo}
             isOmoSlim={isOmoSlim}
-            onShare={onShare}
             onSwitch={onSwitch}
             onEdit={onEdit}
             onDelete={onDelete}
@@ -493,6 +490,57 @@ export function ProviderList({
       })}
     </div>
   );
+
+  const renderProviderList = () => {
+    if (!session) return renderProviderCards(filteredProviders);
+    const owned = filteredProviders.filter(
+      (provider) => !provider.unitResource || provider.unitResource.owned,
+    );
+    const shared = filteredProviders.filter(
+      (provider) => provider.unitResource && !provider.unitResource.owned,
+    );
+    const section = (
+      title: string,
+      description: string,
+      list: Provider[],
+      key: string,
+    ) => (
+      <section key={key} className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">{title}</h3>
+            <p className="text-xs text-muted-foreground">{description}</p>
+          </div>
+          <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-xs font-medium">
+            {list.length}
+          </span>
+        </div>
+        {list.length ? (
+          renderProviderCards(list)
+        ) : (
+          <div className="rounded-xl border border-dashed border-border-default px-4 py-6 text-sm text-muted-foreground">
+            {key === "owned" ? "还没有自己的供应商。" : "暂时没有共享给你的供应商。"}
+          </div>
+        )}
+      </section>
+    );
+    return (
+      <div className="space-y-7">
+        {section(
+          "我的供应商",
+          "由你创建、发布和维护，只有你能修改配置。",
+          owned,
+          "owned",
+        )}
+        {section(
+          "共享给我的供应商",
+          "由其他用户提供，按授权额度使用，配置为只读。",
+          shared,
+          "shared",
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="mt-4 space-y-4">

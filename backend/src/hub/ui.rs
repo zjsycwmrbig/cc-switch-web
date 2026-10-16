@@ -178,6 +178,7 @@ struct UsageFilter {
     start_date: Option<i64>,
     end_date: Option<i64>,
     app_type: Option<String>,
+    username: Option<String>,
     provider_name: Option<String>,
     model: Option<String>,
     status_code: Option<i64>,
@@ -214,6 +215,16 @@ fn filtered(user: &Identity, q: &UsageFilter) -> Result<(String, Vec<rusqlite::t
     if let Some(status) = q.status_code {
         sql.push_str(" AND r.status=?");
         args.push(status.into());
+    }
+    if let Some(username) = q
+        .username
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        sql.push_str(
+            " AND r.user_id IN (SELECT id FROM hub_users WHERE LOWER(username) LIKE LOWER(?))",
+        );
+        args.push(format!("%{}%", username.trim()).into());
     }
     Ok((sql, args))
 }

@@ -1,59 +1,38 @@
 import { useUnitSession } from "@/components/unit/session";
-import { SkillsIcon } from "@/components/BrandIcons";
 import { memo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   BarChart2,
-  Book,
-  History,
   KeyRound,
-  LayoutGrid,
   Menu,
   Network,
   PanelLeftClose,
-  Settings,
+  Share2,
   UserRound,
   Users,
   Layers,
   LogOut,
-  Laptop,
   ClipboardList,
 } from "lucide-react";
-import type { AppId } from "@/lib/api";
-import type { VisibleApps } from "@/types";
-import { APP_IDS } from "@/config/appConfig";
-import { APP_DISPLAY_NAME, AppGlyph } from "./AppGlyph";
 import { cn } from "@/lib/utils";
 
 export type GlobalView =
   | "models"
-  | "keys"
+  | "allocations"
   | "profile"
   | "admin"
   | "ledger"
   | "providers"
-  | "mcp"
-  | "skills"
-  | "prompts"
   | "universal"
-  | "sessions"
   | "usage"
-  | "accounts"
-  | "apps"
-  | "settings";
+  | "accounts";
 
 /** Expansion is local to the sidebar. The page keeps a fixed rail, so toggling never reflows the reader/editor. */
 export const WebSidebar = memo(function WebSidebar({
-  activeApp,
   currentView,
-  visibleApps,
-  onApp,
   onView,
 }: {
-  activeApp: AppId;
   currentView: string;
-  visibleApps: VisibleApps;
-  onApp: (app: AppId) => void;
   onView: (view: GlobalView) => void;
 }) {
   const { t } = useTranslation();
@@ -141,40 +120,16 @@ export const WebSidebar = memo(function WebSidebar({
           </span>
         </button>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-hidden">
-          {session && (
-            <>
-              {item(
-                "models",
-                "模型与接入",
-                <Layers className="h-4 w-4 shrink-0" />,
-              )}
-              {item(
-                "keys",
-                "设备与密钥",
-                <Laptop className="h-4 w-4 shrink-0" />,
-              )}
-            </>
-          )}
-          {item("mcp", "MCP", <Network className="h-4 w-4 shrink-0" />)}
-          {item(
-            "skills",
-            "Skills",
-            <SkillsIcon className="h-4 w-4 shrink-0" />,
-          )}
-          {item(
-            "prompts",
-            t("nav.prompts"),
-            <Book className="h-4 w-4 shrink-0" />,
-          )}
+          {session &&
+            item(
+              "models",
+              "模型与接入",
+              <Layers className="h-4 w-4 shrink-0" />,
+            )}
           {item(
             "universal",
             t("universalProvider.title"),
             <Network className="h-4 w-4 shrink-0" />,
-          )}
-          {item(
-            "sessions",
-            t("nav.sessions"),
-            <History className="h-4 w-4 shrink-0" />,
           )}
           {item(
             "usage",
@@ -186,47 +141,15 @@ export const WebSidebar = memo(function WebSidebar({
             t("settings.authCenter.title"),
             <KeyRound className="h-4 w-4 shrink-0" />,
           )}
-          <div className="my-2 border-t border-border" />
-          {APP_IDS.filter((app) => visibleApps[app]).map((app) => (
-            <button
-              key={app}
-              type="button"
-              aria-label={APP_DISPLAY_NAME[app]}
-              title={!expanded ? APP_DISPLAY_NAME[app] : undefined}
-              aria-current={
-                activeApp === app && currentView === "providers"
-                  ? "page"
-                  : undefined
-              }
-              onClick={() => {
-                onApp(app);
-                setMobileOpen(false);
-              }}
-              className={cn(
-                "flex h-9 w-full items-center gap-3 rounded-md px-3 text-sm hover:bg-accent",
-                activeApp === app &&
-                  currentView === "providers" &&
-                  "bg-accent font-medium",
-              )}
-            >
-              <AppGlyph
-                app={app}
-                className={activeApp !== app ? "grayscale opacity-60" : ""}
-              />
-              <span
-                className={cn(
-                  "whitespace-nowrap",
-                  !expanded && !mobileOpen && "sr-only",
-                )}
-              >
-                {APP_DISPLAY_NAME[app]}
-              </span>
-            </button>
-          ))}
         </nav>
         <div className="mt-2 space-y-1 border-t border-border pt-2">
           {session && (
             <>
+              {item(
+                "allocations",
+                "额度分配",
+                <Share2 className="h-4 w-4 shrink-0" />,
+              )}
               {item(
                 "ledger",
                 "配额与账本",
@@ -255,16 +178,6 @@ export const WebSidebar = memo(function WebSidebar({
                 </span>
               </button>
             </>
-          )}
-          {item(
-            "apps",
-            t("nav.apps"),
-            <LayoutGrid className="h-4 w-4 shrink-0" />,
-          )}
-          {item(
-            "settings",
-            t("settings.title"),
-            <Settings className="h-4 w-4 shrink-0" />,
           )}
         </div>
       </aside>

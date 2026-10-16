@@ -44,6 +44,21 @@ pub fn routes(app: Arc<AppState>) -> Router {
             get(grants).put(save_grant),
         )
         .route(
+            "/api/unit/resources/:id/grants/:user",
+            axum::routing::delete(delete_grant),
+        )
+        .route("/api/unit/share-codes", get(share_codes))
+        .route(
+            "/api/unit/resources/:id/share-codes",
+            post(create_share_code),
+        )
+        .route(
+            "/api/unit/share-codes/:id",
+            axum::routing::delete(revoke_share_code),
+        )
+        .route("/api/unit/share-claims", post(claim_share))
+        .route("/api/unit/profile/overview", get(profile_overview))
+        .route(
             "/api/unit/resources/:id/models/refresh",
             post(refresh_models),
         )
@@ -623,6 +638,392 @@ async fn save_grant(
     audit(&app.db, &user.id, "grant.save", &resource, json!(v))?;
     Ok(Json(json!({"ok":true})))
 }
+async fn delete_grant(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path((resource, target)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    let r = resources::get(&app.db, &resource)?;
+    resources::own(&user, &r)?;
+    let changed = conn(&app.db)?.execute(
+        "DELETE FROM hub_grants WHERE resource_id=?1 AND user_id=?2",
+        params![resource, target],
+    )?;
+    if changed == 0 {
+        return Err(Error::bad("该用户没有单独分配"));
+    }
+    audit(
+        &app.db,
+        &user.id,
+        "grant.delete",
+        &resource,
+        json!({"userId":target}),
+    )?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ShareCodeInput {
+    #[serde(default)]
+    budget: Budget,
+    #[serde(default)]
+    models: Vec<String>,
+    expires_at: Option<i64>,
+    #[serde(default = "default_max_claims")]
+    max_claims: i64,
+}
+
+fn default_max_claims() -> i64 {
+    1
+}
+
+fn share_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({
+        "id": row.get::<_, String>(0)?,
+        "resourceId": row.get::<_, String>(1)?,
+        "resourceName": row.get::<_, String>(2)?,
+        "budget": parse::<Budget>(&row.get::<_, String>(3)?),
+        "models": parse::<Vec<String>>(&row.get::<_, String>(4)?),
+        "expiresAt": row.get::<_, Option<i64>>(5)?,
+        "maxClaims": row.get::<_, i64>(6)?,
+        "claimedCount": row.get::<_, i64>(7)?,
+        "active": row.get::<_, bool>(8)?,
+        "createdAt": row.get::<_, i64>(9)?,
+    }))
+}
+
+async fn share_codes(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+) -> Result<Json<Value>> {
+    let c = conn(&app.db)?;
+    let mut statement = c.prepare(
+        "SELECT s.id,s.resource_id,p.name,s.budget,s.models,s.expires_at,s.max_claims,s.claimed_count,s.active,s.created_at
+         FROM hub_share_codes s
+         JOIN hub_resources r ON r.id=s.resource_id
+         JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
+         WHERE s.created_by=?1
+         ORDER BY s.created_at DESC,s.id DESC",
+    )?;
+    let rows = statement
+        .query_map([&user.id], share_view)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Json(json!(rows)))
+}
+
+async fn create_share_code(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(resource): Path<String>,
+    Json(v): Json<ShareCodeInput>,
+) -> Result<Json<Value>> {
+    v.budget.validate()?;
+    if !(1..=1_000_000).contains(&v.max_claims) {
+        return Err(Error::bad("可领取次数须为 1—1000000"));
+    }
+    if v.expires_at.is_some_and(|expires| expires <= now()) {
+        return Err(Error::bad("分享口令的到期时间必须晚于当前时间"));
+    }
+    if v.models.len() > 500 || v.models.iter().any(|model| model.len() > 200) {
+        return Err(Error::bad("允许的模型列表过长"));
+    }
+    let r = resources::get(&app.db, &resource)?;
+    resources::own(&user, &r)?;
+    if !r.published || r.disabled {
+        return Err(Error::bad("请先发布并启用供应商，再创建分享口令"));
+    }
+    let available = r
+        .models
+        .iter()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    if v.models
+        .iter()
+        .any(|model| !available.contains(model.as_str()))
+    {
+        return Err(Error::bad("分享口令包含该供应商未发布的模型"));
+    }
+
+    let token = auth::secret();
+    let share_id = id();
+    let created_at = now();
+    conn(&app.db)?.execute(
+        "INSERT INTO hub_share_codes(id,resource_id,created_by,token_hash,budget,models,expires_at,max_claims,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![
+            share_id,
+            r.id,
+            user.id,
+            auth::hash(&token),
+            json_text(&v.budget),
+            json_text(&v.models),
+            v.expires_at,
+            v.max_claims,
+            created_at
+        ],
+    )?;
+    audit(
+        &app.db,
+        &user.id,
+        "share.create",
+        &share_id,
+        json!({"resourceId":r.id,"maxClaims":v.max_claims,"expiresAt":v.expires_at}),
+    )?;
+    Ok(Json(json!({
+        "id": share_id,
+        "resourceId": r.id,
+        "resourceName": r.name,
+        "token": token,
+        "url": format!("{}/?claim={}", public_url(&app.db), token),
+        "budget": v.budget,
+        "models": v.models,
+        "expiresAt": v.expires_at,
+        "maxClaims": v.max_claims,
+        "claimedCount": 0,
+        "active": true,
+        "createdAt": created_at,
+    })))
+}
+
+async fn revoke_share_code(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(share): Path<String>,
+) -> Result<Json<Value>> {
+    let changed = conn(&app.db)?.execute(
+        "UPDATE hub_share_codes SET active=0 WHERE id=?1 AND created_by=?2",
+        params![share, user.id],
+    )?;
+    if changed == 0 {
+        return Err(Error::forbidden());
+    }
+    audit(
+        &app.db,
+        &user.id,
+        "share.revoke",
+        &share,
+        json!({}),
+    )?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimShare {
+    token: String,
+}
+
+async fn claim_share(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Json(v): Json<ClaimShare>,
+) -> Result<Json<Value>> {
+    Ok(Json(claim_share_code(&app, &user, &v.token)?))
+}
+
+pub(super) fn claim_share_code(
+    app: &AppState,
+    user: &Identity,
+    token: &str,
+) -> Result<Value> {
+    let token = token.trim();
+    if !(16..=256).contains(&token.len()) {
+        return Err(Error::bad("分享口令无效或已失效"));
+    }
+    let mut c = conn(&app.db)?;
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let row: Option<(String, String, String, String, String, Option<i64>, i64, i64, bool)> = tx
+        .query_row(
+            "SELECT s.id,s.resource_id,p.name,s.budget,s.models,s.expires_at,s.max_claims,s.claimed_count,s.active
+             FROM hub_share_codes s
+             JOIN hub_resources r ON r.id=s.resource_id AND r.deleted=0
+             JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
+             WHERE s.token_hash=?1",
+            [auth::hash(token)],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (share_id, resource_id, resource_name, budget, models, expires_at, max_claims, claimed, active) =
+        row.ok_or_else(|| Error::bad("分享口令无效或已失效"))?;
+    if !active
+        || expires_at.is_some_and(|expires| expires <= now())
+        || claimed >= max_claims
+    {
+        return Err(Error::bad("分享口令已失效或已被领完"));
+    }
+    let (owner_id, published, disabled): (String, bool, bool) = tx.query_row(
+        "SELECT owner_id,published,disabled FROM hub_resources WHERE id=?1 AND deleted=0",
+        [&resource_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if owner_id == user.id {
+        return Err(Error::bad("不能领取自己创建的分享口令"));
+    }
+    if !published || disabled {
+        return Err(Error::bad("该供应商暂时不可领取"));
+    }
+    let already_claimed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM hub_share_claims WHERE share_id=?1 AND user_id=?2)",
+        params![share_id, user.id],
+        |row| row.get(0),
+    )?;
+    if already_claimed {
+        return Err(Error::bad("你已经领取过该分享口令"));
+    }
+    let changed = tx.execute(
+        "UPDATE hub_share_codes
+         SET claimed_count=claimed_count+1
+         WHERE id=?1 AND active=1 AND claimed_count<max_claims
+           AND (expires_at IS NULL OR expires_at>?2)",
+        params![share_id, now()],
+    )?;
+    if changed != 1 {
+        return Err(Error::bad("分享口令已失效或已被领完"));
+    }
+    tx.execute(
+        "INSERT INTO hub_share_claims(share_id,user_id,claimed_at) VALUES(?1,?2,?3)",
+        params![share_id, user.id, now()],
+    )?;
+    tx.execute(
+        "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models,expires_at)
+         VALUES(?1,?2,1,?3,?4,?5)
+         ON CONFLICT(resource_id,user_id) DO UPDATE
+         SET allowed=1,budget=?3,models=?4,expires_at=?5",
+        params![resource_id, user.id, budget, models, expires_at],
+    )?;
+    tx.commit()?;
+    drop(c);
+    audit(
+        &app.db,
+        &user.id,
+        "share.claim",
+        &share_id,
+        json!({"resourceId":resource_id}),
+    )?;
+    Ok(json!({
+        "resourceId": resource_id,
+        "resourceName": resource_name,
+        "budget": parse::<Budget>(&budget),
+        "models": parse::<Vec<String>>(&models),
+        "expiresAt": expires_at,
+    }))
+}
+
+fn bucket_usage(db: &crate::database::Database, bucket: &str) -> Result<Value> {
+    let c = conn(db)?;
+    let usage = c
+        .query_row(
+            "SELECT used_requests,used_tokens,used_credits,reserved_requests,reserved_tokens,reserved_credits
+             FROM hub_buckets WHERE id=?1",
+            [bucket],
+            |row| {
+                Ok(json!({
+                    "requests": row.get::<_, i64>(0)?,
+                    "tokens": row.get::<_, i64>(1)?,
+                    "credits": row.get::<_, i64>(2)?,
+                    "reservedRequests": row.get::<_, i64>(3)?,
+                    "reservedTokens": row.get::<_, i64>(4)?,
+                    "reservedCredits": row.get::<_, i64>(5)?,
+                }))
+            },
+        )
+        .optional()?
+        .unwrap_or_else(|| {
+            json!({
+                "requests": 0,
+                "tokens": 0,
+                "credits": 0,
+                "reservedRequests": 0,
+                "reservedTokens": 0,
+                "reservedCredits": 0,
+            })
+        });
+    Ok(usage)
+}
+
+fn remaining_budget(budget: &Budget, usage: &Value) -> Value {
+    let remaining = |limit: Option<i64>, used: &str, reserved: &str| {
+        limit.map(|limit| {
+            (limit
+                - usage.get(used).and_then(Value::as_i64).unwrap_or(0)
+                - usage.get(reserved).and_then(Value::as_i64).unwrap_or(0))
+            .max(0)
+        })
+    };
+    json!({
+        "requests": remaining(budget.requests, "requests", "reservedRequests"),
+        "tokens": remaining(budget.tokens, "tokens", "reservedTokens"),
+        "credits": remaining(budget.credits, "credits", "reservedCredits"),
+    })
+}
+
+async fn profile_overview(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+) -> Result<Json<Value>> {
+    let usage = metering::remaining(&app.db, &user)?;
+    let mut suppliers = Vec::new();
+    for r in resources::all(&app.db)? {
+        let owned = r.owner_id == user.id;
+        let period_key = metering::period(&r.policy.period);
+        let grant_usage = bucket_usage(
+            &app.db,
+            &format!("grant:{}:{}:{}", r.id, user.id, period_key),
+        )?;
+        let shared_usage =
+            bucket_usage(&app.db, &format!("shared:{}:{}", r.id, period_key))?;
+        let (budget, supplier_usage, balance_kind) = if owned {
+            (
+                r.policy.shared_budget.clone(),
+                shared_usage.clone(),
+                "sharedPool",
+            )
+        } else {
+            let budget = match resources::grant(&app.db, &user, &r, None) {
+                Ok(budget) => budget,
+                Err(_) => continue,
+            };
+            (budget, grant_usage, "personalGrant")
+        };
+        suppliers.push(json!({
+            "id": r.id,
+            "name": r.name,
+            "appType": r.app_type,
+            "ownerId": r.owner_id,
+            "ownerName": r.owner_name,
+            "owned": owned,
+            "period": r.policy.period,
+            "periodKey": period_key,
+            "budget": budget,
+            "usage": supplier_usage,
+            "remaining": remaining_budget(&budget, &supplier_usage),
+            "balanceKind": balance_kind,
+            "sharedBudget": r.policy.shared_budget,
+            "sharedUsage": shared_usage,
+        }));
+    }
+    suppliers.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["name"].as_str().unwrap_or_default())
+    });
+    Ok(Json(json!({"usage":usage,"suppliers":suppliers})))
+}
+
 async fn refresh_models(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,

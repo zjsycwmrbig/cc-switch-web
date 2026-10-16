@@ -28,7 +28,6 @@ import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 
 interface ProviderCardProps {
-  onShare?: (provider: Provider) => void;
   aggregation?: AggregationActions;
   deleteDisabled?: boolean;
   provider: Provider;
@@ -121,7 +120,6 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
 }
 
 export function ProviderCard({
-  onShare,
   aggregation,
   deleteDisabled,
   provider,
@@ -340,9 +338,11 @@ export function ProviderCard({
 
               {provider.unitResource && (
                 <span className="text-xs font-normal text-muted-foreground">
-                  提供者 {provider.unitResource.ownerName} ·{" "}
-                  {provider.unitResource.models.length} 个模型
-                  {sharedReadOnly ? " · 只读" : " · 我的供应商"}
+                  {sharedReadOnly
+                    ? `共享自 ${provider.unitResource.ownerName}`
+                    : "我的供应商"}{" "}
+                  · {provider.unitResource.models.length} 个模型
+                  {sharedReadOnly ? " · 只读" : ""}
                 </span>
               )}
               {isOmo && (
@@ -556,10 +556,7 @@ export function ProviderCard({
               onSetAsDefault={onSetAsDefault}
             />
             {provider.unitResource && (
-              <ResourceCardTools
-                resource={provider.unitResource}
-                onShare={() => onShare?.(provider)}
-              />
+              <ResourceCardTools resource={provider.unitResource} />
             )}
           </div>
         </div>
