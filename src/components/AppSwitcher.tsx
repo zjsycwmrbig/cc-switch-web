@@ -1,5 +1,6 @@
 import type { AppId } from "@/lib/api";
 import type { VisibleApps } from "@/types";
+import { APP_DISPLAY_NAME, APP_ICON_NAME, visibleAppList } from "@/config/appMeta";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 import { ChevronDown, MoreHorizontal } from "lucide-react";
@@ -24,18 +25,6 @@ interface AppSwitcherProps {
   visibleApps?: VisibleApps;
 }
 
-const ALL_APPS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-  "gemini",
-  "grokbuild",
-  "opencode",
-  "openclaw",
-  "hermes",
-  "pi",
-  "mcode",
-];
 const STORAGE_KEY = "cc-switch-last-app";
 
 export function AppSwitcher({
@@ -52,36 +41,9 @@ export function AppSwitcher({
     onSwitch(app);
   };
   const iconSize = 20;
-  const appIconName: Record<AppId, string> = {
-    claude: "claude",
-    "claude-desktop": "claude",
-    codex: "openai",
-    gemini: "gemini",
-    grokbuild: "grok",
-    opencode: "opencode",
-    openclaw: "openclaw",
-    hermes: "hermes",
-    pi: "pi",
-    mcode: "minimax",
-  };
-  const appDisplayName: Record<AppId, string> = {
-    claude: "Claude",
-    "claude-desktop": "Claude Desktop",
-    codex: "Codex",
-    gemini: "Gemini",
-    grokbuild: "Grok Build",
-    opencode: "OpenCode",
-    openclaw: "OpenClaw",
-    hermes: "Hermes",
-    pi: "Pi",
-    mcode: "MiniMax Code",
-  };
-
-  // Filter apps based on visibility settings (default all visible)
-  const appsToShow = ALL_APPS.filter((app) => {
-    if (!visibleApps) return true;
-    return visibleApps[app];
-  });
+  const appIconName = APP_ICON_NAME;
+  const appDisplayName = APP_DISPLAY_NAME;
+  const appsToShow = visibleAppList(visibleApps);
   const [visibleCount, setVisibleCount] = useState(appsToShow.length);
 
   useLayoutEffect(() => {

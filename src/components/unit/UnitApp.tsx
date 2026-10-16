@@ -327,7 +327,7 @@ export default function UnitApp() {
 export function UnitPanel({
   page,
 }: {
-  page: "models" | "allocations" | "profile" | "admin" | "ledger";
+  page: "models" | "allocations" | "profile" | "admin";
 }) {
   const session = useUnitSession();
   const [generation, setGeneration] = useState(0);
@@ -338,7 +338,7 @@ export function UnitPanel({
     void session.refresh();
   };
   return (
-    <div className="unit-content mx-auto w-full max-w-6xl px-6 py-4">
+    <div className="unit-content w-full px-3 py-4 md:px-6">
       {page === "models" && <Models me={me} generation={generation} />}
       {page === "allocations" && <Allocations generation={generation} />}
       {page === "profile" && (
@@ -350,9 +350,6 @@ export function UnitPanel({
       )}
       {page === "admin" && me.user.role === "admin" && (
         <Admin generation={generation} refresh={refresh} />
-      )}
-      {page === "ledger" && (
-        <Usage me={me} generation={generation} refresh={refresh} />
       )}
     </div>
   );
@@ -502,13 +499,10 @@ function Models({ me, generation }: { me: Me; generation: number }) {
   );
   return (
     <>
-      <div className="u-page-title">
-        <div>
-          <h1>模型与接入</h1>
-          <p>
-            选择可用模型，创建设备密钥，并获取聚合模型同步命令。官方共享账号池会在可用账号间调度。
-          </p>
-        </div>
+      <div className="u-page-lead">
+        <p>
+          选择可用模型，创建设备密钥，并获取聚合模型同步命令。官方共享账号池会在可用账号间调度。
+        </p>
         <button
           className="u-button"
           disabled={saving || busy}
@@ -876,13 +870,10 @@ function Allocations({ generation }: { generation: number }) {
 
   return (
     <>
-      <div className="u-page-title">
-        <div>
-          <h1>额度分配</h1>
-          <p>
-            在这里集中管理自己的供应商。指定用户模式适合长期协作，分享口令模式适合先到先得地发放额度。
-          </p>
-        </div>
+      <div className="u-page-lead">
+        <p>
+          在这里集中管理自己的供应商。指定用户模式适合长期协作，分享口令模式适合先到先得地发放额度。
+        </p>
       </div>
       {busy ? (
         <Empty>
@@ -1546,7 +1537,8 @@ function Keys({ generation }: { generation: number }) {
     </section>
   );
 }
-function Usage({
+/** 网关账本视图：导航已下线，保留组件以便后续按需恢复。 */
+export function Usage({
   me,
   generation,
   refresh,
@@ -1965,13 +1957,10 @@ function Profile({
 
   return (
     <>
-      <div className="u-page-title">
-        <div>
-          <h1>个人用量 · {me.user.username}</h1>
-          <p>
-            汇总你的个人平台额度，以及每个自有和共享供应商的剩余余额。
-          </p>
-        </div>
+      <div className="u-page-lead">
+        <p>
+          汇总你的个人平台额度，以及每个自有和共享供应商的剩余余额。
+        </p>
         <span className="u-tag">
           {me.user.role === "admin" ? "管理员" : "普通用户"} ·{" "}
           {overview?.usage.periodKey || me.quota.periodKey} UTC
@@ -2122,13 +2111,10 @@ function Admin({
   }, [load, generation]);
   return (
     <>
-      <div className="u-page-title">
-        <div>
-          <h1>平台管理</h1>
-          <p>
-            管理用户额度、注册和公开接入地址。资源提供者仍自行管理入池和分配。
-          </p>
-        </div>
+      <div className="u-page-lead">
+        <p>
+          管理用户额度、注册和公开接入地址。资源提供者仍自行管理入池和分配。
+        </p>
         <span className="text-xs text-muted-foreground">
           监听与出站代理由服务端部署配置管理。
         </span>

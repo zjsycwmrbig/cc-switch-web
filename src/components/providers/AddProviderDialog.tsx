@@ -4,19 +4,14 @@ import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
-import type { Provider, CustomEndpoint, UniversalProvider } from "@/types";
+import type { Provider, CustomEndpoint } from "@/types";
 import type { AppId } from "@/lib/api";
-import { universalProvidersApi } from "@/lib/api";
 import {
   ProviderForm,
   type ProviderFormValues,
 } from "@/components/providers/forms/ProviderForm";
-import { UniversalProviderFormModal } from "@/components/universal/UniversalProviderFormModal";
-import { UniversalProviderPanel } from "@/components/universal";
 import { providerPresets } from "@/config/claudeProviderPresets";
 import { codexProviderPresets } from "@/config/codexProviderPresets";
 import { geminiProviderPresets } from "@/config/geminiProviderPresets";
@@ -25,7 +20,6 @@ import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
 import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
-import type { UniversalProviderPreset } from "@/config/universalProviderPresets";
 
 interface AddProviderDialogProps {
   open: boolean;
@@ -73,52 +67,7 @@ export function AddProviderDialog({
       appId !== "gemini" &&
       appId !== "grokbuild") ||
     !!providerEditor.view;
-  // 累加模式应用和 Grok Build 不支持统一供应商投影。
-  const showUniversalTab =
-    appId !== "opencode" &&
-    appId !== "openclaw" &&
-    appId !== "hermes" &&
-    appId !== "mcode" &&
-    appId !== "grokbuild";
-  const [activeTab, setActiveTab] = useState<"app-specific" | "universal">(
-    "app-specific",
-  );
-  const [universalFormOpen, setUniversalFormOpen] = useState(false);
-  const [selectedUniversalPreset, setSelectedUniversalPreset] =
-    useState<UniversalProviderPreset | null>(null);
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
-
-  const handleUniversalProviderSave = useCallback(
-    async (provider: UniversalProvider) => {
-      try {
-        await universalProvidersApi.upsert(provider);
-        toast.success(
-          t("universalProvider.addSuccess", {
-            defaultValue: "统一供应商添加成功",
-          }),
-        );
-        setUniversalFormOpen(false);
-        setSelectedUniversalPreset(null);
-        onOpenChange(false);
-      } catch (error) {
-        console.error(
-          "[AddProviderDialog] Failed to save universal provider",
-          error,
-        );
-        toast.error(
-          t("universalProvider.addFailed", {
-            defaultValue: "统一供应商添加失败",
-          }),
-        );
-      }
-    },
-    [t, onOpenChange],
-  );
-
-  const handleUniversalFormClose = useCallback(() => {
-    setUniversalFormOpen(false);
-    setSelectedUniversalPreset(null);
-  }, []);
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
@@ -331,47 +280,29 @@ export function AddProviderDialog({
     [appId, onSubmit, onOpenChange, providerEditor.view, editorConflict.run],
   );
 
-  const footer =
-    !showUniversalTab || activeTab === "app-specific" ? (
-      <>
-        <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">
-          {t("provider.addFooterHint")}
-        </span>
-        <Button
-          variant="outline"
-          onClick={() => onOpenChange(false)}
-          className="border-border/20 hover:bg-accent hover:text-accent-foreground"
-        >
-          {t("common.cancel")}
-        </Button>
-        <Button
-          type="submit"
-          form="provider-form"
-          disabled={isFormSubmitting || !editorReady}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          {t("common.add")}
-        </Button>
-      </>
-    ) : (
-      <>
-        <Button
-          variant="outline"
-          onClick={() => onOpenChange(false)}
-          className="border-border/20 hover:bg-accent hover:text-accent-foreground"
-        >
-          {t("common.cancel")}
-        </Button>
-        <Button
-          onClick={() => setUniversalFormOpen(true)}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          {t("universalProvider.add")}
-        </Button>
-      </>
-    );
+  const footer = (
+    <>
+      <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">
+        {t("provider.addFooterHint")}
+      </span>
+      <Button
+        variant="outline"
+        onClick={() => onOpenChange(false)}
+        className="border-border/20 hover:bg-accent hover:text-accent-foreground"
+      >
+        {t("common.cancel")}
+      </Button>
+      <Button
+        type="submit"
+        form="provider-form"
+        disabled={isFormSubmitting || !editorReady}
+        className="bg-primary text-primary-foreground hover:bg-primary/90"
+      >
+        <Plus className="h-4 w-4 mr-2" />
+        {t("common.add")}
+      </Button>
+    </>
+  );
 
   return (
     <>
@@ -383,52 +314,7 @@ export function AddProviderDialog({
         footer={footer}
         contentClassName="pt-3"
       >
-        {showUniversalTab ? (
-          <Tabs
-            value={activeTab}
-            onValueChange={(v) =>
-              setActiveTab(v as "app-specific" | "universal")
-            }
-          >
-            <TabsList className="grid w-full grid-cols-2 mb-6">
-              <TabsTrigger value="app-specific">
-                {t(`apps.${appId}`)} {t("provider.tabProvider")}
-              </TabsTrigger>
-              <TabsTrigger value="universal">
-                {t("provider.tabUniversal")}
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="app-specific" className="mt-0">
-              {!editorReady ? (
-                <div role="status">
-                  {providerEditor.error
-                    ? t("claudeConfig.editorLoadFailed")
-                    : t("common.loading")}
-                  {providerEditor.error && (
-                    <Button onClick={providerEditor.retry}>
-                      {t("common.retry")}
-                    </Button>
-                  )}
-                </div>
-              ) : (
-                <ProviderForm
-                  providerLiveBase={providerEditor.view?.settings}
-                  appId={appId}
-                  submitLabel={t("common.add")}
-                  onSubmit={handleSubmit}
-                  onCancel={() => onOpenChange(false)}
-                  onSubmittingChange={setIsFormSubmitting}
-                  showButtons={false}
-                />
-              )}
-            </TabsContent>
-
-            <TabsContent value="universal" className="mt-0">
-              <UniversalProviderPanel />
-            </TabsContent>
-          </Tabs>
-        ) : !editorReady ? (
+        {!editorReady ? (
           <div role="status">
             {providerEditor.error
               ? t("claudeConfig.editorLoadFailed")
@@ -448,15 +334,6 @@ export function AddProviderDialog({
             onCancel={() => onOpenChange(false)}
             onSubmittingChange={setIsFormSubmitting}
             showButtons={false}
-          />
-        )}
-
-        {showUniversalTab && (
-          <UniversalProviderFormModal
-            isOpen={universalFormOpen}
-            onClose={handleUniversalFormClose}
-            onSave={handleUniversalProviderSave}
-            initialPreset={selectedUniversalPreset}
           />
         )}
       </FullScreenPanel>

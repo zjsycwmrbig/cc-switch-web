@@ -1,6 +1,7 @@
 import { useUnitSession } from "@/components/unit/session";
 import { UnitPanel } from "@/components/unit/UnitApp";
 import { WebSidebar } from "@/components/shell/WebSidebar";
+import { APP_DISPLAY_NAME } from "@/config/appMeta";
 import type { ProviderEditorSave } from "@/lib/api/providers";
 import {
   lazy,
@@ -31,9 +32,7 @@ import { useProxyStatus } from "@/hooks/useProxyStatus";
 import { useLastValidValue } from "@/hooks/useLastValidValue";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
-import { AppSwitcher } from "@/components/AppSwitcher";
 import { ProviderList } from "@/components/providers/ProviderList";
-import { AggregationSyncPanel } from "@/components/providers/AggregationSyncPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
@@ -66,17 +65,6 @@ const DeepLinkImportDialog = lazy(() =>
   })),
 );
 const UsageScriptModal = lazy(() => import("@/components/UsageScriptModal"));
-const UniversalProviderPanel = lazy(() =>
-  import("@/components/universal").then((m) => ({
-    default: m.UniversalProviderPanel,
-  })),
-);
-
-const AuthCenterPanel = lazy(() =>
-  import("@/components/settings/AuthCenterPanel").then((m) => ({
-    default: m.AuthCenterPanel,
-  })),
-);
 const UsageDashboard = lazy(() =>
   import("@/components/usage/UsageDashboard").then((m) => ({
     default: m.UsageDashboard,
@@ -84,15 +72,12 @@ const UsageDashboard = lazy(() =>
 );
 
 type View =
+  | "providers"
   | "models"
   | "allocations"
   | "profile"
   | "admin"
-  | "ledger"
-  | "usage"
-  | "accounts"
-  | "providers"
-  | "universal";
+  | "usage";
 
 const DRAG_BAR_HEIGHT = 0; // px
 const HEADER_HEIGHT = 64; // px
@@ -120,15 +105,12 @@ const getInitialApp = (): AppId => {
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
 const VALID_VIEWS: View[] = [
+  "providers",
   "models",
   "allocations",
   "profile",
   "admin",
-  "ledger",
   "usage",
-  "accounts",
-  "providers",
-  "universal",
 ];
 
 const getInitialView = (): View => {
@@ -206,6 +188,22 @@ function App() {
     if (visibleApps.pi) return "pi";
     return "claude"; // fallback
   };
+
+  /** 多用户聚合只覆盖 Codex 与 Claude，其他应用的服务器配置仍由管理员维护。 */
+  const sidebarApps = useMemo<VisibleApps>(() => {
+    if (isAdmin) return visibleApps;
+    return {
+      ...visibleApps,
+      "claude-desktop": false,
+      gemini: false,
+      grokbuild: false,
+      opencode: false,
+      openclaw: false,
+      hermes: false,
+      pi: false,
+      mcode: false,
+    };
+  }, [isAdmin, visibleApps]);
 
   useEffect(() => {
     if (!visibleApps[activeApp]) {
@@ -641,13 +639,6 @@ function App() {
 
   const renderContent = () => {
     const content = (() => {
-      if (!isAdmin && currentView === "universal") {
-        return (
-          <div className="mx-6 my-4 rounded-xl border p-6 text-sm text-muted-foreground">
-            此功能操作服务器共享配置，仅管理员可以使用。你的供应商、模型、设备和使用统计可在原导航中管理。
-          </div>
-        );
-      }
       if (
         !isAdmin &&
         currentView === "providers" &&
@@ -664,29 +655,16 @@ function App() {
         case "allocations":
         case "profile":
         case "admin":
-        case "ledger":
           return <UnitPanel page={currentView} />;
-        case "accounts":
-          return (
-            <div className="px-6 py-4">
-              <AuthCenterPanel />
-            </div>
-          );
         case "usage":
           return (
             <div className="px-3 md:px-6 py-4">
               <UsageDashboard />
             </div>
           );
-        case "universal":
-          return (
-            <div className="px-6 pt-4">
-              <UniversalProviderPanel />
-            </div>
-          );
         default:
           return (
-            <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
+            <div className="flex flex-1 min-h-0 flex-col overflow-hidden px-3 md:px-6">
               <div
                 ref={providerScrollContainerRef}
                 className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1"
@@ -708,12 +686,6 @@ function App() {
                         state={appMode}
                       />
                     )}
-                    {activeApp === "codex" &&
-                      appMode.data?.mode === "aggregation" && (
-                        <AggregationSyncPanel
-                          onPersonalModels={() => setCurrentView("models")}
-                        />
-                      )}
                     <ProviderList
                       modeView={appMode.data}
                       modePending={appMode.pending}
@@ -856,50 +828,37 @@ function App() {
           data-page-toolbar
           className="flex h-full items-center justify-between gap-2 px-6"
         >
-          <div className="flex items-center gap-1">
-            {currentView !== "providers" ? (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  aria-label={t("common.back")}
-                  onClick={() => setCurrentView("providers")}
-                  className="mr-2 rounded-lg"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                </Button>
-                <h1 className="text-lg font-semibold">
-                  {
-                    (
-                      {
-                        models: "模型与接入",
-                        allocations: "额度分配",
-                        profile: "个人账号",
-                        admin: "用户与额度",
-                        ledger: "配额与请求账本",
-                      } as Record<string, string>
-                    )[currentView]
-                  }
-                  {currentView === "usage" && t("nav.usage")}
-                  {currentView === "accounts" && t("settings.authCenter.title")}
-                  {currentView === "universal" &&
-                    t("universalProvider.title", {
-                      defaultValue: "统一供应商",
-                    })}
-                </h1>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                {activeApp !== "pi" && (
-                  <RoutingActivationBrand
-                    active={isProxyRunning && isCurrentAppTakeoverActive}
-                    contextKey={activeApp}
-                    ready={
-                      proxyStatus !== undefined && takeoverStatus !== undefined
-                    }
-                  />
-                )}
-              </div>
+          <div className="flex min-w-0 items-center gap-2">
+            {currentView !== "providers" && (
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={t("common.back")}
+                onClick={() => setCurrentView("providers")}
+                className="mr-2 rounded-lg"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </Button>
+            )}
+            <h1 className="truncate text-lg font-semibold">
+              {currentView === "providers"
+                ? APP_DISPLAY_NAME[activeApp]
+                : ({
+                    models: "模型与接入",
+                    allocations: "额度分配",
+                    profile: "个人账号",
+                    admin: "用户与额度",
+                    usage: t("nav.usage"),
+                  } as Record<string, string>)[currentView]}
+            </h1>
+            {currentView === "providers" && activeApp !== "pi" && (
+              <RoutingActivationBrand
+                active={isProxyRunning && isCurrentAppTakeoverActive}
+                contextKey={activeApp}
+                ready={
+                  proxyStatus !== undefined && takeoverStatus !== undefined
+                }
+              />
             )}
           </div>
 
@@ -917,15 +876,6 @@ function App() {
                     )}
                 </div>
               )}
-            <div className="flex min-w-0 flex-1 items-center justify-end overflow-hidden">
-              {currentView === "providers" && (
-                <AppSwitcher
-                  activeApp={activeApp}
-                  onSwitch={setActiveApp}
-                  visibleApps={visibleApps}
-                />
-              )}
-            </div>
             <div className="flex shrink-0 items-center">
               <div className="flex shrink-0 items-center gap-1.5 ml-auto">
                 {currentView === "providers" && (
@@ -943,7 +893,13 @@ function App() {
         </div>
       </header>
 
-      <WebSidebar currentView={currentView} onView={handleViewChange} />
+      <WebSidebar
+        currentView={currentView}
+        onView={handleViewChange}
+        activeApp={activeApp}
+        onAppChange={setActiveApp}
+        visibleApps={sidebarApps}
+      />
 
       <main
         ref={mainScrollRef}

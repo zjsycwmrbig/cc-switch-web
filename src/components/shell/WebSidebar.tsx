@@ -3,59 +3,82 @@ import { memo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   BarChart2,
-  KeyRound,
+  ChevronRight,
+  Layers,
+  LogOut,
   Menu,
-  Network,
   PanelLeftClose,
   Share2,
   UserRound,
   Users,
-  Layers,
-  LogOut,
-  ClipboardList,
 } from "lucide-react";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import {
+  APP_DISPLAY_NAME,
+  APP_ICON_NAME,
+  visibleAppList,
+} from "@/config/appMeta";
+import type { AppId } from "@/lib/api";
+import type { VisibleApps } from "@/types";
 import { cn } from "@/lib/utils";
 
 export type GlobalView =
-  | "models"
-  | "allocations"
-  | "profile"
-  | "admin"
-  | "ledger"
   | "providers"
-  | "universal"
+  | "models"
   | "usage"
-  | "accounts";
+  | "allocations"
+  | "admin"
+  | "profile";
+
+const APPS_STORAGE_KEY = "cc-switch-web-sidebar-apps";
 
 /** Expansion is local to the sidebar. The page keeps a fixed rail, so toggling never reflows the reader/editor. */
 export const WebSidebar = memo(function WebSidebar({
   currentView,
   onView,
+  activeApp,
+  onAppChange,
+  visibleApps,
 }: {
   currentView: string;
   onView: (view: GlobalView) => void;
+  activeApp: AppId;
+  onAppChange: (app: AppId) => void;
+  visibleApps?: VisibleApps;
 }) {
   const { t } = useTranslation();
   const session = useUnitSession();
   const [expanded, setExpanded] = useState(
     () => localStorage.getItem("cc-switch-web-sidebar-expanded") === "true",
   );
+  const [appsOpen, setAppsOpen] = useState(
+    () => localStorage.getItem(APPS_STORAGE_KEY) !== "false",
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
+  const railHidden = !expanded && !mobileOpen;
   const toggle = () =>
     setExpanded((value) => {
       localStorage.setItem("cc-switch-web-sidebar-expanded", String(!value));
       return !value;
     });
+  const toggleApps = (open: boolean) => {
+    setAppsOpen(open);
+    localStorage.setItem(APPS_STORAGE_KEY, String(open));
+  };
   const selectView = (view: GlobalView) => {
     onView(view);
     setMobileOpen(false);
+  };
+  const selectApp = (app: AppId) => {
+    onAppChange(app);
+    selectView("providers");
   };
   const item = (id: GlobalView, label: string, icon: ReactNode) => (
     <button
       key={id}
       type="button"
       aria-label={label}
-      title={!expanded ? label : undefined}
+      title={railHidden ? label : undefined}
       aria-current={currentView === id ? "page" : undefined}
       onClick={() => selectView(id)}
       className={cn(
@@ -64,16 +87,17 @@ export const WebSidebar = memo(function WebSidebar({
       )}
     >
       {icon}
-      <span
-        className={cn(
-          "whitespace-nowrap",
-          !expanded && !mobileOpen && "sr-only",
-        )}
-      >
+      <span className={cn("whitespace-nowrap", railHidden && "sr-only")}>
         {label}
       </span>
     </button>
   );
+
+  const apps = visibleAppList(visibleApps);
+  const providerGroupOpen = appsOpen && !railHidden;
+  const appActive = (app: AppId) =>
+    currentView === "providers" && activeApp === app;
+
   return (
     <>
       <button
@@ -103,44 +127,90 @@ export const WebSidebar = memo(function WebSidebar({
         <button
           type="button"
           onClick={mobileOpen ? () => setMobileOpen(false) : toggle}
-          aria-label={t(
-            expanded ? "nav.collapseSidebar" : "nav.expandSidebar",
-            { defaultValue: expanded ? "收起侧栏" : "展开侧栏" },
-          )}
+          aria-label={t(expanded ? "nav.collapseSidebar" : "nav.expandSidebar", {
+            defaultValue: expanded ? "收起侧栏" : "展开侧栏",
+          })}
           className="mb-2 flex h-10 shrink-0 items-center gap-3 rounded-md px-2 hover:bg-accent"
         >
           <PanelLeftClose className="h-5 w-5 shrink-0" />
-          <span
-            className={cn(
-              "font-semibold",
-              !expanded && !mobileOpen && "sr-only",
-            )}
-          >
+          <span className={cn("font-semibold", railHidden && "sr-only")}>
             CC Switch Web
           </span>
         </button>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-hidden">
+          <div
+            className={cn("rounded-md", currentView === "providers" && "bg-accent")}
+          >
+            <button
+              type="button"
+              aria-label="供应商"
+              title={railHidden ? "供应商" : undefined}
+              aria-current={currentView === "providers" ? "page" : undefined}
+              aria-expanded={providerGroupOpen}
+              onClick={() => {
+                if (railHidden) {
+                  toggle();
+                  toggleApps(true);
+                } else {
+                  toggleApps(!appsOpen);
+                }
+                selectView("providers");
+              }}
+              className={cn(
+                "flex h-9 w-full shrink-0 items-center gap-3 rounded-md px-3 text-sm hover:bg-accent",
+                currentView === "providers" && "font-medium",
+              )}
+            >
+              <ProviderIcon
+                icon={APP_ICON_NAME[activeApp]}
+                name={APP_DISPLAY_NAME[activeApp]}
+                size={16}
+              />
+              <span className={cn("whitespace-nowrap", railHidden && "sr-only")}>
+                供应商
+              </span>
+              {!railHidden && (
+                <ChevronRight
+                  className={cn(
+                    "ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                    providerGroupOpen && "rotate-90",
+                  )}
+                />
+              )}
+            </button>
+            {providerGroupOpen && (
+              <div className="mb-1 ml-4 space-y-0.5 border-l border-border pl-2">
+                {apps.map((app) => (
+                  <button
+                    key={app}
+                    type="button"
+                    onClick={() => selectApp(app)}
+                    aria-current={appActive(app) ? "page" : undefined}
+                    className={cn(
+                      "flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground",
+                      appActive(app) &&
+                        "bg-background font-medium text-foreground shadow-sm",
+                    )}
+                  >
+                    <ProviderIcon
+                      className={appActive(app) ? "" : "grayscale opacity-60"}
+                      icon={APP_ICON_NAME[app]}
+                      name={APP_DISPLAY_NAME[app]}
+                      size={16}
+                    />
+                    <span className="truncate">{APP_DISPLAY_NAME[app]}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {session &&
             item(
               "models",
               "模型与接入",
               <Layers className="h-4 w-4 shrink-0" />,
             )}
-          {item(
-            "universal",
-            t("universalProvider.title"),
-            <Network className="h-4 w-4 shrink-0" />,
-          )}
-          {item(
-            "usage",
-            t("nav.usage"),
-            <BarChart2 className="h-4 w-4 shrink-0" />,
-          )}
-          {item(
-            "accounts",
-            t("settings.authCenter.title"),
-            <KeyRound className="h-4 w-4 shrink-0" />,
-          )}
+          {item("usage", t("nav.usage"), <BarChart2 className="h-4 w-4 shrink-0" />)}
         </nav>
         <div className="mt-2 space-y-1 border-t border-border pt-2">
           {session && (
@@ -150,17 +220,8 @@ export const WebSidebar = memo(function WebSidebar({
                 "额度分配",
                 <Share2 className="h-4 w-4 shrink-0" />,
               )}
-              {item(
-                "ledger",
-                "配额与账本",
-                <ClipboardList className="h-4 w-4 shrink-0" />,
-              )}
               {session.me.user.role === "admin" &&
-                item(
-                  "admin",
-                  "用户与额度",
-                  <Users className="h-4 w-4 shrink-0" />,
-                )}
+                item("admin", "用户与额度", <Users className="h-4 w-4 shrink-0" />)}
               {item(
                 "profile",
                 session.me.user.username,
@@ -173,9 +234,7 @@ export const WebSidebar = memo(function WebSidebar({
                 className="flex h-9 w-full items-center gap-3 rounded-md px-3 text-sm hover:bg-accent"
               >
                 <LogOut className="h-4 w-4 shrink-0" />
-                <span className={cn(!expanded && !mobileOpen && "sr-only")}>
-                  退出登录
-                </span>
+                <span className={cn(railHidden && "sr-only")}>退出登录</span>
               </button>
             </>
           )}
