@@ -87,3 +87,21 @@
 - 新二进制：`backend/target/release/cc-switch-web`，SHA256 `4513103ddbd69a45ebc27dde7733609dca1c94332363991f834055e744b34461`。
 - 已替换 `/opt/cc-switch-web/cc-switch-web` 并重启 `cc-switch-web.service`，服务状态为 `active (running)`。
 - `http://127.0.0.1:8890/api/health` 返回 `{"status":"ok","mode":"local-rust-service"}`；首页返回 200，前端资源哈希已更新。
+
+## 导航收敛与界面统一
+
+本轮按实际使用路径合并导航层级，并把多用户页面的配色统一回 CC Switch 主题变量。
+
+- 侧栏新增「供应商」折叠二级菜单，直接承载 Claude、Codex、Gemini 等应用切换；顶栏不再渲染应用切换器，改为显示当前应用名称与路由激活状态。应用元数据抽到 `src/config/appMeta.ts`，侧栏与切换器共用同一份清单。
+- 侧栏下线「配额与账本」「统一供应商」「账号」三个入口，`View` 收敛为 `providers/models/allocations/profile/admin/usage`。非管理员的应用列表只保留 Codex 与 Claude，与后端“仅这两个应用支持多用户聚合”一致。
+- 官方账号以供应商卡片存在：Codex 的 `codex-official` 资源卡片新增「官方账号」按钮（管理员），点击打开原授权中心全屏面板；用量查询沿用卡片上的 Codex 官方额度页脚。
+- 供应商页移除 `AggregationSyncPanel`，聚合同步命令只在「模型与接入」出现，顶部保留账户模式切换与供应商列表。
+- 添加供应商对话框移除「统一供应商」页签及其表单入口，避免进入无响应且与多用户模式无关的旧流程；统一供应商的前端组件与后端接口保留但不再挂到导航。
+- `unit.css` 的颜色全部改用主题变量（`--foreground/--border/--card/--primary/--accent/--warning-soft` 等），浅色、深色与主题色切换同时生效；新增 `.u-page-lead` 承接页面说明与主操作，页面标题统一由顶栏渲染，不再在页面内重复出现。
+- 内容容器统一为 `px-3 md:px-6`，多用户页面去掉 `max-w-6xl` 限制，与供应商、统计页保持同一版心。
+
+### 部署
+
+- 部署前备份：`/root/ccswitchuint-backups/nav-unify-<时间戳>/`，包含上一版二进制与数据库一致性快照。
+- 新二进制 SHA256：`81564bbba7da5cfcf86f4541022e469ad2bce6dc0bc8fe6f6b7c6388139edd63`。
+- 数据库保持版本 18，未发生迁移；`cc-switch-web.service` 状态 `active`，`http://127.0.0.1:8890/api/health` 返回 `ok`，首页与公网 FRP 均返回 200，前端资源哈希为 `assets/index-DR4UZB57.js`。
