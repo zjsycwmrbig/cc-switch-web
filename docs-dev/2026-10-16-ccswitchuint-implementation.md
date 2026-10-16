@@ -105,3 +105,19 @@
 - 部署前备份：`/root/ccswitchuint-backups/nav-unify-<时间戳>/`，包含上一版二进制与数据库一致性快照。
 - 新二进制 SHA256：`81564bbba7da5cfcf86f4541022e469ad2bce6dc0bc8fe6f6b7c6388139edd63`。
 - 数据库保持版本 18，未发生迁移；`cc-switch-web.service` 状态 `active`，`http://127.0.0.1:8890/api/health` 返回 `ok`，首页与公网 FRP 均返回 200，前端资源哈希为 `assets/index-DR4UZB57.js`。
+
+## 侧栏交互修正与设备密钥区块统一
+
+- 侧栏「供应商」行改为跳转并展开应用列表：图标栏折叠时先展开侧栏再展开二级菜单，收起只由行尾箭头控制，避免一次点击把自己关掉。
+- 侧栏顺序按实际使用路径调整为「模型与接入、额度分配、使用统计、供应商（二级菜单）」。
+- 「设备与接入密钥」从独立 `u-panel` 改为外壳区块（`rounded-lg border p-4` + 外壳按钮/输入框/表格），与同页的聚合同步面板统一版心和控件尺寸；去掉了 `u-note` 与 Tailwind 混用的类名。
+- 「模型与接入」页统一为 `flex flex-col gap-4` 间距，并在 `unit-content` 下取消卡片自带的下边距，避免同一页里出现两套行距。
+- 新增供应商保存失败时输出 `console.error` 并检测纯前端异常（`TypeError`/`SyntaxError`）弹提示；`settingsConfig` 解析失败时直接提示配置不是合法 JSON，不再静默中断。
+- 新增 `PanelErrorBoundary`：懒加载的新增/编辑供应商面板渲染或分块加载失败时弹出提示，出错后保持当前界面可用，不再出现整页无响应。
+- 集成测试中的应用切换改为侧栏二级菜单路径（先点「供应商」再点应用名），`tests/integration/App.test.tsx` 9 项通过。
+
+### 排查记录
+
+- 服务端新增供应商链路经真实请求验证可用：以管理员会话 + CSRF 提交真实形态的 Codex 供应商负载返回 `200 true`，创建后立即删除探针供应商，`hub_resources` 恢复 7 条。
+- 线上前端分块完整：入口 `assets/index-DR4UZB57.js` 引用的 33 个分块全部返回 200，`AddProviderDialog` 分块已不再包含统一供应商页签。
+- 未能在本机复现用户所述的「新增供应商卡死」：Codex 应用下的编辑器视图在多用户模式走本地短路，新增保存走 `/api/unit/ui/providers/:app/save`，服务端与前端路径均正常；上述错误暴露改动用于让真实故障可见。
