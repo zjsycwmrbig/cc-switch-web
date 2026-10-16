@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { CopilotAuthSection } from "@/components/providers/forms/CopilotAuthSection";
@@ -23,6 +24,8 @@ export function AuthCenterPanel({
   showIntro = true,
 }: AuthCenterPanelProps) {
   const { t } = useTranslation();
+  const session = useUnitSession();
+  const restricted = !!session && session.me.user.role !== "admin";
   const copilotSectionRef = useRef<HTMLDivElement | null>(null);
   const codexOauthSectionRef = useRef<HTMLDivElement | null>(null);
   const xaiOauthSectionRef = useRef<HTMLDivElement | null>(null);
@@ -59,13 +62,25 @@ export function AuthCenterPanel({
         </p>
       )}
       <div ref={copilotSectionRef} className="scroll-mt-4">
-        <CopilotAuthSection />
+        {restricted ? (
+          <div className="rounded-xl border p-4 text-sm text-muted-foreground">
+            GitHub Copilot 服务器账号由管理员维护。
+          </div>
+        ) : (
+          <CopilotAuthSection />
+        )}
       </div>
       <div ref={codexOauthSectionRef} className="scroll-mt-4">
         <CodexOAuthSection showAccountQuota />
       </div>
       <div ref={xaiOauthSectionRef} className="scroll-mt-4">
-        <XaiOAuthSection mode="manage" helpSide="top" />
+        {restricted ? (
+          <div className="rounded-xl border p-4 text-sm text-muted-foreground">
+            xAI 服务器账号由管理员维护。
+          </div>
+        ) : (
+          <XaiOAuthSection mode="manage" helpSide="top" />
+        )}
       </div>
     </div>
   );

@@ -413,6 +413,7 @@ impl ProxyServer {
             .route("/gemini/v1beta/*path", post(handlers::handle_gemini))
             // 提高默认请求体大小限制（避免 413 Payload Too Large）
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
+            .layer(axum::middleware::from_fn_with_state(self.state.clone(), crate::hub::gateway::guard))
             .layer(cors)
             .with_state(self.state.clone())
     }

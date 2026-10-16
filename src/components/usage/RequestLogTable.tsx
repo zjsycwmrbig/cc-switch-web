@@ -318,6 +318,14 @@ export function RequestLogTable({
                         >
                           {log.providerName || t("usage.unknownProvider")}
                         </span>
+                        {log.username && (
+                          <span
+                            className="block truncate text-xs text-muted-foreground"
+                            title={`${log.username} · ${log.device || "未命名设备"}`}
+                          >
+                            {log.username} · {log.device || "未命名设备"}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="w-[22%] max-w-0 text-center font-mono text-xs">
                         <div
@@ -381,7 +389,9 @@ export function RequestLogTable({
                       </TableCell>
                       <TableCell className="text-center px-1.5">
                         <div className="font-medium tabular-nums">
-                          {fmtUsd(log.totalCostUsd, 4)}
+                          {log.costUnknown
+                            ? "未定价"
+                            : fmtUsd(log.totalCostUsd, 4)}
                         </div>
                         {parseFiniteNumber(log.costMultiplier) != null &&
                           parseFiniteNumber(log.costMultiplier) !== 1 && (

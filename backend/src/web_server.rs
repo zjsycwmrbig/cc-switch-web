@@ -644,10 +644,28 @@ fn unauthorized_response() -> Response {
 
 async fn require_access_key(
     State(state): State<WebApiState>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
     let path = request.uri().path();
+    if crate::hub::auth::initialized(&state.app_state.db) {
+        if matches!(path,"/api/health"|"/api/auth/status") {return next.run(request).await;}
+        let user=match crate::hub::auth::authenticate(&state.app_state.db,request.headers(),true) {Ok(u)=>u,Err(e)=>return e.into_response()};
+        let catalog=path.starts_with("/api/model-catalog/codex/aggregation");
+        let safe_read=request.method()==axum::http::Method::GET && (
+            matches!(path,"/api/proxy/config"|"/api/proxy/global-config"|"/api/proxy/running"|"/api/usage/model-pricing"|"/api/settings/rectifier-config"|"/api/settings/optimizer-config") ||
+            (path.starts_with("/api/proxy/apps/") && path.ends_with("/config"))
+        );
+        if !catalog && (!user.web() || (!user.admin() && !safe_read)) {return crate::hub::Error::forbidden().into_response();}
+        if !matches!(*request.method(),axum::http::Method::GET|axum::http::Method::HEAD) {
+            if let Err(e)=crate::hub::auth::check_origin(&state.app_state.db,request.headers()).and_then(|_|crate::hub::auth::check_csrf(&user,request.headers())) {return e.into_response();}
+            if path=="/api/config/import" || path.contains("/restore") || path=="/api/webdav/download" {
+                return crate::hub::Error::bad("多用户数据库恢复须在停止服务并备份账本后通过运维流程执行").into_response();
+            }
+        }
+        request.extensions_mut().insert(user);
+        return next.run(request).await;
+    }
     if !state.access_key.is_required()
         || matches!(
             path,
@@ -3134,7 +3152,11 @@ async fn get_providers(
     }))
 }
 
-async fn export_aggregated_codex_models(State(state): State<WebApiState>) -> Result<Response, ApiError> {
+async fn export_aggregated_codex_models(State(state): State<WebApiState>, user: Option<axum::Extension<crate::hub::Identity>>) -> Result<Response, ApiError> {
+    if let Some(axum::Extension(user))=user {
+        let catalog=crate::hub::catalog::export(&state.app_state.db,&user,true).map_err(|e|ApiError::bad_request(e.2))?;
+        return Ok(([(header::CONTENT_TYPE,"application/json; charset=utf-8"),(header::CACHE_CONTROL,"no-store")],Json(catalog)).into_response());
+    }
     let catalog = crate::web_model_catalog::export_aggregation(&state.app_state).await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     let body = serde_json::to_string_pretty(&catalog)
@@ -3154,7 +3176,10 @@ fn shell_literal(value: &str) -> String {
         .collect()
 }
 
-async fn download_codex_model_shell_installer(headers: HeaderMap) -> Response {
+async fn download_codex_model_shell_installer(State(state): State<WebApiState>, headers: HeaderMap) -> Response {
+    if crate::hub::auth::initialized(&state.app_state.db) {
+        return match crate::hub::api::installer_response(&state.app_state.db,&headers) {Ok(r)=>r,Err(e)=>e.into_response()};
+    }
     let origin = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -4234,6 +4259,7 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         log::warn!("startup periodic maintenance failed: {err}");
     }
     let app_state = Arc::new(AppState::new(db));
+    crate::hub::auth::initialize(&app_state).await.map_err(|e| format!("multi-user initialization failed: {}",e.2))?;
     if let Err(err) = crate::services::provider::ProviderService::scrub_leaked_gemini_common_config(
         app_state.as_ref(),
     )
@@ -4833,7 +4859,8 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         ))
         .layer(DefaultBodyLimit::max(128 * 1024 * 1024))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+        .merge(crate::hub::api::routes(app_state.clone()));
 
     if let Some(dist_dir) = resolve_frontend_dist_dir() {
         println!(

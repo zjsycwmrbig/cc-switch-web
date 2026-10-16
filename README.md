@@ -2,6 +2,8 @@
 
 中文 | [English](README_EN.md) | [日本語](README_JA.md)
 
+本 fork 默认提供 **ccSwitchUint 多用户聚合网关**：注册登录、供应商与官方账号归属/共享、个人模型目录与设备接入命令、用户和提供者用量统计、额度预留结算，以及官方账号池轮询。原有服务器管理功能仅向管理员开放。首次启动创建 `admin`；初始密码优先使用 `CC_SWITCH_ADMIN_PASSWORD`，迁移时兼容现有访问密钥，凭据保存到数据目录的 `ccswitchuint-admin-initial.txt`。参见 [多用户使用说明](docs/ccswitchuint.md) 和 [改造设计](docs-dev/2026-10-16-ccswitchuint-multi-user-plan.md)。 保留原 CC Switch Web 主界面、供应商编辑器、代理设置和统计图表，在原界面内增加多用户入口，并按身份控制编辑权限。
+
 ## 项目说明
 
 CC Switch Web 是 [cc-switch](https://github.com/farion1231/cc-switch) 的 Web 分支仓库，用于承载 CC Switch 的 Web 方向实现与分支定制。

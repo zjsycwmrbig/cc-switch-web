@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import {
   useCallback,
   useEffect,
@@ -108,6 +109,8 @@ export function SettingsPage({
 }: SettingsDialogProps) {
   const { t } = useTranslation();
   const isWebMode = isWebRuntime();
+  const unitSession = useUnitSession();
+  const readOnly = !!unitSession && unitSession.me.user.role !== "admin";
   const {
     settings,
     isLoading,
@@ -321,45 +324,52 @@ export function SettingsPage({
                       settings={settings}
                       onChange={handleAutoSave}
                     />
-                    <SkillStorageLocationSettings
-                      value={settings.skillStorageLocation ?? "cc_switch"}
-                      installedCount={installedSkills?.length ?? 0}
-                      onMigrated={(location) =>
-                        updateSettings({ skillStorageLocation: location })
-                      }
-                    />
-                    <SkillSyncMethodSettings
-                      value={settings.skillSyncMethod ?? "auto"}
-                      onChange={(method) =>
-                        handleAutoSave({ skillSyncMethod: method })
-                      }
-                    />
-                    <TerminalSettings
-                      value={settings.preferredTerminal}
-                      onChange={(terminal) =>
-                        handleAutoSave({ preferredTerminal: terminal })
-                      }
-                    />
-                    <LocalServiceSettings
-                      launchOnStartup={settings.launchOnStartup ?? false}
-                      onLaunchOnStartupChange={(value) =>
-                        handleAutoSave({ launchOnStartup: value })
-                      }
-                    />
-                    <ClaudeCodeSettings
-                      pluginIntegrationEnabled={
-                        settings.enableClaudePluginIntegration ?? false
-                      }
-                      onPluginIntegrationChange={(value) =>
-                        handleAutoSave({
-                          enableClaudePluginIntegration: value,
-                        })
-                      }
-                      skipOnboarding={settings.skipClaudeOnboarding ?? false}
-                      onSkipOnboardingChange={(value) =>
-                        handleAutoSave({ skipClaudeOnboarding: value })
-                      }
-                    />
+                    <fieldset disabled={readOnly} className="space-y-6">
+                      {readOnly && (
+                        <p className="text-sm text-muted-foreground">
+                          以下设置作用于共享服务器，仅管理员可修改。语言、主题和应用显示范围可独立设置。
+                        </p>
+                      )}
+                      <SkillStorageLocationSettings
+                        value={settings.skillStorageLocation ?? "cc_switch"}
+                        installedCount={installedSkills?.length ?? 0}
+                        onMigrated={(location) =>
+                          updateSettings({ skillStorageLocation: location })
+                        }
+                      />
+                      <SkillSyncMethodSettings
+                        value={settings.skillSyncMethod ?? "auto"}
+                        onChange={(method) =>
+                          handleAutoSave({ skillSyncMethod: method })
+                        }
+                      />
+                      <TerminalSettings
+                        value={settings.preferredTerminal}
+                        onChange={(terminal) =>
+                          handleAutoSave({ preferredTerminal: terminal })
+                        }
+                      />
+                      <LocalServiceSettings
+                        launchOnStartup={settings.launchOnStartup ?? false}
+                        onLaunchOnStartupChange={(value) =>
+                          handleAutoSave({ launchOnStartup: value })
+                        }
+                      />
+                      <ClaudeCodeSettings
+                        pluginIntegrationEnabled={
+                          settings.enableClaudePluginIntegration ?? false
+                        }
+                        onPluginIntegrationChange={(value) =>
+                          handleAutoSave({
+                            enableClaudePluginIntegration: value,
+                          })
+                        }
+                        skipOnboarding={settings.skipClaudeOnboarding ?? false}
+                        onSkipOnboardingChange={(value) =>
+                          handleAutoSave({ skipClaudeOnboarding: value })
+                        }
+                      />
+                    </fieldset>
                   </motion.div>
                 ) : null}
               </TabsContent>
@@ -380,6 +390,7 @@ export function SettingsPage({
                     />
                     <ProxyTabContent
                       settings={settings}
+                      readOnly={readOnly}
                       onAutoSave={handleAutoSave}
                     />
                   </div>
@@ -407,221 +418,230 @@ export function SettingsPage({
 
                   <AuthCenterPanel />
                   {settings ? (
-                    <CodexHistorySettings
-                      settings={settings}
-                      onChange={handleConfirmedAutoSave}
-                    />
+                    <fieldset disabled={readOnly}>
+                      <CodexHistorySettings
+                        settings={settings}
+                        onChange={handleConfirmedAutoSave}
+                      />
+                    </fieldset>
                   ) : null}
                 </motion.div>
               </TabsContent>
 
               <TabsContent value="advanced" className="space-y-6 mt-0 pb-4">
-                {settings ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="space-y-6"
-                  >
-                    <SettingsIntroCard
-                      eyebrow={t("settings.tabAdvanced")}
-                      title={t("settings.advancedIntroTitle", {
-                        defaultValue: "管理数据、目录和高级工具",
-                      })}
-                      description={t("settings.advancedIntroDescription", {
-                        defaultValue:
-                          "高级设置聚合了配置目录、导入导出、备份、云同步、日志和模型测试等偏运维能力。",
-                      })}
-                      icon={
-                        <Database className="h-5 w-5 theme-tertiary-text" />
-                      }
-                    />
-                    <Accordion
-                      type="multiple"
-                      defaultValue={[]}
-                      className="w-full space-y-4"
+                {readOnly && (
+                  <p className="text-sm text-muted-foreground">
+                    服务器目录、备份、同步和全局日志配置由管理员维护。
+                  </p>
+                )}
+                <fieldset disabled={readOnly} className="space-y-6">
+                  {settings ? (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.3 }}
+                      className="space-y-6"
                     >
-                      <AccordionItem
-                        value="directory"
-                        className="rounded-xl glass-card overflow-hidden"
+                      <SettingsIntroCard
+                        eyebrow={t("settings.tabAdvanced")}
+                        title={t("settings.advancedIntroTitle", {
+                          defaultValue: "管理数据、目录和高级工具",
+                        })}
+                        description={t("settings.advancedIntroDescription", {
+                          defaultValue:
+                            "高级设置聚合了配置目录、导入导出、备份、云同步、日志和模型测试等偏运维能力。",
+                        })}
+                        icon={
+                          <Database className="h-5 w-5 theme-tertiary-text" />
+                        }
+                      />
+                      <Accordion
+                        type="multiple"
+                        defaultValue={[]}
+                        className="w-full space-y-4"
                       >
-                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                          <div className="flex items-center gap-3">
-                            <FolderSearch className="h-5 w-5 text-primary" />
-                            <div className="text-left">
-                              <h3 className="text-base font-semibold">
-                                {t("settings.advanced.configDir.title")}
-                              </h3>
-                              <p className="text-sm text-muted-foreground font-normal">
-                                {t("settings.advanced.configDir.description")}
-                              </p>
+                        <AccordionItem
+                          value="directory"
+                          className="rounded-xl glass-card overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                            <div className="flex items-center gap-3">
+                              <FolderSearch className="h-5 w-5 text-primary" />
+                              <div className="text-left">
+                                <h3 className="text-base font-semibold">
+                                  {t("settings.advanced.configDir.title")}
+                                </h3>
+                                <p className="text-sm text-muted-foreground font-normal">
+                                  {t("settings.advanced.configDir.description")}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                          <DirectorySettings
-                            showAppConfigDir
-                            allowBrowse={!isWebMode}
-                            appConfigDir={appConfigDir}
-                            resolvedDirs={resolvedDirs}
-                            onAppConfigChange={updateAppConfigDir}
-                            onBrowseAppConfig={browseAppConfigDir}
-                            onResetAppConfig={resetAppConfigDir}
-                            claudeDir={settings.claudeConfigDir}
-                            codexDir={settings.codexConfigDir}
-                            geminiDir={settings.geminiConfigDir}
-                            grokDir={settings.grokConfigDir}
-                            opencodeDir={settings.opencodeConfigDir}
-                            openclawDir={settings.openclawConfigDir}
-                            hermesDir={settings.hermesConfigDir}
-                            piDir={settings.piConfigDir}
-                            onDirectoryChange={updateDirectory}
-                            onBrowseDirectory={browseDirectory}
-                            onResetDirectory={resetDirectory}
-                          />
-                        </AccordionContent>
-                      </AccordionItem>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                            <DirectorySettings
+                              showAppConfigDir
+                              allowBrowse={!isWebMode}
+                              appConfigDir={appConfigDir}
+                              resolvedDirs={resolvedDirs}
+                              onAppConfigChange={updateAppConfigDir}
+                              onBrowseAppConfig={browseAppConfigDir}
+                              onResetAppConfig={resetAppConfigDir}
+                              claudeDir={settings.claudeConfigDir}
+                              codexDir={settings.codexConfigDir}
+                              geminiDir={settings.geminiConfigDir}
+                              grokDir={settings.grokConfigDir}
+                              opencodeDir={settings.opencodeConfigDir}
+                              openclawDir={settings.openclawConfigDir}
+                              hermesDir={settings.hermesConfigDir}
+                              piDir={settings.piConfigDir}
+                              onDirectoryChange={updateDirectory}
+                              onBrowseDirectory={browseDirectory}
+                              onResetDirectory={resetDirectory}
+                            />
+                          </AccordionContent>
+                        </AccordionItem>
 
-                      <AccordionItem
-                        value="data"
-                        className="rounded-xl glass-card overflow-hidden"
-                      >
-                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                          <div className="flex items-center gap-3">
-                            <Database className="h-5 w-5 theme-tertiary-text" />
-                            <div className="text-left">
-                              <h3 className="text-base font-semibold">
-                                {t("settings.advanced.data.title")}
-                              </h3>
-                              <p className="text-sm text-muted-foreground font-normal">
-                                {t("settings.advanced.data.description")}
-                              </p>
+                        <AccordionItem
+                          value="data"
+                          className="rounded-xl glass-card overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                            <div className="flex items-center gap-3">
+                              <Database className="h-5 w-5 theme-tertiary-text" />
+                              <div className="text-left">
+                                <h3 className="text-base font-semibold">
+                                  {t("settings.advanced.data.title")}
+                                </h3>
+                                <p className="text-sm text-muted-foreground font-normal">
+                                  {t("settings.advanced.data.description")}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                          <ImportExportSection
-                            isWebMode={isWebMode}
-                            status={importStatus}
-                            selectedFile={selectedFile}
-                            errorMessage={errorMessage}
-                            backupId={backupId}
-                            isImporting={isImporting}
-                            onSelectUpload={selectImportUpload}
-                            onSelectFile={selectImportFile}
-                            onImport={importConfig}
-                            onExport={exportConfig}
-                            onClear={clearSelection}
-                            onMigrationSuccess={onImportSuccess}
-                          />
-                        </AccordionContent>
-                      </AccordionItem>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                            <ImportExportSection
+                              isWebMode={isWebMode}
+                              status={importStatus}
+                              selectedFile={selectedFile}
+                              errorMessage={errorMessage}
+                              backupId={backupId}
+                              isImporting={isImporting}
+                              onSelectUpload={selectImportUpload}
+                              onSelectFile={selectImportFile}
+                              onImport={importConfig}
+                              onExport={exportConfig}
+                              onClear={clearSelection}
+                              onMigrationSuccess={onImportSuccess}
+                            />
+                          </AccordionContent>
+                        </AccordionItem>
 
-                      <AccordionItem
-                        value="backup"
-                        className="rounded-xl glass-card overflow-hidden"
-                      >
-                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                          <div className="flex items-center gap-3">
-                            <HardDriveDownload className="h-5 w-5 theme-warning-text" />
-                            <div className="text-left">
-                              <h3 className="text-base font-semibold">
-                                {t("settings.advanced.backup.title", {
-                                  defaultValue: "Backup & Restore",
-                                })}
-                              </h3>
-                              <p className="text-sm text-muted-foreground font-normal">
-                                {t("settings.advanced.backup.description", {
-                                  defaultValue:
-                                    "Manage automatic backups, view and restore database snapshots",
-                                })}
-                              </p>
+                        <AccordionItem
+                          value="backup"
+                          className="rounded-xl glass-card overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                            <div className="flex items-center gap-3">
+                              <HardDriveDownload className="h-5 w-5 theme-warning-text" />
+                              <div className="text-left">
+                                <h3 className="text-base font-semibold">
+                                  {t("settings.advanced.backup.title", {
+                                    defaultValue: "Backup & Restore",
+                                  })}
+                                </h3>
+                                <p className="text-sm text-muted-foreground font-normal">
+                                  {t("settings.advanced.backup.description", {
+                                    defaultValue:
+                                      "Manage automatic backups, view and restore database snapshots",
+                                  })}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                          <BackupListSection
-                            backupIntervalHours={settings.backupIntervalHours}
-                            backupRetainCount={settings.backupRetainCount}
-                            onSettingsChange={(updates) =>
-                              handleAutoSave(updates)
-                            }
-                          />
-                        </AccordionContent>
-                      </AccordionItem>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                            <BackupListSection
+                              backupIntervalHours={settings.backupIntervalHours}
+                              backupRetainCount={settings.backupRetainCount}
+                              onSettingsChange={(updates) =>
+                                handleAutoSave(updates)
+                              }
+                            />
+                          </AccordionContent>
+                        </AccordionItem>
 
-                      <AccordionItem
-                        value="cloudSync"
-                        className="rounded-xl glass-card overflow-hidden"
-                      >
-                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                          <div className="flex items-center gap-3">
-                            <Cloud className="h-5 w-5 theme-tertiary-text" />
-                            <div className="text-left">
-                              <h3 className="text-base font-semibold">
-                                {t("settings.advanced.cloudSync.title")}
-                              </h3>
-                              <p className="text-sm text-muted-foreground font-normal">
-                                {t("settings.advanced.cloudSync.description")}
-                              </p>
+                        <AccordionItem
+                          value="cloudSync"
+                          className="rounded-xl glass-card overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                            <div className="flex items-center gap-3">
+                              <Cloud className="h-5 w-5 theme-tertiary-text" />
+                              <div className="text-left">
+                                <h3 className="text-base font-semibold">
+                                  {t("settings.advanced.cloudSync.title")}
+                                </h3>
+                                <p className="text-sm text-muted-foreground font-normal">
+                                  {t("settings.advanced.cloudSync.description")}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                          <WebdavSyncSection
-                            config={settings?.webdavSync}
-                            settings={settings}
-                            onAutoSave={handleAutoSave}
-                          />
-                        </AccordionContent>
-                      </AccordionItem>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                            <WebdavSyncSection
+                              config={settings?.webdavSync}
+                              settings={settings}
+                              onAutoSave={handleAutoSave}
+                            />
+                          </AccordionContent>
+                        </AccordionItem>
 
-                      <AccordionItem
-                        value="test"
-                        className="rounded-xl glass-card overflow-hidden"
-                      >
-                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                          <div className="flex items-center gap-3">
-                            <FlaskConical className="h-5 w-5 theme-success-text" />
-                            <div className="text-left">
-                              <h3 className="text-base font-semibold">
-                                {t("settings.advanced.modelTest.title")}
-                              </h3>
-                              <p className="text-sm text-muted-foreground font-normal">
-                                {t("settings.advanced.modelTest.description")}
-                              </p>
+                        <AccordionItem
+                          value="test"
+                          className="rounded-xl glass-card overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                            <div className="flex items-center gap-3">
+                              <FlaskConical className="h-5 w-5 theme-success-text" />
+                              <div className="text-left">
+                                <h3 className="text-base font-semibold">
+                                  {t("settings.advanced.modelTest.title")}
+                                </h3>
+                                <p className="text-sm text-muted-foreground font-normal">
+                                  {t("settings.advanced.modelTest.description")}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                          <ModelTestConfigPanel />
-                        </AccordionContent>
-                      </AccordionItem>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                            <ModelTestConfigPanel />
+                          </AccordionContent>
+                        </AccordionItem>
 
-                      <AccordionItem
-                        value="logConfig"
-                        className="rounded-xl glass-card overflow-hidden"
-                      >
-                        <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
-                          <div className="flex items-center gap-3">
-                            <ScrollText className="h-5 w-5 theme-tertiary-text" />
-                            <div className="text-left">
-                              <h3 className="text-base font-semibold">
-                                {t("settings.advanced.logConfig.title")}
-                              </h3>
-                              <p className="text-sm text-muted-foreground font-normal">
-                                {t("settings.advanced.logConfig.description")}
-                              </p>
+                        <AccordionItem
+                          value="logConfig"
+                          className="rounded-xl glass-card overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-6 py-4 hover:no-underline hover:bg-muted/50 data-[state=open]:bg-muted/50">
+                            <div className="flex items-center gap-3">
+                              <ScrollText className="h-5 w-5 theme-tertiary-text" />
+                              <div className="text-left">
+                                <h3 className="text-base font-semibold">
+                                  {t("settings.advanced.logConfig.title")}
+                                </h3>
+                                <p className="text-sm text-muted-foreground font-normal">
+                                  {t("settings.advanced.logConfig.description")}
+                                </p>
+                              </div>
                             </div>
-                          </div>
-                        </AccordionTrigger>
-                        <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                          <LogConfigPanel />
-                        </AccordionContent>
-                      </AccordionItem>
-                    </Accordion>
-                  </motion.div>
-                ) : null}
+                          </AccordionTrigger>
+                          <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
+                            <LogConfigPanel />
+                          </AccordionContent>
+                        </AccordionItem>
+                      </Accordion>
+                    </motion.div>
+                  ) : null}
+                </fieldset>
               </TabsContent>
 
               <TabsContent value="usage" className="space-y-6 mt-0 pb-4">

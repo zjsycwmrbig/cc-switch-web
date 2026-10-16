@@ -384,6 +384,8 @@ impl Database {
         let _ = conn.execute("DROP INDEX IF EXISTS idx_failover_queue_order", []);
         let _ = conn.execute("DROP TABLE IF EXISTS failover_queue", []);
 
+        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+
         // 为故障转移队列创建索引（基于 providers 表）
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_providers_failover
@@ -499,6 +501,10 @@ impl Database {
                         log::info!("迁移数据库从 v15 到 v16（Skills/MCP 添加 MiniMax Code 支持）");
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
+                    }
+                    16 => {
+                        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+                        Self::set_user_version(conn, 17)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(

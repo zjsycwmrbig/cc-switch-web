@@ -29,7 +29,7 @@ export interface AggregationActions {
   default: boolean;
   disabled?: boolean;
   onToggle: () => void;
-  onDefault: () => void;
+  onDefault?: () => void;
 }
 
 interface ProviderActionsProps {
@@ -55,6 +55,7 @@ interface ProviderActionsProps {
   isInFailoverQueue?: boolean;
   onToggleFailover?: (enabled: boolean) => void;
   isReadOnly?: boolean;
+  readOnlyReason?: string;
   // OpenClaw: default model
   isDefaultModel?: boolean;
   onSetAsDefault?: () => void;
@@ -83,6 +84,7 @@ export function ProviderActions({
   isInFailoverQueue = false,
   onToggleFailover,
   isReadOnly = false,
+  readOnlyReason,
   // OpenClaw: default model
   isDefaultModel = false,
   onSetAsDefault,
@@ -236,9 +238,11 @@ export function ProviderActions({
     !deleteDisabled &&
     !isReadOnly &&
     (isOmo || isAdditiveMode ? true : !isCurrent);
-  const readOnlyHint = t("provider.managedByHermesHint", {
-    defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
-  });
+  const readOnlyHint =
+    readOnlyReason ||
+    t("provider.managedByHermesHint", {
+      defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
+    });
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -287,7 +291,7 @@ export function ProviderActions({
         {buttonState.text}
       </Button>
 
-      {aggregation && (
+      {aggregation?.onDefault && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size="icon" variant="ghost" aria-label={t("webMode.more")}>
@@ -322,7 +326,8 @@ export function ProviderActions({
         <Button
           size="icon"
           variant="ghost"
-          onClick={onDuplicate}
+          onClick={isReadOnly ? undefined : onDuplicate}
+          disabled={isReadOnly}
           title={t("provider.duplicate")}
           className={iconButtonClass}
         >
@@ -333,7 +338,7 @@ export function ProviderActions({
           size="icon"
           variant="ghost"
           onClick={onTest || undefined}
-          disabled={isTesting}
+          disabled={isReadOnly || isTesting || !onTest}
           title={t("modelTest.testProvider", "测试模型")}
           className={cn(
             iconButtonClass,
@@ -350,7 +355,8 @@ export function ProviderActions({
         <Button
           size="icon"
           variant="ghost"
-          onClick={onConfigureUsage || undefined}
+          onClick={isReadOnly ? undefined : onConfigureUsage || undefined}
+          disabled={isReadOnly || !onConfigureUsage}
           title={t("provider.configureUsage")}
           className={cn(
             iconButtonClass,
@@ -365,7 +371,8 @@ export function ProviderActions({
           <Button
             size="icon"
             variant="ghost"
-            onClick={onOpenTerminal}
+            onClick={isReadOnly ? undefined : onOpenTerminal}
+            disabled={isReadOnly}
             title={t("provider.openTerminal", { defaultValue: "打开终端" })}
             className={cn(
               iconButtonClass,

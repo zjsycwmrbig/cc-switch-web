@@ -8,6 +8,10 @@ export interface TokenUsage {
 }
 
 export interface RequestLog {
+  costUnknown?: boolean;
+  username?: string;
+  device?: string;
+  state?: string;
   requestId: string;
   providerId: string;
   providerName?: string;

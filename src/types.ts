@@ -9,6 +9,7 @@ export type ProviderCategory =
   | "omo-slim"; // Oh My OpenCode Slim
 
 export interface Provider {
+  unitResource?: import("@/components/unit/client").Resource;
   id: string;
   name: string;
   settingsConfig: Record<string, any>; // 应用配置对象：Claude 为 settings.json；Codex 为 { auth, config }

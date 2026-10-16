@@ -1,3 +1,4 @@
+import { getUsageScope } from "@/lib/runtime/client/web";
 import { getWebSessionUsage } from "@/lib/runtime/client/web";
 import {
   useQuery,
@@ -45,6 +46,7 @@ export const usageKeys = {
   ) =>
     [
       ...usageKeys.all,
+      getUsageScope(),
       "summary",
       preset,
       customStartDate ?? 0,
@@ -59,6 +61,7 @@ export const usageKeys = {
   ) =>
     [
       ...usageKeys.all,
+      getUsageScope(),
       "trends",
       preset,
       customStartDate ?? 0,
@@ -73,6 +76,7 @@ export const usageKeys = {
   ) =>
     [
       ...usageKeys.all,
+      getUsageScope(),
       "provider-stats",
       preset,
       customStartDate ?? 0,
@@ -87,6 +91,7 @@ export const usageKeys = {
   ) =>
     [
       ...usageKeys.all,
+      getUsageScope(),
       "model-stats",
       preset,
       customStartDate ?? 0,
@@ -96,6 +101,7 @@ export const usageKeys = {
   logs: (key: RequestLogsKey, page: number, pageSize: number) =>
     [
       ...usageKeys.all,
+      getUsageScope(),
       "logs",
       key.preset,
       key.customStartDate ?? 0,
@@ -296,4 +302,10 @@ export function useDeleteModelPricing() {
   });
 }
 
-export function useSessionUsageSummary(appType: string, sessionId: string) { return useQuery({ queryKey: ["sessionUsage", appType, sessionId], queryFn: () => getWebSessionUsage(appType, sessionId), refetchInterval: 60_000 }); }
+export function useSessionUsageSummary(appType: string, sessionId: string) {
+  return useQuery({
+    queryKey: ["sessionUsage", appType, sessionId],
+    queryFn: () => getWebSessionUsage(appType, sessionId),
+    refetchInterval: 60_000,
+  });
+}

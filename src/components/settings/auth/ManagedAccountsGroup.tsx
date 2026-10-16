@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import React, { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -518,7 +519,9 @@ function AccountRow({
 }: AccountRowProps) {
   const { t } = useTranslation();
   const subId = useId();
-  const canSetDefault = !account.isDefault && !account.needsReauth;
+  const unitSession = useUnitSession();
+  const canSetDefault =
+    !unitSession && !account.isDefault && !account.needsReauth;
   const separator = " · ";
 
   return (

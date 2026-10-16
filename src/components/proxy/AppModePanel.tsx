@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Layers, Plug, Route } from "lucide-react";
@@ -24,6 +25,7 @@ export function AppModePanel({
   state: ReturnType<typeof useAppMode>;
 }) {
   const { t } = useTranslation();
+  const session = useUnitSession();
   const [view, setView] = useState<AppMode | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [restartConfirm, setRestartConfirm] = useState(false);
@@ -37,6 +39,26 @@ export function AppModePanel({
     app === "claude" || app === "codex"
       ? ["direct", "routing", "aggregation"]
       : ["direct", "routing"];
+  if (session && ["codex", "claude"].includes(app))
+    return (
+      <section
+        className="space-y-3 border-b border-border pb-4 pt-3"
+        aria-label="聚合模式"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" aria-pressed>
+            <Layers className="mr-1 h-4 w-4" />
+            聚合模式
+          </Button>
+          <span className="text-sm text-muted-foreground">
+            {state.data?.aggregation.members.length ?? 0} 个供应商已加入
+          </span>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          按请求模型选择已授权的供应商。提供者管理加入与退出、共享范围和额度；官方账号按授权范围自动轮询。
+        </p>
+      </section>
+    );
   if (state.isError)
     return (
       <div role="alert" className="py-3 text-sm">

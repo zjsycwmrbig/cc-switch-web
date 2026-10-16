@@ -1,3 +1,5 @@
+import { useUnitSession } from "@/components/unit/session";
+import { UnitPanel, ProviderSharing } from "@/components/unit/UnitApp";
 import { WebSidebar } from "@/components/shell/WebSidebar";
 import type { ProviderEditorSave } from "@/lib/api/providers";
 import {
@@ -146,6 +148,11 @@ const UsageDashboard = lazy(() =>
 );
 
 type View =
+  | "models"
+  | "keys"
+  | "profile"
+  | "admin"
+  | "ledger"
   | "usage"
   | "accounts"
   | "apps"
@@ -189,6 +196,11 @@ const getInitialApp = (): AppId => {
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
 const VALID_VIEWS: View[] = [
+  "models",
+  "keys",
+  "profile",
+  "admin",
+  "ledger",
   "usage",
   "accounts",
   "apps",
@@ -216,11 +228,30 @@ const getInitialView = (): View => {
 };
 
 function App() {
+  const session = useUnitSession();
+  const isAdmin = !session || session.me.user.role === "admin";
+  const [sharingProvider, setSharingProvider] = useState<Provider | null>(null);
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
+  const [activeApp, setActiveApp] = useState<AppId>(() => {
+    const saved = session
+      ? (localStorage.getItem(
+          `${STORAGE_KEY}:${session.me.user.id}`,
+        ) as AppId | null)
+      : null;
+    return saved && VALID_APPS.includes(saved) ? saved : getInitialApp();
+  });
+  const [currentView, setCurrentView] = useState<View>(() => {
+    const saved = session
+      ? (localStorage.getItem(
+          `${VIEW_STORAGE_KEY}:${session.me.user.id}`,
+        ) as View | null)
+      : null;
+    if (saved && VALID_VIEWS.includes(saved) && (saved !== "admin" || isAdmin))
+      return saved;
+    return session ? "providers" : getInitialView();
+  });
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
 
@@ -229,8 +260,15 @@ function App() {
   };
 
   useEffect(() => {
-    localStorage.setItem(VIEW_STORAGE_KEY, currentView);
-  }, [currentView]);
+    localStorage.setItem(
+      session ? `${VIEW_STORAGE_KEY}:${session.me.user.id}` : VIEW_STORAGE_KEY,
+      currentView,
+    );
+  }, [currentView, session?.me.user.id]);
+  useEffect(() => {
+    if (session)
+      localStorage.setItem(`${STORAGE_KEY}:${session.me.user.id}`, activeApp);
+  }, [activeApp, session?.me.user.id]);
 
   const { data: settingsData } = useSettingsQuery();
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
@@ -272,6 +310,7 @@ function App() {
   }, [activeApp, currentView]);
 
   useEffect(() => {
+    if (!isAdmin) return;
     const checkEnvOnStartup = async () => {
       try {
         const allConflicts = await checkAllEnvConflicts();
@@ -295,7 +334,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!["claude", "codex", "gemini"].includes(activeApp)) {
+    if (!isAdmin || !["claude", "codex", "gemini"].includes(activeApp)) {
       return;
     }
 
@@ -749,7 +788,47 @@ function App() {
 
   const renderContent = () => {
     const content = (() => {
+      if (
+        !isAdmin &&
+        [
+          "mcp",
+          "skills",
+          "skillsDiscovery",
+          "prompts",
+          "universal",
+          "sessions",
+          "workspace",
+          "openclawEnv",
+          "openclawTools",
+          "openclawAgents",
+          "hermesMemory",
+          "apps",
+        ].includes(currentView)
+      ) {
+        return (
+          <div className="mx-6 my-4 rounded-xl border p-6 text-sm text-muted-foreground">
+            此功能操作服务器共享配置，仅管理员可以使用。你的供应商、模型、设备和使用统计可在原导航中管理。
+          </div>
+        );
+      }
+      if (
+        !isAdmin &&
+        currentView === "providers" &&
+        !["codex", "claude"].includes(activeApp)
+      ) {
+        return (
+          <div className="mx-6 my-4 rounded-xl border p-6 text-sm text-muted-foreground">
+            此应用的服务器配置由管理员维护。当前多用户聚合支持 Codex 和 Claude。
+          </div>
+        );
+      }
       switch (currentView) {
+        case "models":
+        case "keys":
+        case "profile":
+        case "admin":
+        case "ledger":
+          return <UnitPanel page={currentView} />;
         case "accounts":
           return (
             <div className="px-6 py-4">
@@ -849,10 +928,15 @@ function App() {
                         state={appMode}
                       />
                     )}
-                    {activeApp === "codex" && appMode.data?.mode === "aggregation" && (
-                      <AggregationSyncPanel />
-                    )}
+                    {activeApp === "codex" &&
+                      appMode.data?.mode === "aggregation" && (
+                        <AggregationSyncPanel
+                          onPersonalModels={() => setCurrentView("models")}
+                          onDevices={() => setCurrentView("keys")}
+                        />
+                      )}
                     <ProviderList
+                      onShare={setSharingProvider}
                       modeView={appMode.data}
                       modePending={appMode.pending}
                       onAggregationMember={(id, enabled) => {
@@ -876,6 +960,11 @@ function App() {
                       activeProviderId={activeProviderId}
                       onSwitch={switchProvider}
                       onEdit={(provider) => {
+                        if (
+                          provider.unitResource &&
+                          !provider.unitResource.owned
+                        )
+                          return;
                         setEditingProvider(provider);
                       }}
                       onDelete={(provider) =>
@@ -1008,6 +1097,17 @@ function App() {
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
                 <h1 className="text-lg font-semibold">
+                  {
+                    (
+                      {
+                        models: "模型与接入",
+                        keys: "设备与密钥",
+                        profile: "个人账号",
+                        admin: "用户与额度",
+                        ledger: "配额与请求账本",
+                      } as Record<string, string>
+                    )[currentView]
+                  }
                   {currentView === "usage" && t("nav.usage")}
                   {currentView === "accounts" && t("settings.authCenter.title")}
                   {currentView === "apps" && t("nav.apps")}
@@ -1095,6 +1195,7 @@ function App() {
               )}
             {currentView === "providers" &&
               activeApp !== "mcode" &&
+              isAdmin &&
               (settingsData?.showProfileSwitcher ?? true) && (
                 <div className="flex shrink-0 items-center">
                   <ProfileSwitcher activeApp={activeApp} />
@@ -1536,6 +1637,16 @@ function App() {
         {renderContent()}
       </main>
 
+      {sharingProvider?.unitResource && (
+        <ProviderSharing
+          resource={sharingProvider.unitResource}
+          close={() => {
+            setSharingProvider(null);
+            void queryClient.invalidateQueries({ queryKey: ["providers"] });
+          }}
+        />
+      )}
+
       <Suspense fallback={null}>
         <AddProviderDialog
           open={isAddOpen}
@@ -1619,7 +1730,7 @@ function App() {
         }}
         onCancel={() => setLaunchDashboardOpen(false)}
       />
-      <FirstRunNoticeDialog />
+      {!session && <FirstRunNoticeDialog />}
       <Suspense fallback={null}>
         <DeepLinkImportDialog />
       </Suspense>

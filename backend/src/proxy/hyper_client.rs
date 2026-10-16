@@ -233,6 +233,10 @@ pub async fn send_request(
     proxy_url: Option<&str>,
 ) -> Result<ProxyResponse, ProxyError> {
     // Extract our own OriginalHeaderCases if available
+    let pinned = if original_extensions.get::<crate::hub::network::OutboundPolicy>().is_some_and(|p|!p.allow_private) {
+        let host=uri.host().ok_or_else(||ProxyError::InvalidRequest("供应商地址缺少域名".into()))?;
+        Some(crate::hub::network::resolve(host,uri.port_u16().unwrap_or(if uri.scheme_str()==Some("http"){80}else{443})).await.map_err(|e|ProxyError::InvalidRequest(e.2))?)
+    }else{None};
     let original_cases = original_extensions.get::<OriginalHeaderCases>().cloned();
     let has_cases = original_cases
         .as_ref()
@@ -247,7 +251,7 @@ pub async fn send_request(
         proxy_url,
     );
 
-    if has_cases {
+    if has_cases || pinned.is_some() {
         // Primary path: use raw write + hyper handshake for exact header casing
         let result = tokio::time::timeout(
             timeout,
@@ -255,9 +259,10 @@ pub async fn send_request(
                 &uri,
                 &method,
                 &headers,
-                original_cases.as_ref().unwrap(),
+                &original_cases.clone().unwrap_or_default(),
                 &body,
                 proxy_url,
+                pinned.as_deref(),
             ),
         )
         .await
@@ -266,7 +271,7 @@ pub async fn send_request(
         match result {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                if proxy_url.is_some() {
+                if proxy_url.is_some() || pinned.is_some() {
                     // Don't bypass configured proxy with direct connect fallback
                     return Err(e);
                 }
@@ -363,6 +368,7 @@ async fn send_raw_request(
     original_cases: &OriginalHeaderCases,
     body: &[u8],
     proxy_url: Option<&str>,
+    pinned: Option<&[std::net::SocketAddr]>,
 ) -> Result<ProxyResponse, ProxyError> {
     use tokio::io::AsyncWriteExt;
 
@@ -380,11 +386,11 @@ async fn send_raw_request(
 
     // Establish TCP connection — either direct or through HTTP CONNECT proxy
     let stream = if let Some(proxy) = proxy_url {
-        connect_via_proxy(proxy, host, port).await?
+        let pinned_host=pinned.and_then(|a|a.first()).map(|a|match a.ip(){std::net::IpAddr::V4(ip)=>ip.to_string(),std::net::IpAddr::V6(ip)=>format!("[{ip}]")});
+        connect_via_proxy(proxy, pinned_host.as_deref().unwrap_or(host), port).await?
     } else {
         ProxyStream::Tcp(
-            tokio::net::TcpStream::connect((host, port))
-                .await
+            if let Some(addresses)=pinned {tokio::net::TcpStream::connect(addresses).await} else {tokio::net::TcpStream::connect((host, port)).await}
                 .map_err(|e| ProxyError::ForwardFailed(format!("TCP connect failed: {e}")))?,
         )
     };

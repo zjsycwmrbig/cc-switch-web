@@ -2,6 +2,8 @@
 
 [中文](README.md) | English | [日本語](README_JA.md)
 
+This fork defaults to **ccSwitchUint**, a multi-user aggregation gateway with registration and login, provider/account ownership and sharing, personal model catalogs and device setup commands, consumer/provider usage reports, quota reservations and settlement, and authorized official-account rotation. Server administration is restricted to administrators. First startup creates `admin`; its initial password uses `CC_SWITCH_ADMIN_PASSWORD`, or the existing access key during migration, with credentials saved as `ccswitchuint-admin-initial.txt` in the data directory. See the [multi-user guide](docs/ccswitchuint.md) and [architecture plan](docs-dev/2026-10-16-ccswitchuint-multi-user-plan.md). The original CC Switch Web shell, provider editor, proxy settings, and usage charts are preserved; multi-user controls are integrated into that interface with role and ownership checks.
+
 ## Overview
 
 CC Switch Web is the web branch repository of [cc-switch](https://github.com/farion1231/cc-switch), carrying the web-oriented implementation and branch-specific customizations of CC Switch.

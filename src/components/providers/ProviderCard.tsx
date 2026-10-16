@@ -1,3 +1,5 @@
+import { ResourceCardTools } from "@/components/unit/ResourceCardTools";
+import { useUnitSession } from "@/components/unit/session";
 import { useMemo, useState, useEffect } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -26,6 +28,7 @@ import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
 
 interface ProviderCardProps {
+  onShare?: (provider: Provider) => void;
   aggregation?: AggregationActions;
   deleteDisabled?: boolean;
   provider: Provider;
@@ -118,6 +121,7 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
 }
 
 export function ProviderCard({
+  onShare,
   aggregation,
   deleteDisabled,
   provider,
@@ -150,6 +154,9 @@ export function ProviderCard({
   onSetAsDefault,
 }: ProviderCardProps) {
   const { t } = useTranslation();
+  const session = useUnitSession();
+  const sharedReadOnly =
+    !!provider.unitResource && !provider.unitResource.owned;
 
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
@@ -160,7 +167,7 @@ export function ProviderCard({
   const { data: health } = useProviderHealth(
     provider.id,
     appId,
-    appId !== "pi",
+    appId !== "pi" && !session,
   );
 
   const fallbackUrlText = t("provider.notConfigured", {
@@ -227,7 +234,8 @@ export function ProviderCard({
     !isOfficial &&
     !isOfficialSubscriptionUsage;
   const { data: usage } = useUsageQuery(provider.id, appId, {
-    enabled: scriptUsageActive,
+    enabled:
+      scriptUsageActive && (!session || session.me.user.role === "admin"),
     autoQueryInterval,
   });
 
@@ -330,6 +338,13 @@ export function ProviderCard({
                 {provider.name}
               </h3>
 
+              {provider.unitResource && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  提供者 {provider.unitResource.ownerName} ·{" "}
+                  {provider.unitResource.models.length} 个模型
+                  {sharedReadOnly ? " · 只读" : " · 我的供应商"}
+                </span>
+              )}
               {isOmo && (
                 <span className="theme-chip-primary inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-semibold">
                   OMO
@@ -493,12 +508,18 @@ export function ProviderCard({
               isInConfig={isInConfig}
               isTesting={isTesting}
               isProxyTakeover={isProxyTakeover}
-              isReadOnly={isHermesReadOnly}
+              isReadOnly={isHermesReadOnly || sharedReadOnly}
+              readOnlyReason={
+                sharedReadOnly
+                  ? "仅供应商提供者可以修改配置和聚合状态"
+                  : undefined
+              }
               isOmo={isAnyOmo}
               onSwitch={() => onSwitch(provider)}
               onEdit={() => onEdit(provider)}
               onDuplicate={() => onDuplicate(provider)}
               onTest={
+                (!session || session.me.user.role === "admin") &&
                 onTest &&
                 appId !== "mcode" &&
                 !isOfficial &&
@@ -509,6 +530,7 @@ export function ProviderCard({
                   : undefined
               }
               onConfigureUsage={
+                (session && session.me.user.role !== "admin") ||
                 (isOfficial && !isBoundCodexOfficial) ||
                 isCopilot ||
                 (isCodexOauth && !isBoundCodexOfficial) ||
@@ -533,6 +555,12 @@ export function ProviderCard({
               isDefaultModel={isDefaultModel}
               onSetAsDefault={onSetAsDefault}
             />
+            {provider.unitResource && (
+              <ResourceCardTools
+                resource={provider.unitResource}
+                onShare={() => onShare?.(provider)}
+              />
+            )}
           </div>
         </div>
       </div>

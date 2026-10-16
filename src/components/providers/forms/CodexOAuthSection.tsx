@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import React from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -94,6 +95,7 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
   helpSide,
 }) => {
   const { t, i18n } = useTranslation();
+  const unitSession = useUnitSession();
 
   const {
     accounts,
@@ -242,12 +244,16 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
           <SelectContent className="w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)]">
             {requireExplicitSelection && !selectedAccountId && (
               <SelectItem value="__official_account_required__" disabled>
-                <span className="text-muted-foreground">{accountChoicePlaceholder}</span>
+                <span className="text-muted-foreground">
+                  {accountChoicePlaceholder}
+                </span>
               </SelectItem>
             )}
             {!allowUnboundSelection && !selectedAccountId && (
               <SelectItem value="__managed_account_required__" disabled>
-                <span className="text-muted-foreground">{accountChoicePlaceholder}</span>
+                <span className="text-muted-foreground">
+                  {accountChoicePlaceholder}
+                </span>
               </SelectItem>
             )}
             {!nativeLoginOnly &&
@@ -448,10 +454,14 @@ export const CodexOAuthSection: React.FC<CodexOAuthSectionProps> = ({
       slug="chatgpt"
       name="ChatGPT"
       iconName="openai"
-      help={t("authCenter.group.chatgptHelp", {
-        defaultValue:
-          "用于 Claude Code、Claude Desktop 的 ChatGPT 预设，以及 Codex 官方登录绑定。没指定账号的供应商用「默认」账号。",
-      })}
+      help={
+        unitSession
+          ? "仅展示你自己的官方账号。供应商须绑定具体账号，加入聚合后按授权范围自动轮询，不使用默认账号。"
+          : t("authCenter.group.chatgptHelp", {
+              defaultValue:
+                "用于 Claude Code、Claude Desktop 的 ChatGPT 预设，以及 Codex 官方登录绑定。没指定账号的供应商用「默认」账号。",
+            })
+      }
       helpSide={helpSide}
       accounts={rows}
       status={isStatusError ? "error" : isStatusSuccess ? "ready" : "loading"}

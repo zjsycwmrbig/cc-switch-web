@@ -2,6 +2,8 @@
 
 [中文](README.md) | [English](README_EN.md) | 日本語
 
+この fork は **ccSwitchUint マルチユーザー集約ゲートウェイ**を標準で提供します。登録・ログイン、プロバイダーと公式アカウントの所有・共有、個人モデル一覧とデバイス接続コマンド、利用者・提供者別の統計、利用枠の予約・精算、許可された公式アカウント間の切り替えに対応します。サーバー管理機能は管理者専用です。初回起動時に `admin` を作成し、初期パスワードには `CC_SWITCH_ADMIN_PASSWORD`、移行時には既存アクセスキーを使用します。認証情報はデータディレクトリの `ccswitchuint-admin-initial.txt` に保存されます。[利用ガイド](docs/ccswitchuint.md) と [設計書](docs-dev/2026-10-16-ccswitchuint-multi-user-plan.md) を参照してください。 従来の CC Switch Web のメイン画面、プロバイダー編集、プロキシ設定、利用統計を維持し、その画面内にマルチユーザー機能と権限制御を追加します。
+
 ## 概要
 
 CC Switch Web は [cc-switch](https://github.com/farion1231/cc-switch) の Web ブランチ用リポジトリで、CC Switch の Web 向け実装とブランチ固有のカスタマイズを管理します。

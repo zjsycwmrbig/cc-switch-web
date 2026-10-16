@@ -1,3 +1,5 @@
+import { useUnitSession } from "@/components/unit/session";
+import { getUsageScope, setUsageScope } from "@/lib/runtime/client/web";
 import { UsageHeatmap } from "./UsageHeatmap";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { useMemo, useState } from "react";
@@ -59,6 +61,8 @@ export function UsageDashboard({
 }: UsageDashboardProps = {}) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const session = useUnitSession();
+  const [scope, changeScope] = useState(getUsageScope);
   const { data: lastSessionScan } = useQuery({
     queryKey: [...usageKeys.all, "last-session-scan"],
     queryFn: usageApi.getLastSessionScan,
@@ -129,6 +133,29 @@ export function UsageDashboard({
       transition={{ duration: 0.4 }}
       className="space-y-8 pb-8"
     >
+      {session && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm">
+          <span>统计范围</span>
+          <select
+            className="rounded-md border bg-background px-2 py-1"
+            value={scope}
+            onChange={(e) => {
+              setUsageScope(e.target.value);
+              changeScope(e.target.value);
+              void queryClient.invalidateQueries({ queryKey: usageKeys.all });
+            }}
+          >
+            <option value="mine">我的调用</option>
+            <option value="provided">我提供的资源</option>
+            {session.me.user.role === "admin" && (
+              <option value="all">全平台</option>
+            )}
+          </select>
+          <span className="text-muted-foreground">
+            聚合网关账本 · 未定价成本与待核算额度请在“配额与账本”查看。
+          </span>
+        </div>
+      )}
       <div className="flex flex-col gap-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex flex-col gap-1">
@@ -299,7 +326,7 @@ export function UsageDashboard({
             <Button
               variant="outline"
               size="sm"
-              disabled={syncingSession}
+              disabled={!!session || syncingSession}
               onClick={() => void runManualSessionSync()}
             >
               {syncingSession ? (
@@ -311,7 +338,8 @@ export function UsageDashboard({
             </Button>
           )}
           <Switch
-            checked={sessionAutoSyncEnabled}
+            disabled={!!session}
+            checked={!session && sessionAutoSyncEnabled}
             onCheckedChange={(value) =>
               void onSessionAutoSyncEnabledChange?.(value)
             }
@@ -340,7 +368,9 @@ export function UsageDashboard({
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <PricingConfigPanel />
+            <fieldset disabled={!!session && session.me.user.role !== "admin"}>
+              <PricingConfigPanel />
+            </fieldset>
           </AccordionContent>
         </AccordionItem>
       </Accordion>

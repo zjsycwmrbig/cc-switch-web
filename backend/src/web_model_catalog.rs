@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 const SAFE_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
 
-fn publish(
+pub(crate) fn publish(
     entry: &mut Value,
     key: &str,
     provider_name: &str,

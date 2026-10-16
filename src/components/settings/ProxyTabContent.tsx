@@ -22,11 +22,13 @@ import type { SettingsFormState } from "@/hooks/useSettings";
 import { isWebRuntime } from "@/lib/runtime/client/env";
 
 interface ProxyTabContentProps {
+  readOnly?: boolean;
   settings: SettingsFormState;
   onAutoSave: (updates: Partial<SettingsFormState>) => Promise<void>;
 }
 
 export function ProxyTabContent({
+  readOnly = false,
   settings,
   onAutoSave,
 }: ProxyTabContentProps) {
@@ -90,6 +92,11 @@ export function ProxyTabContent({
       transition={{ duration: 0.3 }}
       className="space-y-4"
     >
+      {readOnly && (
+        <p className="rounded-lg border p-3 text-sm text-muted-foreground">
+          代理监听、出站代理和全局转发策略由管理员维护。你可以查看原有设置面板，修改控件已禁用。
+        </p>
+      )}
       <Accordion type="multiple" defaultValue={[]} className="w-full space-y-4">
         {/* Local Proxy */}
         <AccordionItem
@@ -121,14 +128,16 @@ export function ProxyTabContent({
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-            <ProxyPanel
-              enableLocalProxy={settings?.enableLocalProxy ?? false}
-              onEnableLocalProxyChange={(checked) =>
-                onAutoSave({ enableLocalProxy: checked })
-              }
-              onToggleProxy={handleToggleProxy}
-              isProxyPending={isProxyPending}
-            />
+            <fieldset disabled={readOnly} className="space-y-4">
+              <ProxyPanel
+                enableLocalProxy={settings?.enableLocalProxy ?? false}
+                onEnableLocalProxyChange={(checked) =>
+                  onAutoSave({ enableLocalProxy: checked })
+                }
+                onToggleProxy={handleToggleProxy}
+                isProxyPending={isProxyPending}
+              />
+            </fieldset>
           </AccordionContent>
         </AccordionItem>
 
@@ -152,101 +161,105 @@ export function ProxyTabContent({
               </div>
             </AccordionTrigger>
             <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-              <div className="space-y-6">
-                <ToggleRow
-                  icon={<ShieldAlert className="h-4 w-4 theme-warning-text" />}
-                  title={t("settings.advanced.proxy.enableFailoverToggle")}
-                  description={t(
-                    "settings.advanced.proxy.enableFailoverToggleDescription",
+              <fieldset disabled={readOnly} className="space-y-4">
+                <div className="space-y-6">
+                  <ToggleRow
+                    icon={
+                      <ShieldAlert className="h-4 w-4 theme-warning-text" />
+                    }
+                    title={t("settings.advanced.proxy.enableFailoverToggle")}
+                    description={t(
+                      "settings.advanced.proxy.enableFailoverToggleDescription",
+                    )}
+                    checked={settings?.enableFailoverToggle ?? false}
+                    onCheckedChange={handleFailoverToggleChange}
+                  />
+
+                  {!isRunning && (
+                    <div className="theme-panel-warning rounded-lg border p-4">
+                      <p className="text-sm">
+                        {t("proxy.failover.proxyRequired", {
+                          defaultValue: "需要先启动代理服务才能配置故障转移",
+                        })}
+                      </p>
+                    </div>
                   )}
-                  checked={settings?.enableFailoverToggle ?? false}
-                  onCheckedChange={handleFailoverToggleChange}
-                />
 
-                {!isRunning && (
-                  <div className="theme-panel-warning rounded-lg border p-4">
-                    <p className="text-sm">
-                      {t("proxy.failover.proxyRequired", {
-                        defaultValue: "需要先启动代理服务才能配置故障转移",
-                      })}
-                    </p>
-                  </div>
-                )}
-
-                <Tabs defaultValue="claude" className="w-full">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="claude">Claude</TabsTrigger>
-                    <TabsTrigger value="codex">Codex</TabsTrigger>
-                    <TabsTrigger value="gemini">Gemini</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="claude" className="mt-4 space-y-6">
-                    <div className="space-y-4">
-                      <div>
-                        <h4 className="text-sm font-semibold">
-                          {t("proxy.failoverQueue.title")}
-                        </h4>
-                        <p className="text-xs text-muted-foreground">
-                          {t("proxy.failoverQueue.description")}
-                        </p>
+                  <Tabs defaultValue="claude" className="w-full">
+                    <TabsList className="grid w-full grid-cols-3">
+                      <TabsTrigger value="claude">Claude</TabsTrigger>
+                      <TabsTrigger value="codex">Codex</TabsTrigger>
+                      <TabsTrigger value="gemini">Gemini</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="claude" className="mt-4 space-y-6">
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                        <FailoverQueueManager
+                          appType="claude"
+                          disabled={!isRunning}
+                        />
                       </div>
-                      <FailoverQueueManager
-                        appType="claude"
-                        disabled={!isRunning}
-                      />
-                    </div>
-                    <div className="border-t border-border/50 pt-6">
-                      <AutoFailoverConfigPanel
-                        appType="claude"
-                        disabled={!isRunning}
-                      />
-                    </div>
-                  </TabsContent>
-                  <TabsContent value="codex" className="mt-4 space-y-6">
-                    <div className="space-y-4">
-                      <div>
-                        <h4 className="text-sm font-semibold">
-                          {t("proxy.failoverQueue.title")}
-                        </h4>
-                        <p className="text-xs text-muted-foreground">
-                          {t("proxy.failoverQueue.description")}
-                        </p>
+                      <div className="border-t border-border/50 pt-6">
+                        <AutoFailoverConfigPanel
+                          appType="claude"
+                          disabled={!isRunning}
+                        />
                       </div>
-                      <FailoverQueueManager
-                        appType="codex"
-                        disabled={!isRunning}
-                      />
-                    </div>
-                    <div className="border-t border-border/50 pt-6">
-                      <AutoFailoverConfigPanel
-                        appType="codex"
-                        disabled={!isRunning}
-                      />
-                    </div>
-                  </TabsContent>
-                  <TabsContent value="gemini" className="mt-4 space-y-6">
-                    <div className="space-y-4">
-                      <div>
-                        <h4 className="text-sm font-semibold">
-                          {t("proxy.failoverQueue.title")}
-                        </h4>
-                        <p className="text-xs text-muted-foreground">
-                          {t("proxy.failoverQueue.description")}
-                        </p>
+                    </TabsContent>
+                    <TabsContent value="codex" className="mt-4 space-y-6">
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                        <FailoverQueueManager
+                          appType="codex"
+                          disabled={!isRunning}
+                        />
                       </div>
-                      <FailoverQueueManager
-                        appType="gemini"
-                        disabled={!isRunning}
-                      />
-                    </div>
-                    <div className="border-t border-border/50 pt-6">
-                      <AutoFailoverConfigPanel
-                        appType="gemini"
-                        disabled={!isRunning}
-                      />
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </div>
+                      <div className="border-t border-border/50 pt-6">
+                        <AutoFailoverConfigPanel
+                          appType="codex"
+                          disabled={!isRunning}
+                        />
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="gemini" className="mt-4 space-y-6">
+                      <div className="space-y-4">
+                        <div>
+                          <h4 className="text-sm font-semibold">
+                            {t("proxy.failoverQueue.title")}
+                          </h4>
+                          <p className="text-xs text-muted-foreground">
+                            {t("proxy.failoverQueue.description")}
+                          </p>
+                        </div>
+                        <FailoverQueueManager
+                          appType="gemini"
+                          disabled={!isRunning}
+                        />
+                      </div>
+                      <div className="border-t border-border/50 pt-6">
+                        <AutoFailoverConfigPanel
+                          appType="gemini"
+                          disabled={!isRunning}
+                        />
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                </div>
+              </fieldset>
             </AccordionContent>
           </AccordionItem>
 
@@ -270,7 +283,9 @@ export function ProxyTabContent({
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                <RectifierConfigPanel />
+                <fieldset disabled={readOnly} className="space-y-4">
+                  <RectifierConfigPanel />
+                </fieldset>
               </AccordionContent>
             </AccordionItem>
 
@@ -293,7 +308,9 @@ export function ProxyTabContent({
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-6 pb-6 pt-4 border-t border-border/50">
-                <GlobalProxySettings />
+                <fieldset disabled={readOnly} className="space-y-4">
+                  <GlobalProxySettings />
+                </fieldset>
               </AccordionContent>
             </AccordionItem>
           </>

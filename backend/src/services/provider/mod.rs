@@ -3805,7 +3805,7 @@ impl ProviderService {
         .await
     }
 
-    fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+    pub(crate) fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
         match app_type {
             AppType::Claude | AppType::ClaudeDesktop => {
                 if !provider.settings_config.is_object() {

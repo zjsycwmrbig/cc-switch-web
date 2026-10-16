@@ -1,4 +1,8 @@
-import type { SkillDiscoveryResult, SkillUpdateCheckResult, SkillAppSyncOutcome } from "@/lib/api/skills";
+import type {
+  SkillDiscoveryResult,
+  SkillUpdateCheckResult,
+  SkillAppSyncOutcome,
+} from "@/lib/api/skills";
 import type { AppMode, AppModeView } from "@/types/proxy";
 import type { Settings } from "@/types";
 import type {
@@ -113,6 +117,17 @@ interface ProvidersResponse {
   currentProviderId: string;
 }
 
+let unitRole: string | null = null;
+export const setWebUserRole = (role: string | null) => {
+  unitRole = role;
+};
+const hasUnit = () => unitRole !== null;
+const personalUser = () => hasUnit() && unitRole !== "admin";
+export const getUsageScope = () =>
+  sessionStorage.getItem("ccswitchuint-usage-scope") || "mine";
+export const setUsageScope = (scope: string) =>
+  sessionStorage.setItem("ccswitchuint-usage-scope", scope);
+
 const WEB_ACCESS_KEY_STORAGE_KEY = "cc-switch-web-access-key";
 export const WEB_AUTH_REQUIRED_EVENT = "cc-switch-web-auth-required";
 
@@ -138,6 +153,8 @@ export function clearWebAccessKey(): void {
 
 function webRequestHeaders(accept: string): Record<string, string> {
   const headers: Record<string, string> = { Accept: accept };
+  const csrf = sessionStorage.getItem("ccswitchuint-csrf");
+  if (csrf) headers["X-CSRF-Token"] = csrf;
   const accessKey = getWebAccessKey();
   if (accessKey) {
     headers.Authorization = `Bearer ${accessKey}`;
@@ -148,7 +165,11 @@ function webRequestHeaders(accept: string): Record<string, string> {
 function handleUnauthorized(response: Response): void {
   if (response.status !== 401) return;
   clearWebAccessKey();
-  window.dispatchEvent(new CustomEvent(WEB_AUTH_REQUIRED_EVENT));
+  window.dispatchEvent(
+    new CustomEvent(
+      hasUnit() ? "ccswitchuint-unauthorized" : WEB_AUTH_REQUIRED_EVENT,
+    ),
+  );
 }
 
 export const getWebApiBase = (): string => {
@@ -371,7 +392,9 @@ function parseDownloadFilename(
 
 export async function getWebSettings(): Promise<Settings> {
   try {
-    return await requestJson<Settings>("/api/settings");
+    return await requestJson<Settings>(
+      personalUser() ? "/api/unit/ui/settings" : "/api/settings",
+    );
   } catch (error) {
     console.warn(
       "[runtime:web] failed to load settings from local service",
@@ -402,8 +425,14 @@ export async function verifyWebAccessKey(accessKey: string): Promise<void> {
 export async function getWebProviders(
   appId: AppId,
 ): Promise<ProvidersResponse> {
+  if (personalUser() && !["codex", "claude"].includes(appId))
+    return { providers: {}, currentProviderId: "" };
   try {
-    return await requestJson<ProvidersResponse>(`/api/providers/${appId}`);
+    return await requestJson<ProvidersResponse>(
+      hasUnit() && ["codex", "claude"].includes(appId)
+        ? `/api/unit/ui/providers/${appId}`
+        : `/api/providers/${appId}`,
+    );
   } catch (error) {
     console.warn(
       `[runtime:web] failed to load providers for ${appId} from local service`,
@@ -417,16 +446,19 @@ export async function getWebProviders(
 }
 
 export async function getWebConfigDir(appId: AppId): Promise<string> {
+  if (personalUser()) return "由管理员管理";
   return requestJson<string>(`/api/settings/config-dir/${appId}`);
 }
 
 export async function getWebDefaultConfigDir(appId: AppId): Promise<string> {
+  if (personalUser()) return "由管理员管理";
   return requestJson<string>(`/api/settings/default-config-dir/${appId}`);
 }
 
 export async function getWebCommonConfigSnippet(
   appType: string,
 ): Promise<string | null> {
+  if (hasUnit()) return null;
   return requestJson<string | null>(
     `/api/settings/common-config/${encodeURIComponent(appType)}`,
   );
@@ -477,14 +509,17 @@ export async function syncWebCurrentProvidersLive(): Promise<{
 }
 
 export async function getWebAppConfigDirOverride(): Promise<string | null> {
+  if (personalUser()) return null;
   return requestJson<string | null>("/api/settings/app-config-dir-override");
 }
 
 export async function getWebAppConfigDir(): Promise<string> {
+  if (personalUser()) return "由管理员管理";
   return requestJson<string>("/api/settings/app-config-dir");
 }
 
 export async function getWebDefaultAppConfigDir(): Promise<string> {
+  if (personalUser()) return "由管理员管理";
   return requestJson<string>("/api/settings/default-app-config-dir");
 }
 
@@ -595,6 +630,10 @@ export async function startWebManagedAuthLogin(
   authProvider: string,
   targetAccountId?: string | null,
 ): Promise<import("@/lib/api/auth").ManagedAuthDeviceCodeResponse> {
+  if (hasUnit() && authProvider === "codex_oauth")
+    return requestWithBody("/api/unit/accounts/login", "POST", {
+      targetAccountId: targetAccountId || null,
+    });
   return requestWithBody("/api/auth/start-login", "POST", {
     authProvider,
     targetAccountId: targetAccountId || null,
@@ -605,6 +644,10 @@ export async function cancelWebManagedAuthLogin(
   authProvider: string,
   deviceCode: string,
 ): Promise<boolean> {
+  if (hasUnit() && authProvider === "codex_oauth") {
+    await requestWithBody("/api/unit/accounts/cancel", "POST", { deviceCode });
+    return true;
+  }
   return requestWithBody("/api/auth/cancel-login", "POST", {
     authProvider,
     deviceCode,
@@ -615,6 +658,12 @@ export async function pollWebManagedAuthAccount(
   authProvider: string,
   deviceCode: string,
 ): Promise<import("@/lib/api/auth").ManagedAuthAccount | null> {
+  if (hasUnit() && authProvider === "codex_oauth") {
+    const v = await requestWithBody<{
+      account: import("@/lib/api/auth").ManagedAuthAccount | null;
+    }>("/api/unit/accounts/poll", "POST", { deviceCode });
+    return v.account;
+  }
   return requestWithBody("/api/auth/poll-for-account", "POST", {
     authProvider,
     deviceCode,
@@ -624,18 +673,45 @@ export async function pollWebManagedAuthAccount(
 export async function listWebManagedAuthAccounts(
   authProvider: string,
 ): Promise<import("@/lib/api/auth").ManagedAuthAccount[]> {
+  if (hasUnit() && authProvider === "codex_oauth")
+    return requestJson("/api/unit/accounts");
+  if (personalUser()) return [];
   return requestJson(`/api/auth/${encodeURIComponent(authProvider)}/accounts`);
 }
 
 export async function getWebManagedAuthStatus(
   authProvider: string,
 ): Promise<import("@/lib/api/auth").ManagedAuthStatus> {
+  if (hasUnit() && authProvider === "codex_oauth") {
+    const accounts = (await listWebManagedAuthAccounts(authProvider)).map(
+      (a) => ({ ...a, is_default: false }),
+    );
+    return {
+      provider: "codex_oauth",
+      authenticated: accounts.length > 0,
+      default_account_id: null,
+      accounts,
+    };
+  }
+  if (personalUser())
+    return {
+      provider: authProvider as import("@/lib/api/auth").ManagedAuthProvider,
+      authenticated: false,
+      default_account_id: null,
+      accounts: [],
+    };
   return requestJson(`/api/auth/${encodeURIComponent(authProvider)}/status`);
 }
 
 export async function getWebCodexOauthModels(
   accountId?: string | null,
 ): Promise<import("@/lib/api/model-fetch").FetchedModel[]> {
+  if (hasUnit()) {
+    if (!accountId) throw new Error("请选择你自己的官方账号");
+    return requestJson(
+      `/api/unit/ui/accounts/${encodeURIComponent(accountId)}/models`,
+    );
+  }
   const query = accountId ? `?accountId=${encodeURIComponent(accountId)}` : "";
   return requestJson(`/api/auth/codex_oauth/models${query}`);
 }
@@ -651,6 +727,13 @@ export async function removeWebManagedAuthAccount(
   authProvider: string,
   accountId: string,
 ): Promise<void> {
+  if (hasUnit() && authProvider === "codex_oauth") {
+    await requestWithBody(
+      `/api/unit/accounts/${encodeURIComponent(accountId)}`,
+      "DELETE",
+    );
+    return;
+  }
   await requestWithBody("/api/auth/remove-account", "POST", {
     authProvider,
     accountId,
@@ -670,6 +753,11 @@ export async function setWebManagedAuthDefaultAccount(
 export async function logoutWebManagedAuth(
   authProvider: string,
 ): Promise<void> {
+  if (hasUnit() && authProvider === "codex_oauth") {
+    for (const a of await listWebManagedAuthAccounts(authProvider))
+      await removeWebManagedAuthAccount(authProvider, a.id);
+    return;
+  }
   await requestWithBody("/api/auth/logout", "POST", { authProvider });
 }
 
@@ -728,6 +816,12 @@ export async function getWebSubscriptionQuota(
 export async function getWebCodexOauthQuota(
   accountId: string | null,
 ): Promise<import("@/types/subscription").SubscriptionQuota> {
+  if (hasUnit()) {
+    if (!accountId) throw new Error("请选择你自己的官方账号");
+    return requestJson(
+      `/api/unit/accounts/${encodeURIComponent(accountId)}/quota`,
+    );
+  }
   const params = new URLSearchParams();
   if (accountId) {
     params.set("accountId", accountId);
@@ -1040,6 +1134,14 @@ export async function removeWebProviderFromLiveConfig(
 }
 
 export async function getWebProxyStatus(): Promise<ProxyStatus> {
+  if (personalUser()) {
+    const v = await requestJson<{
+      running: boolean;
+      address: string;
+      port: number;
+    }>("/api/unit/ui/status");
+    return { ...getDefaultProxyStatus(), ...v };
+  }
   try {
     return await requestJson<ProxyStatus>("/api/proxy/status");
   } catch (error) {
@@ -1052,6 +1154,7 @@ export async function getWebProxyStatus(): Promise<ProxyStatus> {
 }
 
 export async function getWebProxyTakeoverStatus(): Promise<ProxyTakeoverStatus> {
+  if (personalUser()) return getDefaultProxyTakeoverStatus();
   try {
     return await requestJson<ProxyTakeoverStatus>("/api/proxy/takeover-status");
   } catch (error) {
@@ -1118,6 +1221,7 @@ export async function getWebGlobalProxyConfig(): Promise<GlobalProxyConfig> {
 }
 
 export async function getWebGlobalProxyUrl(): Promise<string | null> {
+  if (personalUser()) return null;
   return requestJson<string | null>("/api/proxy/global-url");
 }
 
@@ -1390,7 +1494,11 @@ export async function setWebAutoFailoverEnabled(
 }
 
 export async function saveWebSettings(settings: Settings): Promise<boolean> {
-  return requestWithBody<boolean>("/api/settings", "PUT", settings);
+  return requestWithBody<boolean>(
+    personalUser() ? "/api/unit/ui/settings" : "/api/settings",
+    "PUT",
+    settings,
+  );
 }
 
 export async function hasWebCodexUnifyHistoryBackup(): Promise<boolean> {
@@ -1589,6 +1697,10 @@ export async function deleteWebDbBackup(filename: string): Promise<void> {
 }
 
 export async function getWebCodexEditorView(payload: unknown) {
+  if (hasUnit()) {
+    const value = payload as { settings: Record<string, unknown> };
+    return { settings: value.settings, inactive: [] };
+  }
   return requestWithBody<import("@/lib/api/providers").ProviderEditorView>(
     "/api/providers/codex/editor/view",
     "POST",
@@ -1596,6 +1708,25 @@ export async function getWebCodexEditorView(payload: unknown) {
   );
 }
 export async function saveWebCodexEditor(payload: unknown) {
+  if (hasUnit()) {
+    const v = payload as {
+      provider: Provider;
+      add: boolean;
+      editor?: { base: unknown; onConflict: string };
+    };
+    return requestWithBody<boolean>(
+      "/api/unit/ui/providers/codex/save",
+      "POST",
+      {
+        provider: v.provider,
+        add: v.add,
+        baseConfig:
+          v.add || v.editor?.onConflict === "keepMine"
+            ? undefined
+            : v.editor?.base,
+      },
+    );
+  }
   return requestWithBody<boolean>(
     "/api/providers/codex/editor/save",
     "POST",
@@ -1633,6 +1764,7 @@ export async function saveWebGeminiEditor(payload: unknown) {
 export async function getWebClaudeEditorView(
   settings: Record<string, unknown>,
 ) {
+  if (hasUnit()) return { settings, inactive: [] };
   return requestWithBody<import("@/lib/api/providers").ProviderEditorView>(
     "/api/providers/claude/editor/view",
     "POST",
@@ -1640,6 +1772,25 @@ export async function getWebClaudeEditorView(
   );
 }
 export async function saveWebClaudeEditor(payload: unknown) {
+  if (hasUnit()) {
+    const v = payload as {
+      provider: Provider;
+      add: boolean;
+      editor?: { base: unknown; onConflict: string };
+    };
+    return requestWithBody<boolean>(
+      "/api/unit/ui/providers/claude/save",
+      "POST",
+      {
+        provider: v.provider,
+        add: v.add,
+        baseConfig:
+          v.add || v.editor?.onConflict === "keepMine"
+            ? undefined
+            : v.editor?.base,
+      },
+    );
+  }
   return requestWithBody<boolean>(
     "/api/providers/claude/editor/save",
     "POST",
@@ -1652,6 +1803,12 @@ export async function addWebProvider(
   provider: Provider,
   addToLive?: boolean,
 ): Promise<boolean> {
+  if (hasUnit() && ["codex", "claude"].includes(appId))
+    return requestWithBody<boolean>(
+      `/api/unit/ui/providers/${appId}/save`,
+      "POST",
+      { provider, add: true },
+    );
   return requestWithBody<boolean>(`/api/providers/${appId}`, "POST", {
     provider,
     addToLive,
@@ -1663,6 +1820,12 @@ export async function updateWebProvider(
   provider: Provider,
   originalId?: string,
 ): Promise<boolean> {
+  if (hasUnit() && ["codex", "claude"].includes(appId))
+    return requestWithBody<boolean>(
+      `/api/unit/ui/providers/${appId}/save`,
+      "POST",
+      { provider, add: false },
+    );
   return requestWithBody<boolean>(
     `/api/providers/${appId}/${encodeURIComponent(originalId ?? provider.id)}`,
     "PUT",
@@ -1674,6 +1837,12 @@ export async function deleteWebProvider(
   appId: AppId,
   id: string,
 ): Promise<boolean> {
+  if (hasUnit() && ["codex", "claude"].includes(appId)) {
+    const p = (await getWebProviders(appId)).providers[id];
+    if (!p?.unitResource?.owned) throw new Error("仅提供者可以删除供应商");
+    await requestWithBody(`/api/unit/resources/${p.unitResource.id}`, "DELETE");
+    return true;
+  }
   return requestWithBody<boolean>(`/api/providers/${appId}/${id}`, "DELETE");
 }
 
@@ -1681,6 +1850,10 @@ export async function switchWebProvider(
   appId: AppId,
   id: string,
 ): Promise<SwitchResult> {
+  if (hasUnit() && ["codex", "claude"].includes(appId)) {
+    await setWebAggregationMember(appId, id, true);
+    return { warnings: [] };
+  }
   return requestWithBody<SwitchResult>(
     `/api/providers/${appId}/${id}/switch`,
     "POST",
@@ -1884,13 +2057,13 @@ export async function removeWebSkillRepo(
 }
 
 export async function discoverWebAvailableSkills(): Promise<SkillDiscoveryResult> {
- return requestJson<SkillDiscoveryResult>("/api/skills/discover");
+  return requestJson<SkillDiscoveryResult>("/api/skills/discover");
 }
 export async function checkWebSkillUpdates(): Promise<SkillUpdateCheckResult> {
- return requestJson<SkillUpdateCheckResult>("/api/skills/updates");
+  return requestJson<SkillUpdateCheckResult>("/api/skills/updates");
 }
 export async function resyncWebSkills(): Promise<SkillAppSyncOutcome[]> {
- return requestWithBody<SkillAppSyncOutcome[]>("/api/skills/resync", "POST");
+  return requestWithBody<SkillAppSyncOutcome[]>("/api/skills/resync", "POST");
 }
 export async function installWebSkillUnified(
   skill: DiscoverableSkill,
@@ -2334,7 +2507,9 @@ export async function getWebUsageSummary(
   if (appType) params.set("appType", appType);
   const query = params.toString();
   return requestJson<UsageSummary>(
-    `/api/usage/summary${query ? `?${query}` : ""}`,
+    hasUnit()
+      ? `/api/unit/ui/usage/summary?scope=${getUsageScope()}&${query}`
+      : `/api/usage/summary${query ? `?${query}` : ""}`,
   );
 }
 
@@ -2349,7 +2524,9 @@ export async function getWebUsageTrends(
   if (appType) params.set("appType", appType);
   const query = params.toString();
   return requestJson<DailyStats[]>(
-    `/api/usage/trends${query ? `?${query}` : ""}`,
+    hasUnit()
+      ? `/api/unit/ui/usage/trends?scope=${getUsageScope()}&${query}`
+      : `/api/usage/trends${query ? `?${query}` : ""}`,
   );
 }
 
@@ -2364,7 +2541,9 @@ export async function getWebProviderStats(
   if (appType) params.set("appType", appType);
   const query = params.toString();
   return requestJson<ProviderStats[]>(
-    `/api/usage/provider-stats${query ? `?${query}` : ""}`,
+    hasUnit()
+      ? `/api/unit/ui/usage/provider-stats?scope=${getUsageScope()}&${query}`
+      : `/api/usage/provider-stats${query ? `?${query}` : ""}`,
   );
 }
 
@@ -2379,7 +2558,9 @@ export async function getWebModelStats(
   if (appType) params.set("appType", appType);
   const query = params.toString();
   return requestJson<ModelStats[]>(
-    `/api/usage/model-stats${query ? `?${query}` : ""}`,
+    hasUnit()
+      ? `/api/unit/ui/usage/model-stats?scope=${getUsageScope()}&${query}`
+      : `/api/usage/model-stats${query ? `?${query}` : ""}`,
   );
 }
 
@@ -2388,18 +2569,23 @@ export async function getWebRequestLogs(
   page: number,
   pageSize: number,
 ): Promise<PaginatedLogs> {
-  return requestWithBody<PaginatedLogs>("/api/usage/request-logs", "POST", {
-    filters,
-    page,
-    pageSize,
-  });
+  return requestWithBody<PaginatedLogs>(
+    hasUnit() ? "/api/unit/ui/usage/request-logs" : "/api/usage/request-logs",
+    "POST",
+    {
+      scope: hasUnit() ? getUsageScope() : undefined,
+      filters,
+      page,
+      pageSize,
+    },
+  );
 }
 
 export async function getWebRequestDetail(
   requestId: string,
 ): Promise<RequestLog | null> {
   return requestJson<RequestLog | null>(
-    `/api/usage/request-logs/${encodeURIComponent(requestId)}`,
+    `${hasUnit() ? "/api/unit/ui/usage" : "/api/usage"}/request-logs/${encodeURIComponent(requestId)}`,
   );
 }
 
@@ -2475,7 +2661,11 @@ export async function getWebProviderLimits(
 }
 
 export async function getWebLastSessionScan(): Promise<number | null> {
-  return requestJson<number | null>("/api/usage/session-sync");
+  return requestJson<number | null>(
+    hasUnit()
+      ? "/api/unit/ui/usage/last-session-scan"
+      : "/api/usage/session-sync",
+  );
 }
 
 export async function syncWebSessionUsage(): Promise<SessionSyncResult> {
@@ -2536,11 +2726,19 @@ export async function clearWebCurrentProfile(
 }
 
 export async function getWebUsageDataSources(): Promise<DataSourceSummary[]> {
-  return requestJson<DataSourceSummary[]>("/api/usage/data-sources");
+  return requestJson<DataSourceSummary[]>(
+    hasUnit()
+      ? `/api/unit/ui/usage/data-sources?scope=${getUsageScope()}`
+      : "/api/usage/data-sources",
+  );
 }
 
 export async function getWebAppMode(appId: AppId): Promise<AppModeView> {
-  return requestJson<AppModeView>(`/api/proxy/apps/${appId}/mode`);
+  return requestJson<AppModeView>(
+    hasUnit() && ["codex", "claude"].includes(appId)
+      ? `/api/unit/ui/mode/${appId}`
+      : `/api/proxy/apps/${appId}/mode`,
+  );
 }
 export async function setWebAppMode(
   appId: AppId,
@@ -2563,6 +2761,16 @@ export async function setWebAggregationMember(
   id: string,
   enabled: boolean,
 ): Promise<void> {
+  if (hasUnit() && ["codex", "claude"].includes(appId)) {
+    const p = (await getWebProviders(appId)).providers[id];
+    if (!p?.unitResource?.owned) throw new Error("仅提供者可以更改聚合状态");
+    await requestWithBody(
+      `/api/unit/resources/${p.unitResource.id}/publication`,
+      "PUT",
+      { published: enabled },
+    );
+    return;
+  }
   return requestWithBody<void>(
     `/api/proxy/apps/${appId}/aggregation/${encodeURIComponent(id)}`,
     "PUT",
@@ -2575,14 +2783,25 @@ export async function restartWebProxyService(
   return requestWithBody<void>("/api/proxy/restart", "POST", config);
 }
 
-export const manageWebTools = <T>(path: "versions" | "installations" | "action", payload: Record<string, unknown>): Promise<T> => requestWithBody<T>(`/api/tools/${path}`, "POST", payload);
+export const manageWebTools = <T>(
+  path: "versions" | "installations" | "action",
+  payload: Record<string, unknown>,
+): Promise<T> => requestWithBody<T>(`/api/tools/${path}`, "POST", payload);
 
 /** Stream and image bytes bypass debug body logging. */
-export async function streamWebSession(providerId: string, sourcePath: string, onChunk: (chunk: import("@/types").TranscriptChunk) => void): Promise<void> {
+export async function streamWebSession(
+  providerId: string,
+  sourcePath: string,
+  onChunk: (chunk: import("@/types").TranscriptChunk) => void,
+): Promise<void> {
   const query = new URLSearchParams({ providerId, sourcePath });
-  const response = await fetch(`${getWebApiBase()}/api/sessions/stream?${query}`, { headers: webRequestHeaders("application/x-ndjson") });
+  const response = await fetch(
+    `${getWebApiBase()}/api/sessions/stream?${query}`,
+    { headers: webRequestHeaders("application/x-ndjson") },
+  );
   handleUnauthorized(response);
-  if (!response.ok) throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
+  if (!response.ok)
+    throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
   if (!response.body) throw new Error("Missing transcript stream");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -2601,25 +2820,58 @@ export async function streamWebSession(providerId: string, sourcePath: string, o
       pending += decoder.decode(next.value, { stream: !next.done });
       let newline: number;
       while ((newline = pending.indexOf("\n")) >= 0) {
-        accept(pending.slice(0, newline)); pending = pending.slice(newline + 1);
+        accept(pending.slice(0, newline));
+        pending = pending.slice(newline + 1);
       }
-      if (pending.length > 64 * 1024 * 1024) throw new Error("Transcript chunk too large");
+      if (pending.length > 64 * 1024 * 1024)
+        throw new Error("Transcript chunk too large");
       if (next.done) break;
     }
     accept(pending);
     if (!done) throw new Error("Incomplete transcript stream");
-  } finally { await reader.cancel(); reader.releaseLock(); }
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
 }
-export async function getWebSessionImage(payload: unknown): Promise<ArrayBuffer> {
-  const response = await fetch(`${getWebApiBase()}/api/sessions/image`, { method: "POST", headers: { ...webRequestHeaders("application/octet-stream"), "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+export async function getWebSessionImage(
+  payload: unknown,
+): Promise<ArrayBuffer> {
+  const response = await fetch(`${getWebApiBase()}/api/sessions/image`, {
+    method: "POST",
+    headers: {
+      ...webRequestHeaders("application/octet-stream"),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
   handleUnauthorized(response);
-  if (!response.ok) throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
+  if (!response.ok)
+    throw new Error(await getErrorMessage(response, `HTTP ${response.status}`));
   return response.arrayBuffer();
 }
-export const getWebSessionContent = (payload: unknown): Promise<import("@/lib/api/sessions").BlockContent> => requestWithBody("/api/sessions/content", "POST", payload);
+export const getWebSessionContent = (
+  payload: unknown,
+): Promise<import("@/lib/api/sessions").BlockContent> =>
+  requestWithBody("/api/sessions/content", "POST", payload);
 
-export const getWebSessionUsage = (appType: string, sessionId: string): Promise<import("@/types/usage").UsageSummary> => requestJson(`/api/sessions/usage?${new URLSearchParams({appType, sessionId})}`);
+export const getWebSessionUsage = (
+  appType: string,
+  sessionId: string,
+): Promise<import("@/types/usage").UsageSummary> =>
+  requestJson(
+    `/api/sessions/usage?${new URLSearchParams({ appType, sessionId })}`,
+  );
 
-export function resyncWebMcp(apps?: AppId[]): Promise<import("@/lib/api/mcp").McpAppSyncOutcome[]> { return requestWithBody("/api/mcp/resync", "POST", { apps }); }
+export function resyncWebMcp(
+  apps?: AppId[],
+): Promise<import("@/lib/api/mcp").McpAppSyncOutcome[]> {
+  return requestWithBody("/api/mcp/resync", "POST", { apps });
+}
 
-export function getWebSkillStoragePaths(): Promise<{ ccSwitch: string; unified: string }> { return requestJson("/api/skills/storage-paths"); }
+export function getWebSkillStoragePaths(): Promise<{
+  ccSwitch: string;
+  unified: string;
+}> {
+  return requestJson("/api/skills/storage-paths");
+}

@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import type { AppModeView } from "@/types/proxy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -40,6 +41,7 @@ import { settingsApi } from "@/lib/api/settings";
 import { invalidatePiProviderCaches } from "@/lib/query/pi";
 
 interface ProviderListProps {
+  onShare?: (provider: Provider) => void;
   modeView?: AppModeView;
   modePending?: boolean;
   onAggregationMember?: (id: string, enabled: boolean) => void;
@@ -66,6 +68,7 @@ interface ProviderListProps {
 }
 
 export function ProviderList({
+  onShare,
   modeView,
   modePending,
   onAggregationMember,
@@ -91,6 +94,7 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  const session = useUnitSession();
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const sortedProviders = useMemo(
     () => sortProvidersByName(Object.values(providers)),
@@ -110,11 +114,11 @@ export function ProviderList({
   });
 
   // OpenClaw: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
-  const { data: openclawLiveIds, isPending: openclawLivePending } = useOpenClawLiveProviderIds(
-    appId === "openclaw",
-  );
+  const { data: openclawLiveIds, isPending: openclawLivePending } =
+    useOpenClawLiveProviderIds(appId === "openclaw");
 
-  const { data: hermesLiveIds, isPending: hermesLivePending } = useHermesLiveProviderIds(appId === "hermes");
+  const { data: hermesLiveIds, isPending: hermesLivePending } =
+    useHermesLiveProviderIds(appId === "hermes");
   const { data: hermesModelConfig } = useHermesModelConfig(appId === "hermes");
   const hermesCurrentProviderId = hermesModelConfig?.provider;
 
@@ -161,9 +165,8 @@ export function ProviderList({
   );
 
   // 故障转移相关
-  const supportsFailover = !["opencode", "openclaw", "hermes", "pi"].includes(
-    appId,
-  );
+  const supportsFailover =
+    !session && !["opencode", "openclaw", "hermes", "pi"].includes(appId);
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(
     appId,
     supportsFailover,
@@ -367,7 +370,11 @@ export function ProviderList({
     return messages;
   }, [appId, claudeDesktopStatus, t]);
 
-  const membershipPending = (appId === "opencode" && opencodeLivePending) || (appId === "openclaw" && openclawLivePending) || (appId === "hermes" && hermesLivePending) || (appId === "pi" && piLivePending);
+  const membershipPending =
+    (appId === "opencode" && opencodeLivePending) ||
+    (appId === "openclaw" && openclawLivePending) ||
+    (appId === "hermes" && hermesLivePending) ||
+    (appId === "pi" && piLivePending);
   if (isLoading || (membershipPending && sortedProviders.length > 0)) {
     return (
       <div className="space-y-3">
@@ -386,7 +393,11 @@ export function ProviderList({
       <ProviderEmptyState
         appId={appId}
         onCreate={onCreate}
-        onImport={appId === "mcode" ? undefined : () => importMutation.mutate()}
+        onImport={
+          session || appId === "mcode"
+            ? undefined
+            : () => importMutation.mutate()
+        }
       />
     );
   }
@@ -418,6 +429,7 @@ export function ProviderList({
             isInConfig={isProviderInConfig(provider.id)}
             isOmo={isOmo}
             isOmoSlim={isOmoSlim}
+            onShare={onShare}
             onSwitch={onSwitch}
             onEdit={onEdit}
             onDelete={onDelete}
@@ -443,7 +455,8 @@ export function ProviderList({
                     member: modeView.aggregation.members.some(
                       (m) => m.providerId === provider.id,
                     ),
-                    default: provider.id === modeView.routeProviderId,
+                    default:
+                      !session && provider.id === modeView.routeProviderId,
                     disabled:
                       modePending ||
                       !modeView.eligibleProviderIds.includes(provider.id),
@@ -454,7 +467,9 @@ export function ProviderList({
                           (m) => m.providerId === provider.id,
                         ),
                       ),
-                    onDefault: () => onAggregationDefault?.(provider.id),
+                    onDefault: session
+                      ? undefined
+                      : () => onAggregationDefault?.(provider.id),
                   }
                 : undefined
             }

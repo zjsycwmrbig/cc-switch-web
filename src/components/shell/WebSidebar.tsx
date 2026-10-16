@@ -1,3 +1,4 @@
+import { useUnitSession } from "@/components/unit/session";
 import { SkillsIcon } from "@/components/BrandIcons";
 import { memo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -11,6 +12,12 @@ import {
   Network,
   PanelLeftClose,
   Settings,
+  UserRound,
+  Users,
+  Layers,
+  LogOut,
+  Laptop,
+  ClipboardList,
 } from "lucide-react";
 import type { AppId } from "@/lib/api";
 import type { VisibleApps } from "@/types";
@@ -19,6 +26,11 @@ import { APP_DISPLAY_NAME, AppGlyph } from "./AppGlyph";
 import { cn } from "@/lib/utils";
 
 export type GlobalView =
+  | "models"
+  | "keys"
+  | "profile"
+  | "admin"
+  | "ledger"
   | "providers"
   | "mcp"
   | "skills"
@@ -45,6 +57,7 @@ export const WebSidebar = memo(function WebSidebar({
   onView: (view: GlobalView) => void;
 }) {
   const { t } = useTranslation();
+  const session = useUnitSession();
   const [expanded, setExpanded] = useState(
     () => localStorage.getItem("cc-switch-web-sidebar-expanded") === "true",
   );
@@ -128,6 +141,20 @@ export const WebSidebar = memo(function WebSidebar({
           </span>
         </button>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-hidden">
+          {session && (
+            <>
+              {item(
+                "models",
+                "模型与接入",
+                <Layers className="h-4 w-4 shrink-0" />,
+              )}
+              {item(
+                "keys",
+                "设备与密钥",
+                <Laptop className="h-4 w-4 shrink-0" />,
+              )}
+            </>
+          )}
           {item("mcp", "MCP", <Network className="h-4 w-4 shrink-0" />)}
           {item(
             "skills",
@@ -198,6 +225,37 @@ export const WebSidebar = memo(function WebSidebar({
           ))}
         </nav>
         <div className="mt-2 space-y-1 border-t border-border pt-2">
+          {session && (
+            <>
+              {item(
+                "ledger",
+                "配额与账本",
+                <ClipboardList className="h-4 w-4 shrink-0" />,
+              )}
+              {session.me.user.role === "admin" &&
+                item(
+                  "admin",
+                  "用户与额度",
+                  <Users className="h-4 w-4 shrink-0" />,
+                )}
+              {item(
+                "profile",
+                session.me.user.username,
+                <UserRound className="h-4 w-4 shrink-0" />,
+              )}
+              <button
+                type="button"
+                title="退出登录"
+                onClick={() => void session.logout()}
+                className="flex h-9 w-full items-center gap-3 rounded-md px-3 text-sm hover:bg-accent"
+              >
+                <LogOut className="h-4 w-4 shrink-0" />
+                <span className={cn(!expanded && !mobileOpen && "sr-only")}>
+                  退出登录
+                </span>
+              </button>
+            </>
+          )}
           {item(
             "apps",
             t("nav.apps"),

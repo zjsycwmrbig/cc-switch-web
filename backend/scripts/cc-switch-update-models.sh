@@ -4,6 +4,7 @@
 set -euo pipefail
 CC_SWITCH_URL="${CC_SWITCH_URL:-__CC_SWITCH_ORIGIN__}"
 CC_SWITCH_ACCESS_KEY="${CC_SWITCH_ACCESS_KEY:-__CC_SWITCH_ACCESS_KEY__}"
+CC_SWITCH_PROXY_URL="${CC_SWITCH_PROXY_URL:-__CC_SWITCH_PROXY_URL__}"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 BASE="${CC_SWITCH_URL%/}"
 CATALOG="$CODEX_DIR/cc-switch-aggregation-models.json"
@@ -18,10 +19,10 @@ trap 'rm -f "$TMP" "$CFG_TMP"' EXIT
 echo "下载聚合模型：$BASE/api/model-catalog/codex/aggregation"
 curl -fsSL -H "Authorization: Bearer $CC_SWITCH_ACCESS_KEY" -H 'Accept: application/json' \
   "$BASE/api/model-catalog/codex/aggregation" -o "$TMP"
-python3 - "$TMP" "$CONFIG" "$CFG_TMP" "$CATALOG" <<'PY'
+python3 - "$TMP" "$CONFIG" "$CFG_TMP" "$CATALOG" "$CC_SWITCH_PROXY_URL" "$CC_SWITCH_ACCESS_KEY" "${CC_SWITCH_CONFIGURE_ROUTE:-0}" <<'PY'
 import json, re, sys
 from pathlib import Path
-catalog_path, config_path, staged_path, target = sys.argv[1:]
+catalog_path, config_path, staged_path, target, proxy_url, api_key, configure = sys.argv[1:]
 catalog = json.loads(Path(catalog_path).read_text())
 for warning in catalog.get('warnings', []):
     print('提示：' + warning)
@@ -45,18 +46,35 @@ selected = previous if previous in ids else catalog.get('default_model', ids[0])
 if selected not in ids:
     raise SystemExit('聚合默认模型不在模型列表中')
 # 全局窗口会覆盖每个模型自己的窗口，聚合模型统一使用目录内的独立声明。
-owned = re.compile(r'^\s*"?(?:model_catalog_json|model|model_context_window|model_auto_compact_token_limit)"?\s*=')
+keys = 'model_catalog_json|model|model_context_window|model_auto_compact_token_limit'
+if configure == '1':
+    keys += '|model_provider'
+    kept, skipping = [], False
+    for line in tables:
+        if line.lstrip().startswith('['):
+            skipping = bool(re.match(r'^\s*\[\s*model_providers\s*\.\s*"?ccswitch"?(?:\s*\]|\s*\.)', line))
+        if not skipping:
+            kept.append(line)
+    tables = kept
+owned = re.compile(r'^\s*"?(?:' + keys + r')"?\s*=')
 output = 'model_catalog_json = ' + json.dumps(target) + '\nmodel = ' + json.dumps(selected) + '\n'
 output += ''.join(line for line in root if not owned.match(line)) + ''.join(tables)
+if configure == '1':
+    if not proxy_url.startswith(('http://', 'https://')) or not api_key:
+        raise SystemExit('接入取消：缺少代理地址或设备密钥')
+    output = 'model_provider = "ccswitch"\n' + output
+    output += '\n[model_providers.ccswitch]\nname = "ccSwitchUint"\nbase_url = ' + json.dumps(proxy_url)
+    output += '\nwire_api = "responses"\nrequires_openai_auth = false\nexperimental_bearer_token = ' + json.dumps(api_key) + '\n'
 try:
     import tomllib
 except ImportError:
     pass
 else:
     before, after = tomllib.loads(source), tomllib.loads(output)
-    for key in ('model_provider', 'model_providers'):
-        if before.get(key) != after.get(key):
-            raise SystemExit('同步取消：路由配置发生意外变化')
+    if configure != '1':
+        for key in ('model_provider', 'model_providers'):
+            if before.get(key) != after.get(key):
+                raise SystemExit('同步取消：路由配置发生意外变化')
 Path(staged_path).write_text(output)
 print('模型数量：%d；启动模型：%s' % (len(ids), selected))
 PY

@@ -1085,7 +1085,7 @@ impl RequestForwarder {
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
         let codex_official = matches!(app_type, AppType::Codex)
             && super::providers::is_codex_official_provider(provider);
-        if codex_official {
+        if codex_official && extensions.get::<crate::hub::gateway::Authenticated>().is_none() {
             let key = std::env::var("CC_SWITCH_WEB_ACCESS_KEY").ok();
             validate_codex_proxy_authorization(headers, key.as_deref())?;
         }
@@ -1832,6 +1832,9 @@ impl RequestForwarder {
 
         // 发送请求
         let response = if is_socks_proxy || provider.is_xai_oauth() {
+            if extensions.get::<crate::hub::network::OutboundPolicy>().is_some_and(|p|!p.allow_private) {
+                return Err(ProxyError::InvalidRequest("普通用户供应商请使用直连或 HTTP 上游代理；SOCKS 出站需要管理员管理".into()));
+            }
             // xAI 使用标准 header 编码；SOCKS5 代理也只能走 reqwest。
             log::debug!("[Forwarder] Using reqwest without exact header case preservation");
             let client = super::http_client::get_for_provider(proxy_config);

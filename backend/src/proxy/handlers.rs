@@ -166,7 +166,7 @@ async fn handle_messages_for_app(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut body = body;
-    let stack = match resolve_stack_target(&state, &app_type, &mut body) {
+    let stack = match resolve_stack_target(&state, &app_type, &mut body, &extensions) {
         Ok(stack) => stack,
         Err(response) => return Ok(*response),
     };
@@ -507,7 +507,7 @@ pub async fn handle_chat_completions(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut body = body;
-    let stack = match resolve_stack_target(&state, &AppType::Codex, &mut body) {
+    let stack = match resolve_stack_target(&state, &AppType::Codex, &mut body, &extensions) {
         Ok(stack) => stack,
         Err(response) => return Ok(*response),
     };
@@ -614,7 +614,7 @@ async fn handle_responses_for_app(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut body = body;
-    let stack = match resolve_stack_target(&state, &app_type, &mut body) {
+    let stack = match resolve_stack_target(&state, &app_type, &mut body, &extensions) {
         Ok(stack) => stack,
         Err(response) => return Ok(*response),
     };
@@ -766,7 +766,7 @@ async fn handle_codex_standalone_passthrough(
         .map_err(|e| ProxyError::InvalidRequest(format!("Failed to parse request body: {e}")))?;
 
     let mut body = body;
-    let stack = match resolve_stack_target(&state, &AppType::Codex, &mut body) {
+    let stack = match resolve_stack_target(&state, &AppType::Codex, &mut body, &extensions) {
         Ok(stack) => stack,
         Err(response) => return Ok(*response),
     };
@@ -842,7 +842,7 @@ async fn handle_responses_compact_for_app(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut body = body;
-    let stack = match resolve_stack_target(&state, &app_type, &mut body) {
+    let stack = match resolve_stack_target(&state, &app_type, &mut body, &extensions) {
         Ok(stack) => stack,
         Err(response) => return Ok(*response),
     };
@@ -1530,7 +1530,15 @@ fn resolve_stack_target(
     state: &ProxyState,
     app_type: &AppType,
     body: &mut Value,
+    extensions: &http::Extensions,
 ) -> Result<Option<crate::mode::stack::StackTarget>, Box<axum::response::Response>> {
+    if let Some(target) = extensions.get::<crate::hub::gateway::ForcedStack>() {
+        if let Some(identity)=extensions.get::<crate::hub::gateway::Authenticated>() {
+            log::debug!("[unit] request={} user={}",identity.request_id,identity.user_id);
+        }
+        body["model"] = Value::String(target.0.upstream_model.clone());
+        return Ok(Some(target.0.clone()));
+    }
     use crate::mode::stack::{self, Decoded, Resolved};
 
     let Some(model) = body.get("model").and_then(Value::as_str) else {
