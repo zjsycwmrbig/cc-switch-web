@@ -34,6 +34,7 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import { isTextEditableTarget } from "@/utils/domUtils";
 import { ProviderList } from "@/components/providers/ProviderList";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { PanelErrorBoundary } from "@/components/common/PanelErrorBoundary";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { AppModePanel } from "@/components/proxy/AppModePanel";
@@ -917,29 +918,33 @@ function App() {
         {renderContent()}
       </main>
 
-      <Suspense fallback={null}>
-        <AddProviderDialog
-          open={isAddOpen}
-          onOpenChange={setIsAddOpen}
-          appId={activeApp}
-          onSubmit={addProvider}
-        />
-      </Suspense>
+      <PanelErrorBoundary label="新增供应商">
+        <Suspense fallback={null}>
+          <AddProviderDialog
+            open={isAddOpen}
+            onOpenChange={setIsAddOpen}
+            appId={activeApp}
+            onSubmit={addProvider}
+          />
+        </Suspense>
+      </PanelErrorBoundary>
 
-      <Suspense fallback={null}>
-        <EditProviderDialog
-          open={Boolean(editingProvider)}
-          provider={effectiveEditingProvider}
-          onOpenChange={(open) => {
-            if (!open) {
-              setEditingProvider(null);
-            }
-          }}
-          onSubmit={handleEditProvider}
-          appId={activeApp}
-          isProxyTakeover={isProxyRunning && isCurrentAppTakeoverActive}
-        />
-      </Suspense>
+      <PanelErrorBoundary label="编辑供应商">
+        <Suspense fallback={null}>
+          <EditProviderDialog
+            open={Boolean(editingProvider)}
+            provider={effectiveEditingProvider}
+            onOpenChange={(open) => {
+              if (!open) {
+                setEditingProvider(null);
+              }
+            }}
+            onSubmit={handleEditProvider}
+            appId={activeApp}
+            isProxyTakeover={isProxyRunning && isCurrentAppTakeoverActive}
+          />
+        </Suspense>
+      </PanelErrorBoundary>
 
       {effectiveUsageProvider && (
         <Suspense fallback={null}>

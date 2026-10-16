@@ -37,6 +37,16 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { AggregationSyncPanel } from "@/components/providers/AggregationSyncPanel";
 import {
   unit,
@@ -511,6 +521,7 @@ function Models({ me, generation }: { me: Me; generation: number }) {
           {saving ? <Busy /> : "保存选择"}
         </button>
       </div>
+      <div className="flex flex-col gap-4">
       <div className="u-cards">
         <div className="u-card">
           <small>可选模型</small>
@@ -625,6 +636,7 @@ function Models({ me, generation }: { me: Me; generation: number }) {
       </Collapsible>
       <AggregationSyncPanel />
       <Keys generation={generation} />
+      </div>
     </>
   );
 }
@@ -1441,75 +1453,90 @@ function Keys({ generation }: { generation: number }) {
     }
   };
   return (
-    <section className="u-panel">
-      <div className="u-panel-title">
-        <span>设备与接入密钥</span>
-        <small>
+    <section className="space-y-3 rounded-lg border border-border p-4">
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium">设备与接入密钥</h3>
+        <p className="text-xs text-muted-foreground">
           为每台主机创建独立密钥，用量归入你的账号，也能按设备查看。
-        </small>
+        </p>
       </div>
-      <form className="u-toolbar" onSubmit={create}>
-        <input
+      <form className="flex flex-wrap items-center gap-2" onSubmit={create}>
+        <Input
           required
           maxLength={100}
           placeholder="设备名称，例如 moss、nccl5"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          className="h-9 w-full max-w-xs"
         />
-        <button className="u-button" disabled={busy}>
-          <Plus size={15} />
+        <Button type="submit" size="sm" disabled={busy}>
+          <Plus className="mr-1 h-4 w-4" />
           创建设备密钥
-        </button>
+        </Button>
       </form>
       {created && (
-        <div className="u-created">
-          <h2>复制到远程主机执行</h2>
-          <p>
+        <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3">
+          <h4 className="text-sm font-medium">复制到远程主机执行</h4>
+          <p className="text-xs text-muted-foreground">
             密钥明文仅在本次显示。命令会备份配置、写入个人路由和模型目录，并尝试重启
             Codex app-server。
           </p>
-          <pre>{created.command}</pre>
-          <div className="u-actions">
-            <button
-              className="u-button"
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-background p-3 text-xs select-all">
+            {created.command}
+          </pre>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
               onClick={() => void copy(created.command)}
             >
-              <Copy size={14} />
+              <Copy className="mr-1 h-4 w-4" />
               复制接入 / 更新命令
-            </button>
-            <button className="u-quiet" onClick={() => void copy(created.key)}>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void copy(created.key)}
+            >
               复制 API Key
-            </button>
-            <button className="u-quiet" onClick={() => setCreated(null)}>
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setCreated(null)}
+            >
               隐藏
-            </button>
+            </Button>
           </div>
         </div>
       )}
-      <div className="u-table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>设备</th>
-              <th>密钥前缀</th>
-              <th>最近使用</th>
-              <th>状态</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
+      {keys.length > 0 && (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>设备</TableHead>
+              <TableHead>密钥前缀</TableHead>
+              <TableHead>最近使用</TableHead>
+              <TableHead>状态</TableHead>
+              <TableHead className="w-16" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {keys.map((k) => (
-              <tr key={k.id}>
-                <td>{k.name}</td>
-                <td>
-                  <code>{k.prefix}…</code>
-                </td>
-                <td>{date(k.last_used_at)}</td>
-                <td>{k.active ? "启用" : "已撤销"}</td>
-                <td>
+              <TableRow key={k.id}>
+                <TableCell>{k.name}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
+                  {k.prefix}…
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {date(k.last_used_at)}
+                </TableCell>
+                <TableCell>{k.active ? "启用" : "已撤销"}</TableCell>
+                <TableCell className="text-right">
                   {!!k.active && (
-                    <button
-                      className="u-quiet u-danger"
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive hover:text-destructive"
                       onClick={async () => {
                         try {
                           await unit(`/keys/${k.id}`, "DELETE");
@@ -1520,18 +1547,20 @@ function Keys({ generation }: { generation: number }) {
                       }}
                     >
                       撤销
-                    </button>
+                    </Button>
                   )}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
-      {!keys.length && (
-        <Empty>创建第一个设备密钥，即可获取可复制的接入命令。</Empty>
+          </TableBody>
+        </Table>
       )}
-      <p className="u-note px-4 pb-2">
+      {!keys.length && (
+        <p className="text-xs text-muted-foreground">
+          创建第一个设备密钥，即可获取可复制的接入命令。
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">
         更新网页中的模型选择后，重复执行已保存的命令即可同步。撤销密钥会阻止后续请求。
       </p>
     </section>

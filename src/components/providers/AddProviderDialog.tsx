@@ -19,6 +19,8 @@ import { grokBuildProviderPresets } from "@/config/grokBuildProviderPresets";
 import { extractCodexBaseUrl } from "@/utils/providerConfigUtils";
 import { extractGrokBuildBaseUrl } from "@/utils/grokBuildConfig";
 import { GROKBUILD_OFFICIAL_PROVIDER_ID } from "@/utils/providerCapabilities";
+import { extractErrorMessage } from "@/utils/errorUtils";
+import { toast } from "sonner";
 import type { OpenClawSuggestedDefaults } from "@/config/openclawProviderPresets";
 
 interface AddProviderDialogProps {
@@ -71,10 +73,18 @@ export function AddProviderDialog({
 
   const handleSubmit = useCallback(
     async (values: ProviderFormValues) => {
-      const parsedConfig = JSON.parse(values.settingsConfig) as Record<
-        string,
-        unknown
-      >;
+      let parsedConfig: Record<string, unknown>;
+      try {
+        parsedConfig = JSON.parse(values.settingsConfig) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        toast.error(
+          t("jsonEditor.invalidJson", { defaultValue: "配置不是合法 JSON" }),
+        );
+        return;
+      }
 
       // 构造基础提交数据
       const providerData: Omit<Provider, "id"> & {
@@ -267,15 +277,30 @@ export function AddProviderDialog({
           onConflict: "refuse",
         };
       }
-      const saved = await editorConflict.run((policy) =>
-        onSubmit({
-          ...providerData,
-          ...(providerData.editorSave
-            ? { editorSave: { ...providerData.editorSave, onConflict: policy } }
-            : {}),
-        }),
-      );
-      if (saved) onOpenChange(false);
+      try {
+        const saved = await editorConflict.run((policy) =>
+          onSubmit({
+            ...providerData,
+            ...(providerData.editorSave
+              ? {
+                  editorSave: {
+                    ...providerData.editorSave,
+                    onConflict: policy,
+                  },
+                }
+              : {}),
+          }),
+        );
+        if (saved) onOpenChange(false);
+      } catch (error) {
+        // 服务端错误已由保存流程提示；这里兜底提示纯前端异常，避免点击后毫无反馈。
+        console.error("[AddProviderDialog] 保存供应商失败", error);
+        if (error instanceof TypeError || error instanceof SyntaxError) {
+          toast.error(
+            extractErrorMessage(error) || "保存供应商失败，请重试",
+          );
+        }
+      }
     },
     [appId, onSubmit, onOpenChange, providerEditor.view, editorConflict.run],
   );

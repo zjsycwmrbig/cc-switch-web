@@ -768,6 +768,11 @@ button.u-panel-title:hover {
   font-size: 14px;
   line-height: 1.6;
 }
+/* 页面改用统一的 flex 间距后，卡片自带的下边距会让节奏忽宽忽窄。 */
+.unit-content .u-panel,
+.unit-content .u-cards {
+  margin-bottom: 0;
+}
 .unit-content .u-panel,
 .unit-modal,
 .unit-content .u-card,

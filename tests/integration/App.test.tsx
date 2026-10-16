@@ -165,6 +165,26 @@ const renderApp = (AppComponent: ComponentType) => {
   );
 };
 
+/**
+ * 应用切换已从顶栏移到侧栏“供应商”二级菜单：先点“供应商”展开列表，再按应用名点击。
+ */
+const clickSidebarApp = (name: string) => {
+  const sidebar = document.querySelector("[data-web-sidebar]");
+  if (!sidebar) throw new Error("未找到侧栏");
+  const buttons = () =>
+    Array.from(sidebar.querySelectorAll<HTMLButtonElement>("button"));
+  const group = buttons().find(
+    (button) => button.getAttribute("aria-label") === "供应商",
+  );
+  if (!group) throw new Error("侧栏没有供应商入口");
+  fireEvent.click(group);
+  const entry = buttons().find(
+    (button) => button.textContent?.trim().endsWith(name),
+  );
+  if (!entry) throw new Error(`侧栏没有 ${name}：${sidebar.textContent}`);
+  fireEvent.click(entry);
+};
+
 describe("App integration with MSW", () => {
   beforeEach(() => {
     resetProviderState();
@@ -258,7 +278,7 @@ describe("App integration with MSW", () => {
     await waitFor(() => expect(screen.getByTestId("provider-list")).toHaveTextContent("claude-1"));
     fireEvent.click(screen.getByText("edit"));
     expect(await screen.findByTestId("edit-provider-dialog")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("switch-codex"));
+    clickSidebarApp("Codex");
     await waitFor(() => expect(screen.queryByTestId("edit-provider-dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId("provider-list")).toHaveTextContent("codex-1"));
   });
@@ -273,7 +293,7 @@ describe("App integration with MSW", () => {
       ),
     );
 
-    fireEvent.click(screen.getByText("switch-codex"));
+    clickSidebarApp("Codex");
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(
         "codex-1",
@@ -345,7 +365,7 @@ describe("App integration with MSW", () => {
     providerScrollContainer!.scrollTop = 640;
     providerScrollContainer!.scrollLeft = 24;
 
-    fireEvent.click(screen.getByText("switch-codex"));
+    clickSidebarApp("Codex");
 
     await waitFor(() =>
       expect(screen.getByTestId("provider-list").textContent).toContain(

@@ -73,8 +73,12 @@ export const WebSidebar = memo(function WebSidebar({
     onAppChange(app);
     selectView("providers");
   };
-  /** 供应商这一行负责跳转并展开应用列表，收起由右侧箭头单独控制，避免一次点击把自己关掉。 */
+  /**
+   * 供应商这一行负责跳转到供应商页并展开应用列表；图标栏折叠时顺带展开侧栏，
+   * 否则二级菜单没有空间显示。收起列表由右侧箭头单独控制。
+   */
   const selectProviders = () => {
+    if (railHidden) toggle();
     toggleApps(true);
     selectView("providers");
   };
