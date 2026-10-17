@@ -619,9 +619,25 @@ async fn publication(
         ));
     }
     if v.published && r.official && r.account_id.is_none() {
-        return Err(Error::bad(
-            "官方供应商需要先在卡片上绑定“官方账号”，再点“加入”",
-        ));
+        // 兼容在“授权中心”登录后未回写绑定的情况：发布时自动绑定该用户最新的官方账号。
+        let account: Option<String> = conn(&app.db)?
+            .query_row(
+                "SELECT account_id FROM hub_account_owners
+                 WHERE owner_id=?1 AND auth_provider='codex_oauth'
+                 ORDER BY rowid DESC LIMIT 1",
+                [&user.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(account) = account else {
+            return Err(Error::bad(
+                "请先在“授权中心”登录官方账号，再回来点“加入”",
+            ));
+        };
+        conn(&app.db)?.execute(
+            "UPDATE hub_resources SET account_id=?1 WHERE id=?2",
+            params![account, resource],
+        )?;
     }
     conn(&app.db)?.execute(
         "UPDATE hub_resources SET published=?1 WHERE id=?2",
