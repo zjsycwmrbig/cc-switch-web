@@ -681,9 +681,16 @@ function Allocations({ generation }: { generation: number }) {
   const [codeModels, setCodeModels] = useState<string[]>([]);
   const [codeExpires, setCodeExpires] = useState("");
   const [maxClaims, setMaxClaims] = useState(1);
+  const [role, setRole] = useState<"owner" | "applicant">("owner");
 
   const selected = resources.find((resource) => resource.id === selectedId);
   const selectedCodes = codes.filter((code) => code.resourceId === selectedId);
+  const ownedResources = resources.filter(
+    (resource) => resource.owned && !resource.disabled,
+  );
+  const accessibleResources = resources.filter(
+    (resource) => !resource.owned && resource.published && !resource.disabled,
+  );
   const selectedReceived = applications.received.filter(
     (application) =>
       application.resourceId === selectedId && application.state === "pending",
@@ -696,7 +703,7 @@ function Allocations({ generation }: { generation: number }) {
       unit<ShareCode[]>("/share-codes"),
     ]);
     const owned = all.filter((resource) => resource.owned && !resource.disabled);
-    setResources(owned);
+    setResources(all);
     setCodes(shareCodes);
     setSelectedId((current) =>
       owned.some((resource) => resource.id === current)
@@ -959,18 +966,151 @@ function Allocations({ generation }: { generation: number }) {
     </div>
   );
 
+  const renderApplicantView = () => (
+    <>
+      <section className="u-panel">
+        <div className="u-panel-title">
+          <WalletCards size={17} />
+          我获得的授权
+          <small>{accessibleResources.length} 个供应商</small>
+        </div>
+        {accessibleResources.length ? (
+          <div className="u-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>供应商</th>
+                  <th>提供者</th>
+                  <th>我的额度</th>
+                  <th>可用模型</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accessibleResources.map((resource) => (
+                  <tr key={resource.id}>
+                    <td>{resource.name}</td>
+                    <td>{resource.ownerName}</td>
+                    <td>{budgetText(resource.myBudget || {})}</td>
+                    <td>{resource.models.length} 个</td>
+                    <td>
+                      <span className="u-tag u-green">
+                        {resource.health === "ready" ? "就绪" : "可用"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty>
+            还没有获得其他用户的授权，可在“供应商工作台 → 供应商库”里申请。
+          </Empty>
+        )}
+      </section>
+
+      <section className="u-panel">
+        <div className="u-panel-title">
+          <UserPlus size={17} />
+          我的申请
+          <small>{myApplications.length} 条</small>
+        </div>
+        <div className="u-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>供应商</th>
+                <th>提供者</th>
+                <th>申请额度</th>
+                <th>状态</th>
+                <th>提交时间</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {myApplications.map((application) => (
+                <tr key={application.id}>
+                  <td>{application.resourceName}</td>
+                  <td>{application.counterpartyName}</td>
+                  <td>{budgetText(application.budget)}</td>
+                  <td>
+                    <span
+                      className={`u-tag ${
+                        application.state === "approved" ? "u-green" : ""
+                      }`}
+                    >
+                      {application.state === "pending"
+                        ? "待审批"
+                        : application.state === "approved"
+                          ? application.decidedBy === "auto"
+                            ? "免审通过"
+                            : "已通过"
+                          : "已驳回"}
+                    </span>
+                  </td>
+                  <td>{date(application.createdAt)}</td>
+                  <td>
+                    {application.state === "pending" && (
+                      <button
+                        type="button"
+                        className="u-quiet u-danger"
+                        onClick={() => void cancelApplication(application)}
+                      >
+                        <Trash2 size={13} />
+                        撤销
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!myApplications.length && <Empty>还没有提交过申请。</Empty>}
+      </section>
+    </>
+  );
+
   return (
     <>
       <div className="u-page-lead">
         <p>
-          在这里集中管理自己的供应商。指定用户模式适合长期协作，分享口令模式适合先到先得地发放额度。
+          分配方管理自己对外提供的供应商与额度；申请方查看自己提交的申请和已获得的授权。
         </p>
       </div>
-      {busy ? (
+      <div className="u-segmented" role="tablist" style={{ marginBottom: 18 }}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={role === "owner"}
+          className={role === "owner" ? "active" : ""}
+          onClick={() => setRole("owner")}
+        >
+          <WalletCards size={15} />
+          分配方（我提供的）
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={role === "applicant"}
+          className={role === "applicant" ? "active" : ""}
+          onClick={() => setRole("applicant")}
+        >
+          <UserPlus size={15} />
+          申请方（我申请的）
+          {myApplications.filter((item) => item.state === "pending").length
+            ? ` ${myApplications.filter((item) => item.state === "pending").length}`
+            : ""}
+        </button>
+      </div>
+      {role === "applicant" ? (
+        renderApplicantView()
+      ) : busy ? (
         <Empty>
           <Busy />
         </Empty>
-      ) : !resources.length ? (
+      ) : !ownedResources.length ? (
         <Empty>
           还没有可分配的供应商。请先在“我的供应商”中创建、发布并启用资源。
         </Empty>
@@ -979,9 +1119,9 @@ function Allocations({ generation }: { generation: number }) {
           <aside className="u-allocation-list">
             <div className="u-allocation-list-head">
               <strong>我的供应商</strong>
-              <span>{resources.length}</span>
+              <span>{ownedResources.length}</span>
             </div>
-            {resources.map((resource) => (
+            {ownedResources.map((resource) => (
               <button
                 key={resource.id}
                 type="button"
@@ -1062,14 +1202,12 @@ function Allocations({ generation }: { generation: number }) {
                   <section className="u-panel">
                     <div className="u-panel-title">
                       <Users size={17} />
-                      共享规则
-                      <small>
-                        指定用户分配会覆盖下方的公开默认额度
-                      </small>
+                      可见性与共享
+                      <small>控制这个供应商对其他用户是否可见、可按什么额度使用</small>
                     </div>
                     <form className="u-panel-body" onSubmit={savePolicy}>
                       <div className="u-grid2">
-                        <Field label="共享范围">
+                        <Field label="其他用户的可见性">
                           <select
                             value={policy.visibility}
                             onChange={(event) =>
@@ -1079,9 +1217,9 @@ function Allocations({ generation }: { generation: number }) {
                               })
                             }
                           >
-                            <option value="public">所有注册用户</option>
-                            <option value="selected">仅指定用户</option>
-                            <option value="private">仅自己</option>
+                            <option value="public">所有用户可见</option>
+                            <option value="selected">仅指定用户可见</option>
+                            <option value="private">仅自己可见</option>
                           </select>
                         </Field>
                         <Field label="额度周期（UTC）">
@@ -1124,7 +1262,7 @@ function Allocations({ generation }: { generation: number }) {
                         disabled={saving}
                         type="submit"
                       >
-                        {saving ? <Busy /> : "保存共享规则"}
+                        {saving ? <Busy /> : "保存可见性与共享设置"}
                       </button>
                     </form>
                   </section>
