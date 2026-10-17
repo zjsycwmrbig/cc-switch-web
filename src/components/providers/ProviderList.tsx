@@ -284,8 +284,35 @@ export function ProviderList({
   const [applyExpires, setApplyExpires] = useState("");
   const [applyBudget, setApplyBudget] = useState<Budget>({});
   const [applyModels, setApplyModels] = useState<string[]>([]);
+  const [applyModelSearch, setApplyModelSearch] = useState("");
+  const [applyModelPage, setApplyModelPage] = useState(1);
   const [applyMessage, setApplyMessage] = useState("");
   const [applyBusy, setApplyBusy] = useState(false);
+
+  // 供应商模型可能很多，申请弹窗里按搜索 + 分页展示，避免溢出。
+  const applyVisibleModels = applyTarget?.unitResource.visibleModels ?? [];
+  const applyModelKeyword = applyModelSearch.trim().toLowerCase();
+  const applyFilteredModels = applyModelKeyword
+    ? applyVisibleModels.filter((model) =>
+        `${model.slug} ${model.display_name ?? ""}`
+          .toLowerCase()
+          .includes(applyModelKeyword),
+      )
+    : applyVisibleModels;
+  const APPLY_MODEL_PAGE_SIZE = 24;
+  const applyModelPages = Math.max(
+    1,
+    Math.ceil(applyFilteredModels.length / APPLY_MODEL_PAGE_SIZE),
+  );
+  const applyModelCurrent = Math.min(applyModelPage, applyModelPages);
+  const applyModelPageItems = applyFilteredModels.slice(
+    (applyModelCurrent - 1) * APPLY_MODEL_PAGE_SIZE,
+    applyModelCurrent * APPLY_MODEL_PAGE_SIZE,
+  );
+
+  useEffect(() => {
+    setApplyModelPage(1);
+  }, [applyModelSearch, applyTarget?.unitResource.id]);
   const { data: claudeDesktopStatus } = useQuery({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => claudeDesktopApi.getStatus(),
@@ -1031,7 +1058,7 @@ export function ProviderList({
           if (!open) setApplyTarget(null);
         }}
       >
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>申请使用供应商</DialogTitle>
           </DialogHeader>
@@ -1076,38 +1103,112 @@ export function ProviderList({
                   onChange={(event) => setApplyExpires(event.target.value)}
                 />
               </label>
-              {(applyTarget.unitResource.visibleModels?.length ?? 0) > 0 && (
-                <div className="space-y-1 text-xs text-muted-foreground">
-                  模型范围（留空表示全部可见模型）
-                  <div className="flex flex-wrap gap-1.5">
-                    {(applyTarget.unitResource.visibleModels || []).map(
-                      (model) => {
-                        const active = applyModels.includes(model.slug);
-                        return (
-                          <button
-                            key={model.slug}
-                            type="button"
-                            onClick={() =>
-                              setApplyModels(
-                                active
-                                  ? applyModels.filter(
-                                      (slug) => slug !== model.slug,
-                                    )
-                                  : [...applyModels, model.slug],
-                              )
-                            }
-                            className={`rounded-full border px-2.5 py-1 text-[11px] ${
+              {applyVisibleModels.length > 0 && (
+                <div className="space-y-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>模型范围（留空表示全部可见模型）</span>
+                    <span>
+                      已选 {applyModels.length} 个 · 可见{" "}
+                      {applyVisibleModels.length} 个
+                    </span>
+                  </div>
+                  {applyVisibleModels.length > APPLY_MODEL_PAGE_SIZE && (
+                    <Input
+                      placeholder="搜索模型名称"
+                      value={applyModelSearch}
+                      onChange={(event) =>
+                        setApplyModelSearch(event.target.value)
+                      }
+                    />
+                  )}
+                  <div className="flex max-h-[190px] flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border-default p-2">
+                    {applyModelPageItems.map((model) => {
+                      const active = applyModels.includes(model.slug);
+                      return (
+                        <button
+                          key={model.slug}
+                          type="button"
+                          onClick={() =>
+                            setApplyModels(
                               active
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-border-default text-muted-foreground"
-                            }`}
-                          >
-                            {model.display_name || model.slug}
-                          </button>
-                        );
-                      },
+                                ? applyModels.filter(
+                                    (slug) => slug !== model.slug,
+                                  )
+                                : [...applyModels, model.slug],
+                            )
+                          }
+                          className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                            active
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border-default text-muted-foreground"
+                          }`}
+                        >
+                          {model.display_name || model.slug}
+                        </button>
+                      );
+                    })}
+                    {!applyModelPageItems.length && (
+                      <span className="px-1 py-1">没有匹配的模型</span>
                     )}
                   </div>
+                  {applyModels.length > 0 && (
+                    <p className="truncate">
+                      已选：
+                      {applyModels
+                        .map(
+                          (slug) =>
+                            applyVisibleModels.find(
+                              (model) => model.slug === slug,
+                            )?.display_name || slug,
+                        )
+                        .join("、")}
+                    </p>
+                  )}
+                  {(applyModelPages > 1 || applyModels.length > 0) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        {applyModelPages > 1 && (
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={applyModelCurrent <= 1}
+                              onClick={() =>
+                                setApplyModelPage(applyModelCurrent - 1)
+                              }
+                            >
+                              上一页
+                            </Button>
+                            <span>
+                              {applyModelCurrent} / {applyModelPages}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={applyModelCurrent >= applyModelPages}
+                              onClick={() =>
+                                setApplyModelPage(applyModelCurrent + 1)
+                              }
+                            >
+                              下一页
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                      {applyModels.length > 0 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setApplyModels([])}
+                        >
+                          清空选择
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               <label className="block space-y-1 text-xs text-muted-foreground">

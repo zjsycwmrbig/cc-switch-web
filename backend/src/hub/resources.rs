@@ -214,6 +214,25 @@ pub fn safe_view(db: &crate::database::Database, user: &Identity, r: &Resource) 
     }
     if let Ok(budget) = grant(db, user, r, None) {
         v["myBudget"] = json!(budget);
+        // 这笔额度从哪来：自有 / 单独授权 / 供应商的公开默认额度。
+        let explicit_grant = conn(db)
+            .ok()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM hub_grants WHERE resource_id=?1 AND user_id=?2 AND allowed=1)",
+                    params![r.id, user.id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .ok()
+            })
+            .unwrap_or(false);
+        v["grantSource"] = json!(if r.owner_id == user.id {
+            "owner"
+        } else if explicit_grant {
+            "grant"
+        } else {
+            "policy"
+        });
         // 共享授权的截止时间：申请审批时由提供者设定，null 表示不限时间。
         if let Ok(Some(expires)) = conn(db).and_then(|c| {
             c.query_row(

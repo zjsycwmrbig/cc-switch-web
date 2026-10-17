@@ -258,6 +258,13 @@ function inputToDeadline(value?: string): number | null {
   return Number.isFinite(at) ? Math.floor(at / 1000) : null;
 }
 
+/** 额度来源文案：让用户知道额度来自单独授权还是供应商的公开默认值。 */
+function grantSourceText(source?: "owner" | "grant" | "policy"): string {
+  if (source === "owner") return "自有";
+  if (source === "policy") return "公开默认额度";
+  return "单独授权";
+}
+
 /** 申请记录里的处理结论文案。 */
 function decisionLabel(application: ApplicationRow): string {
   if (application.state === "pending") return "待审批";
@@ -1061,17 +1068,22 @@ function Allocations({ generation }: { generation: number }) {
       setBuckets([]);
       return;
     }
-    const [grantRows, usageBuckets, applicationRows] = await Promise.all([
+    const [grantRows, usageBuckets] = await Promise.all([
       unit<GrantRow[]>(`/resources/${selectedId}/grants`),
       unit<UsageBucket[]>(`/resources/${selectedId}/usage`),
-      unit<{ mine: ApplicationRow[]; received: ApplicationRow[] }>(
-        "/applications",
-      ),
     ]);
     setGrants(grantRows);
     setBuckets(usageBuckets);
-    setApplications(applicationRows);
   }, [selectedId]);
+
+  // 申请记录和「选中哪个供应商」无关：没有自有供应商时也要能看自己的申请。
+  const loadApplications = useCallback(async () => {
+    setApplications(
+      await unit<{ mine: ApplicationRow[]; received: ApplicationRow[] }>(
+        "/applications",
+      ),
+    );
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -1107,6 +1119,16 @@ function Allocations({ generation }: { generation: number }) {
       live = false;
     };
   }, [generation, loadDetails, selectedId]);
+
+  useEffect(() => {
+    let live = true;
+    void loadApplications().catch((error) => {
+      if (live) toast.error(errorText(error));
+    });
+    return () => {
+      live = false;
+    };
+  }, [generation, loadApplications]);
 
   const resetGrantForm = () => {
     setEditingUser("");
@@ -1185,7 +1207,7 @@ function Allocations({ generation }: { generation: number }) {
         delete next[application.id];
         return next;
       });
-      await Promise.all([loadDetails(), loadResources()]);
+      await Promise.all([loadDetails(), loadResources(), loadApplications()]);
     } catch (error) {
       toast.error(errorText(error));
     }
@@ -1195,7 +1217,7 @@ function Allocations({ generation }: { generation: number }) {
     try {
       await unit(`/applications/${application.id}`, "DELETE");
       toast.success("已撤销申请");
-      await loadDetails();
+      await Promise.all([loadDetails(), loadApplications()]);
     } catch (error) {
       toast.error(errorText(error));
     }
@@ -1401,10 +1423,11 @@ function Allocations({ generation }: { generation: number }) {
                 <tr>
                   <th>供应商</th>
                   <th>提供者</th>
-                  <th>我的额度</th>
-                  <th>可用模型</th>
+                  <th>请求次数</th>
+                  <th>Token 数量</th>
                   <th>时间截止</th>
-                  <th>状态</th>
+                  <th>可用模型</th>
+                  <th>额度来源</th>
                 </tr>
               </thead>
               <tbody>
@@ -1412,12 +1435,27 @@ function Allocations({ generation }: { generation: number }) {
                   <tr key={resource.id}>
                     <td>{resource.name}</td>
                     <td>{resource.ownerName}</td>
-                    <td>{budgetText(resource.myBudget || {})}</td>
-                    <td>{resource.models.length} 个</td>
+                    <td>
+                      {resource.myBudget?.requests == null
+                        ? "不限"
+                        : `${num(resource.myBudget.requests)} 次`}
+                    </td>
+                    <td>
+                      {resource.myBudget?.tokens == null
+                        ? "不限"
+                        : `${num(resource.myBudget.tokens)} Token`}
+                    </td>
                     <td>{deadlineText(resource.myExpiresAt)}</td>
                     <td>
-                      <span className="u-tag u-green">
-                        {resource.health === "ready" ? "就绪" : "可用"}
+                      {resource.models.length ? `${resource.models.length} 个` : "—"}
+                    </td>
+                    <td>
+                      <span
+                        className={`u-tag ${
+                          resource.grantSource === "owner" ? "u-green" : ""
+                        }`}
+                      >
+                        {grantSourceText(resource.grantSource)}
                       </span>
                     </td>
                   </tr>

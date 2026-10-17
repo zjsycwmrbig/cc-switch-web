@@ -125,6 +125,8 @@ export interface Resource {
   myBudget?: Budget;
   /** 共享给我的授权截止时间，null/未设置表示不限时间。 */
   myExpiresAt?: number | null;
+  /** 额度来源：owner 自有 / grant 单独授权 / policy 公开默认额度。 */
+  grantSource?: "owner" | "grant" | "policy";
   cooldownUntil?: number;
 }
 export interface Me {

@@ -1715,6 +1715,35 @@ export async function getWebCodexEditorView(payload: unknown) {
     payload,
   );
 }
+/**
+ * 回传供应商时只带模型目录的可编辑字段。
+ * 供应商目录里每行可能带上几 KB 的模型元数据，整包回传会让请求体达到数 MB。
+ * 服务端按 slug 合并回原行，所以这里只保留 slug 与展示名。
+ */
+function trimUnitResourceModels<T extends Provider>(provider: T): T {
+  const unitResource = provider.unitResource;
+  if (!unitResource?.models?.length && !unitResource?.visibleModels?.length) {
+    return provider;
+  }
+  const slim = (
+    models?: Array<{ slug: string; display_name?: string }>,
+  ) =>
+    models?.map((model) => ({
+      slug: model.slug,
+      ...(model.display_name ? { display_name: model.display_name } : {}),
+    }));
+  return {
+    ...provider,
+    unitResource: {
+      ...unitResource,
+      ...(unitResource.models?.length ? { models: slim(unitResource.models) } : {}),
+      ...(unitResource.visibleModels?.length
+        ? { visibleModels: slim(unitResource.visibleModels) }
+        : {}),
+    },
+  } as T;
+}
+
 export async function saveWebCodexEditor(payload: unknown) {
   if (hasUnit()) {
     const v = payload as {
@@ -1726,7 +1755,7 @@ export async function saveWebCodexEditor(payload: unknown) {
       "/api/unit/ui/providers/codex/save",
       "POST",
       {
-        provider: v.provider,
+        provider: trimUnitResourceModels(v.provider),
         add: v.add,
         baseConfig:
           v.add || v.editor?.onConflict === "keepMine"
@@ -1790,7 +1819,7 @@ export async function saveWebClaudeEditor(payload: unknown) {
       "/api/unit/ui/providers/claude/save",
       "POST",
       {
-        provider: v.provider,
+        provider: trimUnitResourceModels(v.provider),
         add: v.add,
         baseConfig:
           v.add || v.editor?.onConflict === "keepMine"
@@ -1815,7 +1844,7 @@ export async function addWebProvider(
     return requestWithBody<boolean>(
       `/api/unit/ui/providers/${appId}/save`,
       "POST",
-      { provider, add: true },
+      { provider: trimUnitResourceModels(provider), add: true },
     );
   return requestWithBody<boolean>(`/api/providers/${appId}`, "POST", {
     provider,
@@ -1832,7 +1861,12 @@ export async function updateWebProvider(
     return requestWithBody<boolean>(
       `/api/unit/ui/providers/${appId}/save`,
       "POST",
-      { provider, add: false, models: provider.unitResource?.models },
+      {
+        provider: trimUnitResourceModels(provider),
+        add: false,
+        // 只回传可编辑字段：整份模型目录可能有好几 MB，服务端会按 slug 合并回原行。
+        models: trimUnitResourceModels(provider).unitResource?.models,
+      },
     );
   return requestWithBody<boolean>(
     `/api/providers/${appId}/${encodeURIComponent(originalId ?? provider.id)}`,

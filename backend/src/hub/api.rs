@@ -112,7 +112,9 @@ pub fn routes(app: Arc<AppState>) -> Router {
         .route("/api/unit/admin/settings", get(settings).put(save_settings))
         .route("/api/unit/admin/audit", get(audit_log))
         .route("/api/unit/admin/reconcile/:id", post(reconcile))
-        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
+        // 供应商模型目录可能是几万个模型（编辑保存时会把目录整体回传），
+        // 4MB 会触发 “length limit exceeded”，这里放宽到 32MB。
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
