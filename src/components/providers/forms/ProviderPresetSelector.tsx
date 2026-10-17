@@ -18,6 +18,7 @@ import {
   universalProviderPresets,
   type UniversalProviderPreset,
 } from "@/config/universalProviderPresets";
+import { presetSortWeight } from "@/config/presetPriority";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   compareProviderNames,
@@ -84,12 +85,12 @@ export function sortPresetEntries(
   entries: PresetEntry[],
   t: PresetTranslator,
 ): PresetEntry[] {
-  return [...entries].sort((a, b) =>
-    compareProviderNames(
-      getPresetDisplayName(a.preset, t),
-      getPresetDisplayName(b.preset, t),
-    ),
-  );
+  return [...entries].sort((a, b) => {
+    const left = getPresetDisplayName(a.preset, t);
+    const right = getPresetDisplayName(b.preset, t);
+    const weight = presetSortWeight(left) - presetSortWeight(right);
+    return weight !== 0 ? weight : compareProviderNames(left, right);
+  });
 }
 
 export interface PresetVisibilityOptions {
