@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 下载聚合模型目录；配置和模型文件先备份，失败时恢复原文件。
-# 环境变量：CC_SWITCH_URL、CC_SWITCH_ACCESS_KEY、CODEX_HOME、CC_SWITCH_RESTART_APP_SERVER
-set -euo pipefail
+# ccSwitchUint 设备同步：下载聚合模型目录并写入 Codex 配置，先备份、原子替换，失败时还原。
+# 环境变量：CC_SWITCH_URL、CC_SWITCH_ACCESS_KEY、CC_SWITCH_PROXY_URL、CODEX_HOME、
+#           CC_SWITCH_CONFIGURE_ROUTE、CC_SWITCH_RESTART_APP_SERVER、NO_COLOR
+set -Eeuo pipefail
 CC_SWITCH_URL="${CC_SWITCH_URL:-__CC_SWITCH_ORIGIN__}"
 CC_SWITCH_ACCESS_KEY="${CC_SWITCH_ACCESS_KEY:-__CC_SWITCH_ACCESS_KEY__}"
 CC_SWITCH_PROXY_URL="${CC_SWITCH_PROXY_URL:-__CC_SWITCH_PROXY_URL__}"
@@ -9,17 +10,70 @@ CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 BASE="${CC_SWITCH_URL%/}"
 CATALOG="$CODEX_DIR/cc-switch-aggregation-models.json"
 CONFIG="$CODEX_DIR/config.toml"
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_STEP=$'\033[36m'; C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'
+else
+  C_RESET=''; C_BOLD=''; C_DIM=''; C_STEP=''; C_OK=''; C_WARN=''; C_ERR=''
+fi
+STEP=0
+TOTAL=5
+INDENT='      '
+START_TS=$(date +%s)
+elapsed() { printf '%ss' "$(( $(date +%s) - START_TS ))"; }
+step() { STEP=$((STEP + 1)); printf '%s[%d/%d]%s %s%s%s\n' "$C_STEP" "$STEP" "$TOTAL" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"; }
+detail() { printf '%s%s%s%s\n' "$INDENT" "$C_DIM" "$1" "$C_RESET"; }
+ok() { printf '%s%s✔%s %s\n' "$INDENT" "$C_OK" "$C_RESET" "$1"; }
+warn() { printf '%s%s!%s %s\n' "$INDENT" "$C_WARN" "$C_RESET" "$1" >&2; }
+fail() {
+  printf '\n%s✘ %s%s\n' "$C_ERR" "$1" "$C_RESET" >&2
+  shift || true
+  for line in "$@"; do printf '  %s\n' "$line" >&2; done
+  printf '  %s\n' "如需协助：把上面 20 行输出连同执行的命令一起发给管理员。" >&2
+  exit 1
+}
+on_error() { fail "同步中断（脚本第 $1 行）" "原有配置未被破坏，可修正后重跑同一命令。"; }
+trap 'on_error $LINENO' ERR
+
+printf '%s%s==> ccSwitchUint 模型同步%s\n' "$C_BOLD" "$C_STEP" "$C_RESET"
+detail "服务地址：$BASE"
+detail "配置目录：$CODEX_DIR"
+
+step "检查运行依赖（curl / python3）"
+missing=''
 for dependency in curl python3; do
-  command -v "$dependency" >/dev/null 2>&1 || { echo "请先安装 $dependency" >&2; exit 1; }
+  command -v "$dependency" >/dev/null 2>&1 || missing="$missing $dependency"
 done
+if [ -n "$missing" ]; then
+  fail "缺少依赖：${missing# }" "请先安装后重跑：" \
+    "  Ubuntu/Debian: sudo apt-get install -y curl python3" \
+    "  macOS:         brew install curl python3"
+fi
+ok "curl、python3 已就绪（$(elapsed)）"
+
 mkdir -p "$CODEX_DIR"
 TMP="$(mktemp "$CODEX_DIR/.cc-switch-models.XXXXXX")"
 CFG_TMP="$(mktemp "$CODEX_DIR/.cc-switch-config.XXXXXX")"
-trap 'rm -f "$TMP" "$CFG_TMP"' EXIT
-echo "下载聚合模型：$BASE/api/model-catalog/codex/aggregation"
-curl -fsSL -H "Authorization: Bearer $CC_SWITCH_ACCESS_KEY" -H 'Accept: application/json' \
-  "$BASE/api/model-catalog/codex/aggregation" -o "$TMP"
-python3 - "$TMP" "$CONFIG" "$CFG_TMP" "$CATALOG" "$CC_SWITCH_PROXY_URL" "$CC_SWITCH_ACCESS_KEY" "${CC_SWITCH_CONFIGURE_ROUTE:-0}" <<'PY'
+PY_LOG="$CODEX_DIR/.cc-switch-sync.$$.log"
+trap 'rm -f "$TMP" "$CFG_TMP" "$PY_LOG"' EXIT
+
+step "下载聚合模型目录"
+CATALOG_URL="$BASE/api/model-catalog/codex/aggregation"
+detail "GET $CATALOG_URL"
+if ! curl -fsSL -H "Authorization: Bearer $CC_SWITCH_ACCESS_KEY" -H 'Accept: application/json' \
+  "$CATALOG_URL" -o "$TMP"; then
+  fail "下载模型目录失败" \
+    "常见原因：设备密钥被撤销或过期、服务未启动、当前网络无法访问 $BASE。" \
+    "处理方式：在网页「模型与接入」里重新创建一条接入命令后重试。"
+fi
+if [ ! -s "$TMP" ]; then
+  fail "下载到的模型目录为空" "请确认该设备密钥仍有权限读取模型目录。"
+fi
+ok "已下载模型目录（$(wc -c <"$TMP" | tr -d ' ') 字节，$(elapsed)）"
+
+step "生成 Codex 配置（模型目录 + 路由）"
+if ! python3 - "$TMP" "$CONFIG" "$CFG_TMP" "$CATALOG" "$CC_SWITCH_PROXY_URL" "$CC_SWITCH_ACCESS_KEY" "${CC_SWITCH_CONFIGURE_ROUTE:-0}" >"$PY_LOG" 2>&1 <<'PY'
 import json, re, sys
 from pathlib import Path
 catalog_path, config_path, staged_path, target, proxy_url, api_key, configure = sys.argv[1:]
@@ -78,18 +132,36 @@ else:
 Path(staged_path).write_text(output)
 print('模型数量：%d；启动模型：%s' % (len(ids), selected))
 PY
+then
+  while IFS= read -r line; do [ -n "$line" ] && printf '  %s\n' "$line" >&2; done <"$PY_LOG"
+  fail "生成配置失败" \
+    "上游返回的模型目录可能无效，或该设备密钥当前没有可用模型。" \
+    "请把上面输出的最后几行发给管理员。"
+fi
+while IFS= read -r line; do
+  [ -n "$line" ] && detail "$line"
+done <"$PY_LOG"
+MODEL_LINE="$(grep '^模型数量：' "$PY_LOG" | tail -n 1 || true)"
+ok "配置已生成（$(elapsed)）"
+
+step "备份并原子写入配置"
 STAMP="$(date -u +%Y%m%dT%H%M%S)-$$"
 for file in "$CONFIG" "$CATALOG"; do
-  if [ -f "$file" ]; then cp -p "$file" "$file.bak-$STAMP"; fi
+  if [ -f "$file" ]; then
+    cp -p "$file" "$file.bak-$STAMP"
+    detail "备份 $(basename "$file") → $(basename "$file").bak-$STAMP"
+  fi
 done
 # staging 与目标在同一目录，rename 原子替换；第二步失败时还原第一步。
 chmod 600 "$TMP" "$CFG_TMP"
 mv -f "$TMP" "$CATALOG"
 if ! mv -f "$CFG_TMP" "$CONFIG"; then
   if [ -f "$CATALOG.bak-$STAMP" ]; then cp -p "$CATALOG.bak-$STAMP" "$CATALOG"; else rm -f "$CATALOG"; fi
-  exit 1
+  fail "写入 config.toml 失败，已还原模型目录" "若目标文件被占用，请关闭 Codex 后重跑同一命令。"
 fi
-echo "已同步：${CATALOG}；备份后缀：.bak-${STAMP}"
+ok "已写入 config.toml 与聚合模型目录（备份后缀 .bak-$STAMP，$(elapsed)）"
+
+step "重启 Codex app-server"
 if [ "${CC_SWITCH_RESTART_APP_SERVER:-0}" = "1" ]; then
   CODEX_BIN="$(command -v codex || true)"
   if [ -z "$CODEX_BIN" ]; then
@@ -99,10 +171,13 @@ if [ "${CC_SWITCH_RESTART_APP_SERVER:-0}" = "1" ]; then
   fi
   if [ -n "$CODEX_BIN" ]; then
     export PATH="$(dirname "$CODEX_BIN"):$PATH"
-    if ! "$CODEX_BIN" app-server daemon restart; then
+    if "$CODEX_BIN" app-server daemon restart; then
+      ok "已通过 codex app-server daemon restart 重启"
+    else
+      detail "daemon 命令不可用，改为按控制 socket 重启当前 CODEX_HOME 的服务"
       # Desktop 启动的服务可能不归 daemon 命令管理。只重启当前 CODEX_HOME
       # 控制 socket 的同用户 Codex 服务，不触碰其他目录或其他用户的服务。
-      python3 - "$CODEX_DIR" "$CODEX_BIN" <<'PY' || echo "请重新打开 Codex 以加载新目录。" >&2
+      python3 - "$CODEX_DIR" "$CODEX_BIN" <<'PY' && ok "已重启当前 CODEX_HOME 的 app-server" || warn "自动重启未成功，请重新打开 Codex"
 from pathlib import Path
 import os, re, signal, subprocess, sys, time
 directory, cli = sys.argv[1:]
@@ -146,7 +221,16 @@ except (OSError, RuntimeError, subprocess.SubprocessError) as error:
 PY
     fi
   else
-    echo "未找到 Codex CLI，请在 Codex 终端中执行 codex app-server daemon restart。" >&2
+    warn "未找到 Codex CLI，已跳过自动重启"
+    detail "手动执行：codex app-server daemon restart"
   fi
+else
+  detail "未设置 CC_SWITCH_RESTART_APP_SERVER=1，跳过自动重启"
 fi
-echo "已有 CLI 会话请退出重进；VS Code 远程窗口执行 Developer: Reload Window。"
+
+printf '\n%s%s✔ 同步完成%s（总耗时 %s）\n' "$C_BOLD" "$C_OK" "$C_RESET" "$(elapsed)"
+[ -n "${MODEL_LINE:-}" ] && detail "$MODEL_LINE"
+detail "模型目录：$CATALOG"
+printf '%s下一步：%s\n' "$INDENT" "在 Codex 的模型列表里选择需要的模型即可开始使用。"
+printf '%s%s\n' "$INDENT" "以后在网页改完模型选择，重新执行这条命令即可同步。"
+printf '%s%s\n' "$INDENT" "已有 CLI 会话请退出重进；VS Code 远程窗口执行 Developer: Reload Window。"

@@ -60,6 +60,25 @@ type UnitProviderTab = "library" | "owned" | "shared";
 
 const UNIT_PAGE_SIZE = 6;
 
+/** 授权额度是否不限（三个维度都留空）。 */
+function isUnlimitedBudget(budget?: Budget) {
+  return (
+    !budget ||
+    (budget.requests == null &&
+      budget.tokens == null &&
+      budget.credits == null)
+  );
+}
+
+function budgetLabel(budget?: Budget) {
+  if (!budget) return "不限";
+  const parts: string[] = [];
+  if (budget.requests != null) parts.push(`${budget.requests} 次`);
+  if (budget.tokens != null) parts.push(`${budget.tokens} tokens`);
+  if (budget.credits != null) parts.push(`${budget.credits} 点`);
+  return parts.length ? parts.join(" / ") : "不限";
+}
+
 /** 供应商库条目：平台上一个已发布的供应商，以及它的归属信息。 */
 type UnitLibraryProvider = {
   id: string;
@@ -74,6 +93,7 @@ type UnitLibraryProvider = {
     accessible?: boolean;
     modelCount?: number;
     myApplication?: string | null;
+    myBudget?: Budget;
   };
 };
 
@@ -725,27 +745,35 @@ export function ProviderList({
                         </span>
                       )}
                       {!resource.owned &&
-                        (resource.accessible ? (
-                          <span className="text-[11px] text-muted-foreground">
-                            已授权
-                          </span>
-                        ) : resource.myApplication === "pending" ? (
+                        (resource.myApplication === "pending" ? (
                           <span className="theme-chip-primary inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
                             待审批
                           </span>
+                        ) : resource.accessible &&
+                          isUnlimitedBudget(resource.myBudget) ? (
+                          <span className="text-[11px] text-muted-foreground">
+                            已授权 · 额度不限
+                          </span>
                         ) : (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setApplyTarget(entry);
-                              setApplyBudget({});
-                              setApplyMessage("");
-                            }}
-                          >
-                            申请使用
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {resource.accessible && (
+                              <span className="text-[11px] text-muted-foreground">
+                                当前额度 {budgetLabel(resource.myBudget)}
+                              </span>
+                            )}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setApplyTarget(entry);
+                                setApplyBudget({});
+                                setApplyMessage("");
+                              }}
+                            >
+                              {resource.accessible ? "申请追加额度" : "申请使用"}
+                            </Button>
+                          </div>
                         ))}
                     </div>
                   </div>

@@ -180,11 +180,8 @@ pub fn check_binding(
             return Ok(Some(account));
         }
     }
-    if crate::proxy::providers::is_codex_official_provider(provider)
-        || provider.uses_managed_account_auth()
-    {
-        return Err(Error::bad("官方或托管账号必须明确绑定您自己的账号"));
-    }
+    // 未绑定托管账号时允许先保存供应商，随后在卡片上通过“官方账号”入口绑定；
+    // 发布与使用阶段会再校验账号是否已绑定。
     Ok(None)
 }
 pub async fn migrate_existing(app: &AppState) -> Result<()> {

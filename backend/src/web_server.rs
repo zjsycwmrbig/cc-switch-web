@@ -3255,7 +3255,7 @@ async fn download_codex_model_shell_installer(State(state): State<WebApiState>, 
         .ok()
         .map(|value| shell_literal(&value))
         .unwrap_or_default();
-    let script = include_str!("../scripts/cc-switch-update-models.sh")
+    let script = crate::hub::api::installer_template()
         .replace("__CC_SWITCH_ORIGIN__", &origin)
         .replace("__CC_SWITCH_ACCESS_KEY__", &access_key);
     ([

@@ -601,6 +601,9 @@ async fn publication(
     if v.published && r.models.is_empty() {
         return Err(Error::bad("请先添加或获取模型"));
     }
+    if v.published && r.official && r.account_id.is_none() {
+        return Err(Error::bad("官方供应商需要先绑定官方账号再发布"));
+    }
     conn(&app.db)?.execute(
         "UPDATE hub_resources SET published=?1 WHERE id=?2",
         params![v.published, resource],
@@ -1575,6 +1578,20 @@ async fn catalog(
         !q.all.unwrap_or(false),
     )?))
 }
+/// 安装脚本模板：优先读取磁盘文件（改文案不用重新编译），读不到时回退到内嵌版本。
+pub(crate) fn installer_template() -> String {
+    let configured = std::env::var("CC_SWITCH_INSTALL_SCRIPT").ok();
+    let candidates = configured.into_iter().chain(std::iter::once(
+        "/opt/cc-switch-web/cc-switch-update-models.sh".to_string(),
+    ));
+    for path in candidates {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            return content;
+        }
+    }
+    include_str!("../../scripts/cc-switch-update-models.sh").to_string()
+}
+
 pub fn installer_response(db: &crate::database::Database, headers: &HeaderMap) -> Result<Response> {
     let token =
         auth::bearer(headers).ok_or_else(|| Error::bad("请使用设备 API Key 下载接入脚本"))?;
@@ -1592,7 +1609,7 @@ pub fn installer_response(db: &crate::database::Database, headers: &HeaderMap) -
             .replace('`', "\\`")
             .replace('"', "\\\"")
     };
-    let script = include_str!("../../scripts/cc-switch-update-models.sh")
+    let script = installer_template()
         .replace("__CC_SWITCH_ORIGIN__", &escaped(&public_url(db)))
         .replace("__CC_SWITCH_ACCESS_KEY__", &escaped(token))
         .replace("__CC_SWITCH_PROXY_URL__", &escaped(&proxy_url(db)));
