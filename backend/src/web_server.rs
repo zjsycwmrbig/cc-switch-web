@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::http::{header, Extensions, HeaderMap, HeaderValue, StatusCode, Uri, Version};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, get_service, post, put};
@@ -15,6 +15,8 @@ use axum::{Json, Router};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tower_http::compression::predicate::{Predicate, SizeAbove};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -620,6 +622,68 @@ async fn api_request_logger(request: axum::extract::Request, next: Next) -> Resp
             uri,
             response.status().as_u16(),
             start.elapsed().as_millis()
+        );
+    }
+
+    response
+}
+
+/// 只对文本类响应启用压缩：SSE、NDJSON 与二进制内容保持原样，避免破坏流式语义。
+fn is_compressible_content_type(content_type: &str) -> bool {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    if mime == "text/event-stream" || mime == "application/x-ndjson" {
+        return false;
+    }
+
+    mime.starts_with("text/")
+        || mime == "application/json"
+        || mime.ends_with("+json")
+        || mime == "application/javascript"
+        || mime == "application/xml"
+        || mime.ends_with("+xml")
+        || mime == "application/wasm"
+}
+
+fn should_compress_web_response(
+    _status: StatusCode,
+    _version: Version,
+    headers: &HeaderMap,
+    _extensions: &Extensions,
+) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_compressible_content_type)
+}
+
+/// 静态资源与 API 的缓存策略：带内容哈希的构建产物长期强缓存，
+/// index.html 与 SPA 兜底路由每次协商，API 响应不缓存。
+fn web_cache_control(path: &str) -> &'static str {
+    if path.starts_with("/api") {
+        "no-store"
+    } else if path.starts_with("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else if path.ends_with(".html") || !path.contains('.') {
+        "no-cache"
+    } else {
+        "public, max-age=3600"
+    }
+}
+
+async fn apply_cache_control(request: axum::extract::Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    let mut response = next.run(request).await;
+
+    if !response.headers().contains_key(header::CACHE_CONTROL) {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(web_cache_control(&path)),
         );
     }
 
@@ -4878,6 +4942,15 @@ pub async fn run_web_server_with_options(options: WebServerOptions) -> Result<()
         app = app.route("/", get(root));
     }
 
+    // 静态资源与 API 统一启用 gzip/br 压缩并补充缓存头；模型网关（15721）不受影响。
+    let compression = CompressionLayer::new()
+        .gzip(true)
+        .br(true)
+        .compress_when(SizeAbove::new(1024).and(should_compress_web_response));
+    app = app
+        .layer(middleware::from_fn(apply_cache_control))
+        .layer(compression);
+
     let (listener, bind_addr) = bind_listener(&bind_options).await?;
     if bind_addr.port() != bind_options.preferred_port {
         println!(
@@ -4921,3 +4994,34 @@ mod session_tests;
 #[cfg(test)]
 #[path = "web_resource_tests.rs"]
 mod resource_tests;
+
+#[cfg(test)]
+mod cache_control_tests {
+    use super::{is_compressible_content_type, web_cache_control};
+
+    #[test]
+    fn compressible_content_types_skip_streaming_and_binary() {
+        assert!(is_compressible_content_type("text/javascript"));
+        assert!(is_compressible_content_type(
+            "application/json; charset=utf-8"
+        ));
+        assert!(is_compressible_content_type("image/svg+xml"));
+        assert!(!is_compressible_content_type("text/event-stream"));
+        assert!(!is_compressible_content_type("application/x-ndjson"));
+        assert!(!is_compressible_content_type("image/png"));
+        assert!(!is_compressible_content_type("application/octet-stream"));
+    }
+
+    #[test]
+    fn cache_control_covers_static_and_api_paths() {
+        assert_eq!(web_cache_control("/api/settings"), "no-store");
+        assert_eq!(
+            web_cache_control("/assets/App-Chs-fyjk.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(web_cache_control("/"), "no-cache");
+        assert_eq!(web_cache_control("/settings"), "no-cache");
+        assert_eq!(web_cache_control("/index.html"), "no-cache");
+        assert_eq!(web_cache_control("/favicon.ico"), "public, max-age=3600");
+    }
+}
