@@ -838,7 +838,66 @@ async fn model_routes(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,
 ) -> Result<Json<Value>> {
+    seed_model_routes(&app.db, &user)?;
     Ok(Json(json!(list_model_routes(&app.db, &user.id)?)))
+}
+
+/// 首次进入模型页时，把当前可用的「资源 × 模型」补成映射：
+/// 同一模型有多个可用供应商时直接生成自动路由，否则生成单对单映射。
+fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
+    let existing = list_model_routes(db, &user.id)?;
+    let mut have = existing
+        .iter()
+        .filter_map(|row| row["model"].as_str().map(str::to_string))
+        .collect::<std::collections::HashSet<_>>();
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for r in resources::all(db)?
+        .into_iter()
+        .filter(|r| r.app_type == "codex" && r.published && !r.disabled)
+    {
+        for raw in &r.models {
+            let Some(model) = raw["slug"].as_str() else {
+                continue;
+            };
+            if have.contains(model) {
+                continue;
+            }
+            if resources::usable(db, user, &r, model).is_err() {
+                continue;
+            }
+            groups
+                .entry(model.to_string())
+                .or_default()
+                .push(r.id.clone());
+        }
+    }
+    if groups.is_empty() {
+        return Ok(());
+    }
+    for (model, mut targets) in groups {
+        targets.dedup();
+        if !have.insert(model.clone()) {
+            continue;
+        }
+        let (name, _) = if targets.len() >= 2 {
+            (format!("{model}（自动路由）"), ())
+        } else {
+            (model.clone(), ())
+        };
+        conn(db)?.execute(
+            "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,1,?6,?6)",
+            params![
+                super::id(),
+                &user.id,
+                name,
+                model,
+                json_text(&targets),
+                now()
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
