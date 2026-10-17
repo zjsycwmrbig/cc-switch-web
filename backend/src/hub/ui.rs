@@ -71,7 +71,8 @@ async fn library(
             json!({"id":p.id,"name":p.name,"settingsConfig":{},"icon":p.icon,"iconColor":p.icon_color,"category":p.category})
         };
         let mut view = resources::safe_view(&app.db, &user, &r);
-        view["modelCount"] = json!(r.models.len());
+        // 供应商库里展示的是“对外可见”的模型数量，而不是本人的可用模型。
+        view["modelCount"] = json!(resources::visible_models(&r).len());
         view["accessible"] = json!(visible(&app.db, &user, &r));
         let my_application: Option<String> = conn(&app.db)?
             .query_row(

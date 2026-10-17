@@ -68,6 +68,38 @@ pub fn own(user: &Identity, r: &Resource) -> Result<()> {
     Ok(())
 }
 
+fn provides_model(r: &Resource, model: &str) -> bool {
+    r.models
+        .iter()
+        .any(|value| value.get("slug").and_then(Value::as_str) == Some(model))
+}
+
+/// 供应商「对外可见」的模型：由分享设置 `policy.models` 限定，留空表示目录里的全部模型。
+///
+/// 可见只代表别人能在供应商库里看到并申请，是否能用仍然取决于授权。
+pub fn visible_models(r: &Resource) -> Vec<Value> {
+    if r.policy.models.is_empty() {
+        return r.models.clone();
+    }
+    r.models
+        .iter()
+        .filter(|value| {
+            value
+                .get("slug")
+                .and_then(Value::as_str)
+                .is_some_and(|slug| r.policy.models.iter().any(|allowed| allowed == slug))
+        })
+        .cloned()
+        .collect()
+}
+
+pub fn visible_model_slugs(r: &Resource) -> Vec<String> {
+    visible_models(r)
+        .iter()
+        .filter_map(|value| value.get("slug").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Grant {
@@ -85,10 +117,24 @@ pub fn grant(
     model: Option<&str>,
 ) -> Result<Budget> {
     if r.disabled {
-        return Err(Error::forbidden());
+        return Err(Error::denied("supplier_disabled", "该供应商已被停用"));
     }
     if user.id == r.owner_id {
         return Ok(Budget::default());
+    }
+    if let Some(model) = model {
+        if !provides_model(r, model) {
+            return Err(Error::denied(
+                "model_not_provided",
+                format!("该供应商未提供模型 {model}"),
+            ));
+        }
+        if !r.policy.models.is_empty() && !r.policy.models.iter().any(|allowed| allowed == model) {
+            return Err(Error::denied(
+                "model_not_shared",
+                format!("模型 {model} 不在该供应商的共享范围内"),
+            ));
+        }
     }
     let override_rule:Option<(bool,String,String,Option<i64>)>=conn(db)?.query_row("SELECT allowed,budget,models,expires_at FROM hub_grants WHERE resource_id=?1 AND user_id=?2",params![r.id,user.id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
     let budget = match override_rule {
@@ -97,24 +143,34 @@ pub fn grant(
             if model.is_some_and(|m| {
                 !allowed_models.is_empty() && !allowed_models.iter().any(|a| a == m)
             }) {
-                return Err(Error::forbidden());
+                return Err(Error::denied("model_not_granted", "你的授权不包含这个模型"));
             }
             parse(&budget)
         }
-        Some(_) => return Err(Error::forbidden()),
+        Some((true, _, _, _)) => {
+            return Err(Error::denied("grant_expired", "你的授权已过期，请重新申请"))
+        }
+        Some((false, _, _, _)) => {
+            return Err(Error::denied("grant_revoked", "你的授权已被提供者取消"))
+        }
         None if r.policy.visibility == "private"
             || (user.role == "legacy" && r.owner_id != "admin") =>
         {
-            return Err(Error::forbidden())
+            return Err(Error::denied(
+                "not_shared",
+                "该供应商没有对你开放，请先提交申请",
+            ))
         }
         None if r.policy.visibility == "public" => r.policy.default_budget.clone(),
-        _ => return Err(Error::forbidden()),
+        _ => {
+            return Err(Error::denied(
+                "not_shared",
+                "该供应商没有对你开放，请先提交申请",
+            ))
+        }
     };
-    if r.policy.expires_at.is_some_and(|t| t <= now())
-        || model
-            .is_some_and(|m| !r.policy.models.is_empty() && !r.policy.models.iter().any(|a| a == m))
-    {
-        return Err(Error::forbidden());
+    if r.policy.expires_at.is_some_and(|t| t <= now()) {
+        return Err(Error::denied("share_expired", "供应商的共享已过期"));
     }
     Ok(budget)
 }
@@ -125,26 +181,31 @@ pub fn usable(
     model: &str,
 ) -> Result<Budget> {
     // 自己的供应商即使没有发布到供应商库，也应当对自己可用。
-    if r.disabled || (!r.published && r.owner_id != user.id) {
-        return Err(Error::forbidden());
+    if r.disabled {
+        return Err(Error::denied("supplier_disabled", "该供应商已被停用"));
     }
-    if !r
-        .models
-        .iter()
-        .any(|v| v.get("slug").and_then(Value::as_str) == Some(model))
-    {
-        return Err(Error::bad("该资源没有发布此模型"));
+    if !r.published && r.owner_id != user.id {
+        return Err(Error::denied("supplier_unpublished", "该供应商尚未发布或已下架"));
+    }
+    if !provides_model(r, model) {
+        return Err(Error::denied(
+            "model_not_provided",
+            format!("该供应商未提供模型 {model}"),
+        ));
     }
     grant(db, user, r, Some(model))
 }
 pub fn safe_view(db: &crate::database::Database, user: &Identity, r: &Resource) -> Value {
+    // `models` 是“我有权使用的模型”，`visibleModels` 是供应商对外可见（可被申请）的模型。
     let models: Vec<Value> = r
         .models
         .iter()
         .filter(|m| grant(db, user, r, m["slug"].as_str()).is_ok())
         .cloned()
         .collect();
-    let mut v = json!({"id":r.id,"name":r.name,"appType":r.app_type,"ownerId":r.owner_id,"ownerName":r.owner_name,"routeKey":r.route_key,"published":r.published,"disabled":r.disabled,"official":r.official,"owned":r.owner_id==user.id,"models":models,"health":if r.health=="ready"{"ready"}else{"unknown"}});
+    let visible = visible_models(r);
+    let visible_count = visible.len();
+    let mut v = json!({"id":r.id,"name":r.name,"appType":r.app_type,"ownerId":r.owner_id,"ownerName":r.owner_name,"routeKey":r.route_key,"published":r.published,"disabled":r.disabled,"official":r.official,"owned":r.owner_id==user.id,"models":models,"visibleModels":visible,"visibleModelCount":visible_count,"health":if r.health=="ready"{"ready"}else{"unknown"}});
     if r.owner_id == user.id || user.admin() {
         v["policy"] = json!(r.policy);
         v["accountId"] = json!(r.account_id);

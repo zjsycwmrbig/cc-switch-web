@@ -86,6 +86,8 @@ export interface ApplicationRow {
   decidedExpiresAt?: number | null;
   /** 批阅后实际生效的模型清单。 */
   decidedModels?: string[];
+  /** 批阅后实际生效的额度（请求次数 / Token）。 */
+  decidedBudget?: Budget;
   /** approve / modify / reject / auto，用于在记录里区分同意、修改后同意与驳回。 */
   decisionKind?: string;
   /** 批阅说明（驳回原因或参数调整说明）。 */
@@ -112,7 +114,11 @@ export interface Resource {
   published: boolean;
   disabled: boolean;
   official: boolean;
+  /** 本人有权使用的模型（授权与本人都能生效的部分）。 */
   models: Model[];
+  /** 供应商对外可见、可被申请的模型（受分享设置限定）。 */
+  visibleModels?: Model[];
+  visibleModelCount?: number;
   policy?: Policy;
   accountId?: string;
   health: string;

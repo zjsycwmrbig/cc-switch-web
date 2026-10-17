@@ -711,6 +711,13 @@ async fn save_grant(
     let r = resources::get(&app.db, &resource)?;
     resources::own(&user, &r)?;
     v.budget.validate()?;
+    if v.expires_at.is_some_and(|expires| expires <= now()) {
+        return Err(Error::bad("授权到期时间必须晚于当前时间"));
+    }
+    let allowed_models = resources::visible_model_slugs(&r);
+    if v.models.iter().any(|model| !allowed_models.contains(model)) {
+        return Err(Error::bad("授权包含该供应商未共享的模型"));
+    }
     let username = auth::username(&v.username)?;
     let uid: Option<String> = conn(&app.db)?
         .query_row(
@@ -777,16 +784,15 @@ fn normalize_application_models(
     if models.len() > 500 || models.iter().any(|model| model.len() > 200) {
         return Err(Error::bad("申请的模型列表过长"));
     }
-    let available = r
-        .models
-        .iter()
-        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+    // 只能申请供应商对外可见/共享的模型，留空表示全部可见模型。
+    let available = resources::visible_model_slugs(r)
+        .into_iter()
         .collect::<std::collections::HashSet<_>>();
     if models
         .iter()
         .any(|model| !available.contains(model.as_str()))
     {
-        return Err(Error::bad("申请包含该供应商未发布的模型"));
+        return Err(Error::bad("申请包含该供应商未共享的模型"));
     }
     Ok(models.to_vec())
 }
@@ -834,7 +840,7 @@ async fn applications(
     let c = conn(&app.db)?;
     let mut mine_statement = c.prepare(
         "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at,
-                a.requested_expires_at,a.decided_expires_at,a.decided_models,a.decision_kind,a.decision_note
+                a.requested_expires_at,a.decided_expires_at,a.decided_models,a.decided_budget,a.decision_kind,a.decision_note
          FROM hub_applications a
          JOIN hub_resources r ON r.id=a.resource_id
          JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
@@ -846,7 +852,7 @@ async fn applications(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut received_statement = c.prepare(
         "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at,
-                a.requested_expires_at,a.decided_expires_at,a.decided_models,a.decision_kind,a.decision_note
+                a.requested_expires_at,a.decided_expires_at,a.decided_models,a.decided_budget,a.decision_kind,a.decision_note
          FROM hub_applications a
          JOIN hub_resources r ON r.id=a.resource_id
          JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
@@ -875,8 +881,9 @@ fn application_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "requestedExpiresAt": row.get::<_, Option<i64>>(11)?,
         "decidedExpiresAt": row.get::<_, Option<i64>>(12)?,
         "decidedModels": parse::<Vec<String>>(&row.get::<_, String>(13)?),
-        "decisionKind": row.get::<_, String>(14)?,
-        "decisionNote": row.get::<_, String>(15)?,
+        "decidedBudget": parse::<Budget>(&row.get::<_, String>(14)?),
+        "decisionKind": row.get::<_, String>(15)?,
+        "decisionNote": row.get::<_, String>(16)?,
     }))
 }
 
@@ -1195,12 +1202,17 @@ async fn create_application(
     } else {
         "[]".to_string()
     };
+    let decided_budget_text = if auto_decided {
+        json_text(&v.budget)
+    } else {
+        "{}".to_string()
+    };
     let application_id = super::id();
     conn(&app.db)?
         .execute(
             "INSERT INTO hub_applications(id,resource_id,applicant_id,owner_id,message,budget,models,state,created_at,decided_at,decided_by,
-                    requested_expires_at,decided_expires_at,decided_models,decision_kind)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                    requested_expires_at,decided_expires_at,decided_models,decided_budget,decision_kind)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 application_id,
                 r.id,
@@ -1216,6 +1228,7 @@ async fn create_application(
                 v.expires_at,
                 if auto_decided { v.expires_at } else { None },
                 decided_models_text,
+                decided_budget_text,
                 if auto_decided { "auto" } else { "" },
             ],
         )
@@ -1276,17 +1289,27 @@ async fn decide_application(
     Path(application): Path<String>,
     Json(v): Json<ApplicationDecision>,
 ) -> Result<Json<Value>> {
-    let (resource_id, applicant_id, state, requested_models, requested_expires): (
+    let (resource_id, applicant_id, state, requested_models, requested_expires, requested_budget): (
         String,
         String,
         String,
         String,
         Option<i64>,
+        String,
     ) = conn(&app.db)?
         .query_row(
-            "SELECT resource_id,applicant_id,state,models,requested_expires_at FROM hub_applications WHERE id=?1",
+            "SELECT resource_id,applicant_id,state,models,requested_expires_at,budget FROM hub_applications WHERE id=?1",
             [&application],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| Error::bad("申请不存在"))?;
@@ -1318,16 +1341,20 @@ async fn decide_application(
         )?;
     }
     let requested_models = parse::<Vec<String>>(&requested_models);
+    let requested_budget = parse::<Budget>(&requested_budget);
     let kind = if !v.approve {
         "reject"
-    } else if models != requested_models || v.expires_at != requested_expires {
+    } else if models != requested_models
+        || v.expires_at != requested_expires
+        || v.budget != requested_budget
+    {
         "modify"
     } else {
         "approve"
     };
     conn(&app.db)?.execute(
         "UPDATE hub_applications SET state=?2,decided_at=?3,decided_by=?4,decided_expires_at=?5,
-                decided_models=?6,decision_kind=?7,decision_note=?8 WHERE id=?1",
+                decided_models=?6,decided_budget=?7,decision_kind=?8,decision_note=?9 WHERE id=?1",
         params![
             application,
             if v.approve { "approved" } else { "rejected" },
@@ -1335,6 +1362,7 @@ async fn decide_application(
             &user.id,
             if v.approve { v.expires_at } else { None },
             json_text(&models),
+            if v.approve { json_text(&v.budget) } else { "{}".to_string() },
             kind,
             note
         ],
@@ -1578,16 +1606,14 @@ async fn create_share_code(
     if !r.published || r.disabled {
         return Err(Error::bad("请先发布并启用供应商，再创建分享口令"));
     }
-    let available = r
-        .models
-        .iter()
-        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+    let available = resources::visible_model_slugs(&r)
+        .into_iter()
         .collect::<std::collections::HashSet<_>>();
     if v.models
         .iter()
         .any(|model| !available.contains(model.as_str()))
     {
-        return Err(Error::bad("分享口令包含该供应商未发布的模型"));
+        return Err(Error::bad("分享口令包含该供应商未共享的模型"));
     }
 
     let token = auth::secret();

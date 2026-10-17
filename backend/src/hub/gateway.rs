@@ -147,7 +147,10 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     } else {
         None
     };
-    let mut candidates = resources::all(&state.db)?
+    let mut candidates: Vec<resources::Resource> = Vec::new();
+    let mut reasons: Vec<Error> = Vec::new();
+    let mut matched = 0usize;
+    for r in resources::all(&state.db)?
         .into_iter()
         .filter(|r| {
             r.app_type == app.as_str()
@@ -162,18 +165,38 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                     }
                 }
         })
-        .filter(|r| affinity.as_ref().is_none_or(|a| a == &r.id))
-        .filter(|r| resources::usable(&state.db, &user, r, &model).is_ok())
-        .collect::<Vec<_>>();
+    {
+        if affinity.as_ref().is_some_and(|a| a != &r.id) {
+            continue;
+        }
+        matched += 1;
+        // 逐个记录失败原因，鉴权失败时直接把原因回给客户端。
+        match resources::usable(&state.db, &user, &r, &model) {
+            Ok(_) => candidates.push(r),
+            Err(error) => reasons.push(error),
+        }
+    }
     if candidates.is_empty() {
+        let (code, message) = match reasons.into_iter().next() {
+            Some(Error(_, code, message)) => (code, message),
+            None => (
+                "model_unavailable",
+                format!("没有可用的供应商提供模型 {model}"),
+            ),
+        };
         return Err(if auto_targets.is_some() {
             Error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no_eligible_account",
-                "自动路由组里当前没有有额度且可用的供应商".into(),
+                format!("自动路由组里没有可用供应商：{message}"),
+            )
+        } else if matched == 0 {
+            Error::denied(
+                code,
+                format!("{message}（供应商可能已下架或不在你的授权范围内）"),
             )
         } else {
-            Error::forbidden()
+            Error::denied(code, message)
         });
     }
     match &auto_targets {

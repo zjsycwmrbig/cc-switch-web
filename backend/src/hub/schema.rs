@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS hub_applications (
  message TEXT NOT NULL DEFAULT '', budget TEXT NOT NULL DEFAULT '{}', models TEXT NOT NULL DEFAULT '[]',
  state TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, decided_at INTEGER, decided_by TEXT,
  requested_expires_at INTEGER, decided_expires_at INTEGER,
- decided_models TEXT NOT NULL DEFAULT '[]', decision_kind TEXT NOT NULL DEFAULT '',
+ decided_models TEXT NOT NULL DEFAULT '[]', decided_budget TEXT NOT NULL DEFAULT '{}',
+ decision_kind TEXT NOT NULL DEFAULT '',
  decision_note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS hub_application_resource ON hub_applications(resource_id,state,created_at);
@@ -119,6 +120,12 @@ CREATE TABLE IF NOT EXISTS hub_audit (id TEXT PRIMARY KEY, actor TEXT NOT NULL, 
         "hub_applications",
         "decided_models",
         "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    add_column_if_missing(
+        c,
+        "hub_applications",
+        "decided_budget",
+        "TEXT NOT NULL DEFAULT '{}'",
     )?;
     add_column_if_missing(
         c,

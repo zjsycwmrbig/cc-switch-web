@@ -35,6 +35,10 @@ impl Error {
             "没有此资源的操作权限".into(),
         )
     }
+    /// 带具体原因的访问拒绝：把“为什么不能用”直接回给客户端。
+    pub fn denied(code: &'static str, message: impl Into<String>) -> Self {
+        Self(StatusCode::FORBIDDEN, code, message.into())
+    }
     pub fn unauthorized() -> Self {
         Self(
             StatusCode::UNAUTHORIZED,
@@ -97,7 +101,7 @@ pub fn parse<T: serde::de::DeserializeOwned + Default>(text: &str) -> T {
     serde_json::from_str(text).unwrap_or_default()
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Budget {
     pub requests: Option<i64>,

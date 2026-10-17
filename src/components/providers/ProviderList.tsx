@@ -92,6 +92,8 @@ type UnitLibraryProvider = {
     official: boolean;
     accessible?: boolean;
     modelCount?: number;
+    visibleModels?: Array<{ slug: string; display_name?: string }>;
+    visibleModelCount?: number;
     myApplication?: string | null;
     myBudget?: Budget;
     myExpiresAt?: number | null;
@@ -279,6 +281,8 @@ export function ProviderList({
     null,
   );
   const [applyExpires, setApplyExpires] = useState("");
+  const [applyBudget, setApplyBudget] = useState<Budget>({});
+  const [applyModels, setApplyModels] = useState<string[]>([]);
   const [applyMessage, setApplyMessage] = useState("");
   const [applyBusy, setApplyBusy] = useState(false);
   const { data: claudeDesktopStatus } = useQuery({
@@ -450,7 +454,8 @@ export function ProviderList({
         "POST",
         {
           resourceId: applyTarget.unitResource.id,
-          models: [],
+          budget: applyBudget,
+          models: applyModels,
           message: applyMessage,
           expiresAt: applyExpires
             ? Math.floor(new Date(applyExpires).getTime() / 1000)
@@ -464,6 +469,8 @@ export function ProviderList({
       );
       setApplyTarget(null);
       setApplyExpires("");
+      setApplyBudget({});
+      setApplyModels([]);
       setApplyMessage("");
       await Promise.all([
         queryClient.invalidateQueries({
@@ -743,7 +750,11 @@ export function ProviderList({
                           {resource.ownerName} 的 {entry.name}
                         </div>
                         <div className="truncate text-xs text-muted-foreground">
-                          {resource.modelCount ?? 0} 个模型
+                          {resource.visibleModelCount ??
+                            resource.visibleModels?.length ??
+                            resource.modelCount ??
+                            0}{" "}
+                          个可见模型
                           {resource.official ? " · 官方账号" : ""}
                         </div>
                       </div>
@@ -783,6 +794,8 @@ export function ProviderList({
                               onClick={() => {
                                 setApplyTarget(entry);
                                 setApplyExpires("");
+                                setApplyBudget({});
+                                setApplyModels([]);
                                 setApplyMessage("");
                               }}
                             >
@@ -1025,8 +1038,46 @@ export function ProviderList({
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 {applyTarget.unitResource.ownerName} 的 {applyTarget.name}
-                ：提交后由提供者审批，提供者可以调整时间截止；留空表示不限时间。
+                ：提交后由提供者审批，可以按你的条件通过，也可以调整条件后通过；留空表示不限。
               </p>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  请求次数
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder="不限"
+                    value={applyBudget.requests ?? ""}
+                    onChange={(event) =>
+                      setApplyBudget({
+                        ...applyBudget,
+                        requests:
+                          event.target.value === ""
+                            ? null
+                            : Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  Token 数量
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder="不限"
+                    value={applyBudget.tokens ?? ""}
+                    onChange={(event) =>
+                      setApplyBudget({
+                        ...applyBudget,
+                        tokens:
+                          event.target.value === ""
+                            ? null
+                            : Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+              </div>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 时间截止（留空表示不限时间）
                 <Input
@@ -1035,6 +1086,40 @@ export function ProviderList({
                   onChange={(event) => setApplyExpires(event.target.value)}
                 />
               </label>
+              {(applyTarget.unitResource.visibleModels?.length ?? 0) > 0 && (
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  模型范围（留空表示全部可见模型）
+                  <div className="flex flex-wrap gap-1.5">
+                    {(applyTarget.unitResource.visibleModels || []).map(
+                      (model) => {
+                        const active = applyModels.includes(model.slug);
+                        return (
+                          <button
+                            key={model.slug}
+                            type="button"
+                            onClick={() =>
+                              setApplyModels(
+                                active
+                                  ? applyModels.filter(
+                                      (slug) => slug !== model.slug,
+                                    )
+                                  : [...applyModels, model.slug],
+                              )
+                            }
+                            className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                              active
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-border-default text-muted-foreground"
+                            }`}
+                          >
+                            {model.display_name || model.slug}
+                          </button>
+                        );
+                      },
+                    )}
+                  </div>
+                </div>
+              )}
               <label className="block space-y-1 text-xs text-muted-foreground">
                 申请说明（可选）
                 <Input

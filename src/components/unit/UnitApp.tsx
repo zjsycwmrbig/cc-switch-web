@@ -192,22 +192,26 @@ function BudgetFields({
   value,
   change,
   title,
+  hideCredits,
 }: {
   value: Budget;
   change: (b: Budget) => void;
   title: string;
+  /** 申请/授权只按「请求次数 + Token + 截止时间 + 模型范围」四个条件，隐藏点数。 */
+  hideCredits?: boolean;
 }) {
+  const fields = (
+    [
+      ["requests", "请求次数"],
+      ["tokens", "Token 数量（支持 K / M）"],
+      ["credits", "点数"],
+    ] as const
+  ).filter(([key]) => !(hideCredits && key === "credits"));
   return (
     <fieldset className="u-budget">
       <legend>{title}</legend>
-      <div className="u-grid3">
-        {(
-          [
-            ["requests", "请求次数"],
-            ["tokens", "Token 数量（支持 K / M）"],
-            ["credits", "点数"],
-          ] as const
-        ).map(([key, label]) => (
+      <div className={hideCredits ? "u-grid2" : "u-grid3"}>
+        {fields.map(([key, label]) => (
           <Field key={key} label={label}>
             {key === "tokens" ? (
               <TokenInput
@@ -233,7 +237,8 @@ function BudgetFields({
         ))}
       </div>
       <small>
-        留空表示不限，0 表示没有额度。1,000,000 点对应 $1 估算成本。
+        留空表示不限，0 表示没有额度。
+        {hideCredits ? "" : " 1,000,000 点对应 $1 估算成本。"}
       </small>
     </fieldset>
   );
@@ -1020,7 +1025,10 @@ function Allocations({ generation }: { generation: number }) {
   }>({ mine: [], received: [] });
   // 批阅时可以调整申请参数：时间截止、模型、以及说明。
   const [decisions, setDecisions] = useState<
-    Record<string, { deadline: string; models: string[]; note: string }>
+    Record<
+      string,
+      { deadline: string; models: string[]; note: string; budget: Budget }
+    >
   >({});
   const [createdCode, setCreatedCode] = useState<ShareCode | null>(null);
   const [policy, setPolicy] = useState<Policy>(defaultPolicy());
@@ -1060,10 +1068,16 @@ function Allocations({ generation }: { generation: number }) {
       deadline: deadlineToInput(application.requestedExpiresAt),
       models: application.models,
       note: "",
+      budget: application.budget,
     };
   const updateDecision = (
     application: ApplicationRow,
-    patch: Partial<{ deadline: string; models: string[]; note: string }>,
+    patch: Partial<{
+      deadline: string;
+      models: string[];
+      note: string;
+      budget: Budget;
+    }>,
   ) =>
     setDecisions((current) => ({
       ...current,
@@ -1204,7 +1218,7 @@ function Allocations({ generation }: { generation: number }) {
     try {
       await unit(`/applications/${application.id}/decision`, "POST", {
         approve,
-        budget: {},
+        budget: approve ? decision.budget : {},
         models: approve ? decision.models : [],
         expiresAt: approve ? deadline : null,
         note: decision.note,
@@ -1319,9 +1333,10 @@ function Allocations({ generation }: { generation: number }) {
   const modelPicker = (
     value: string[],
     change: (next: string[]) => void,
+    source?: Resource["models"],
   ) => (
     <div className="u-model-picker" aria-label="允许的模型">
-      {selected?.models.map((model) => {
+      {(source ?? selected?.models ?? []).map((model) => {
         const active = value.includes(model.slug);
         return (
           <button
@@ -1352,9 +1367,10 @@ function Allocations({ generation }: { generation: number }) {
           <tr>
             <th>供应商</th>
             <th>提供者</th>
-            <th>申请模型</th>
+            <th>申请条件</th>
             <th>期望截止</th>
             <th>处理结果</th>
+            <th>生效额度</th>
             <th>生效截止</th>
             <th>批阅说明</th>
             <th>提交时间</th>
@@ -1367,8 +1383,10 @@ function Allocations({ generation }: { generation: number }) {
               <td>{application.resourceName}</td>
               <td>{application.counterpartyName}</td>
               <td>
+                {budgetText(application.budget)}
+                {" · "}
                 {application.models.length
-                  ? `${application.models.length} 个`
+                  ? `限定 ${application.models.length} 个模型`
                   : "全部模型"}
               </td>
               <td>{deadlineText(application.requestedExpiresAt)}</td>
@@ -1380,6 +1398,11 @@ function Allocations({ generation }: { generation: number }) {
                 >
                   {decisionLabel(application)}
                 </span>
+              </td>
+              <td>
+                {application.state === "approved"
+                  ? budgetText(application.decidedBudget || {})
+                  : "—"}
               </td>
               <td>
                 {application.state === "approved"
@@ -1645,7 +1668,7 @@ function Allocations({ generation }: { generation: number }) {
                           setPolicy({ ...policy, sharedBudget: value })
                         }
                       />
-                      <Field label="共享范围允许的模型（留空为全部）">
+                      <Field label="对外可见的模型（留空表示该供应商全部模型）">
                         {modelPicker(policy.models, (value) =>
                           setPolicy({ ...policy, models: value }),
                         )}
@@ -1791,7 +1814,7 @@ function Allocations({ generation }: { generation: number }) {
                       />
                       <div className="u-grid2">
                         <Field label="允许的模型（留空为全部）">
-                          {modelPicker(grantModels, setGrantModels)}
+                          {modelPicker(grantModels, setGrantModels, selected?.visibleModels)}
                         </Field>
                         <Field label="到期时间（可留空）">
                           <input
@@ -1908,10 +1931,11 @@ function Allocations({ generation }: { generation: number }) {
                         title="每位领取者获得的额度"
                         value={codeBudget}
                         change={setCodeBudget}
+                        hideCredits
                       />
                       <div className="u-grid2">
                         <Field label="允许的模型（留空为全部）">
-                          {modelPicker(codeModels, setCodeModels)}
+                          {modelPicker(codeModels, setCodeModels, selected?.visibleModels)}
                         </Field>
                         <div>
                           <Field label="到期时间（可留空）">
@@ -2166,12 +2190,22 @@ function Allocations({ generation }: { generation: number }) {
                               )}
                               <p className="u-note">
                                 申请参数：
+                                {budgetText(application.budget)}
+                                {" · "}
                                 {application.models.length
                                   ? `限定 ${application.models.length} 个模型`
                                   : "全部模型"}
                                 {" · "}时间截止{" "}
                                 {deadlineText(application.requestedExpiresAt)}
                               </p>
+                              <BudgetFields
+                                title="授权额度（请求次数 / Token）"
+                                value={decision.budget}
+                                change={(budget) =>
+                                  updateDecision(application, { budget })
+                                }
+                                hideCredits
+                              />
                               <div className="u-grid2">
                                 <Field label="时间截止（留空为不限）">
                                   <input
@@ -2197,8 +2231,11 @@ function Allocations({ generation }: { generation: number }) {
                                 </Field>
                               </div>
                               <Field label="允许的模型（留空为全部）">
-                                {modelPicker(decision.models, (models) =>
-                                  updateDecision(application, { models }),
+                                {modelPicker(
+                                  decision.models,
+                                  (models) =>
+                                    updateDecision(application, { models }),
+                                  selected?.visibleModels,
                                 )}
                               </Field>
                               <small>
@@ -2250,6 +2287,7 @@ function Allocations({ generation }: { generation: number }) {
                               <th>申请参数</th>
                               <th>期望截止</th>
                               <th>处理结果</th>
+                              <th>生效额度</th>
                               <th>生效截止</th>
                               <th>批阅说明</th>
                               <th>处理时间</th>
@@ -2260,6 +2298,8 @@ function Allocations({ generation }: { generation: number }) {
                               <tr key={application.id}>
                                 <td>{application.counterpartyName}</td>
                                 <td>
+                                  {budgetText(application.budget)}
+                                  {" · "}
                                   {application.models.length
                                     ? `${application.models.length} 个模型`
                                     : "全部模型"}
@@ -2277,6 +2317,11 @@ function Allocations({ generation }: { generation: number }) {
                                   >
                                     {decisionLabel(application)}
                                   </span>
+                                </td>
+                                <td>
+                                  {application.state === "approved"
+                                    ? budgetText(application.decidedBudget || {})
+                                    : "—"}
                                 </td>
                                 <td>
                                   {application.state === "approved"
