@@ -61,7 +61,7 @@ export interface AutoApprove {
   perUserTokens?: number | null;
 }
 export const defaultPolicy = (): Policy => ({
-  visibility: "public",
+  visibility: "private",
   period: "month",
   defaultBudget: {},
   sharedBudget: {},

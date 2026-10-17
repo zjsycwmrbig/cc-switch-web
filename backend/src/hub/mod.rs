@@ -150,7 +150,7 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            visibility: "public".into(),
+            visibility: "private".into(),
             period: "month".into(),
             default_budget: Budget::default(),
             shared_budget: Budget::default(),
