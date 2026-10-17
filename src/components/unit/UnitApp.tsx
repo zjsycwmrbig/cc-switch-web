@@ -59,7 +59,6 @@ import {
   Resource,
   Me,
   Preferences,
-  Model,
   ApiKey,
   Aggregate,
   RequestRow,
@@ -457,55 +456,70 @@ function SignIn({
     </main>
   );
 }
-function Models({ me, generation }: { me: Me; generation: number }) {
-  const [models, setModels] = useState<Model[]>([]),
-    [prefs, setPrefs] = useState<Preferences>({}),
-    [selected, setSelected] = useState<Set<string>>(new Set()),
-    [search, setSearch] = useState(""),
-    [busy, setBusy] = useState(true),
-    [saving, setSaving] = useState(false);
+function routeSlug(route: ModelRoute, resources: Resource[]) {
+  if (route.targets.length >= 2) return `ccs-auto/${route.model}`;
+  const resource = resources.find((item) => item.id === route.targets[0]);
+  return `ccs-${resource?.routeKey ?? "auto"}/${route.model}`;
+}
+
+function Models({ generation }: { me: Me; generation: number }) {
+  const [prefs, setPrefs] = useState<Preferences>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
   const [resources, setResources] = useState<Resource[]>([]);
-  const [draft, setDraft] = useState<ModelRouteDraft | null>(null);
-  const [routeBusy, setRouteBusy] = useState(false);
+  const [providerFilter, setProviderFilter] = useState("");
+  const [modelFilter, setModelFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    // 先取映射（首次会由服务端初始化），再按映射生成目录。
+    const routeRows = await unit<ModelRoute[]>("/model-routes");
+    const [p, resourceRows] = await Promise.all([
+      unit<Preferences>("/preferences"),
+      unit<Resource[]>("/resources"),
+    ]);
+    const allowed = resourceRows.filter(
+      (resource) =>
+        resource.appType === "codex" &&
+        resource.published &&
+        !resource.disabled,
+    );
+    setRoutes(routeRows);
+    setResources(allowed);
+    setPrefs(p);
+    setSelected(
+      new Set(p.models ?? routeRows.map((route) => routeSlug(route, allowed))),
+    );
+  }, []);
+
   useEffect(() => {
     let live = true;
     setBusy(true);
-    void Promise.all([
-      unit<{ models: Model[] }>("/catalog?all=true"),
-      unit<Preferences>("/preferences"),
-      unit<ModelRoute[]>("/model-routes"),
-      unit<Resource[]>("/resources"),
-    ])
-      .then(([catalog, p, routeRows, resourceRows]) => {
-        if (!live) return;
-        setModels(catalog.models);
-        setPrefs(p);
-        setSelected(new Set(p.models ?? catalog.models.map((m) => m.slug)));
-        setRoutes(routeRows);
-        setResources(
-          resourceRows.filter(
-            (resource) =>
-              resource.appType === "codex" &&
-              resource.published &&
-              !resource.disabled,
-          ),
-        );
-      })
-      .catch((e) => toast.error(errorText(e)))
+    void load()
+      .catch((error) => toast.error(errorText(error)))
       .finally(() => {
         if (live) setBusy(false);
       });
     return () => {
       live = false;
     };
-  }, [generation]);
+  }, [generation, load]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, providerFilter, modelFilter]);
+
   const save = async () => {
     setSaving(true);
     try {
       const ids = [...selected].filter((id) =>
-        models.some((m) => m.slug === id),
+        routes.some((route) => routeSlug(route, resources) === id),
       );
       await unit("/preferences", "PUT", {
         ...prefs,
@@ -514,52 +528,37 @@ function Models({ me, generation }: { me: Me; generation: number }) {
           ? prefs.startupModel
           : ids[0],
       });
-      toast.success("已保存；在远程主机执行设备更新命令即可同步");
-    } catch (e) {
-      toast.error(errorText(e));
+      toast.success("已保存选择；按“同步聚合模型”里的命令更新设备即可");
+    } catch (error) {
+      toast.error(errorText(error));
     } finally {
       setSaving(false);
     }
   };
-  const visible = models.filter((m) =>
-    `${m.slug} ${m.display_name}`.toLowerCase().includes(search.toLowerCase()),
-  );
-  const routeTargets = (model: string) =>
-    resources.filter((resource) =>
-      resource.models.some((item) => item.slug === model),
-    );
-  const resourceLabel = (id: string) => {
-    const resource = resources.find((item) => item.id === id);
-    return resource ? `${resource.ownerName} 的 ${resource.name}` : id;
+
+  const persist = async (route: ModelRoute) => {
+    await unit("/model-routes", "POST", {
+      id: route.id,
+      displayName: route.displayName,
+      model: route.model,
+      targets: route.targets,
+    });
+    setRoutes(await unit<ModelRoute[]>("/model-routes"));
   };
-  const saveRoute = async (route: ModelRouteDraft) => {
-    setRouteBusy(true);
+
+  const moveTarget = async (route: ModelRoute, from: number, to: number) => {
+    if (from === to || to < 0 || to >= route.targets.length) return;
+    const targets = [...route.targets];
+    const [item] = targets.splice(from, 1);
+    targets.splice(to, 0, item);
     try {
-      await unit("/model-routes", "POST", {
-        id: route.id,
-        displayName: route.displayName,
-        model: route.model,
-        targets: route.targets,
-      });
-      setRoutes(await unit<ModelRoute[]>("/model-routes"));
-      setDraft(null);
-      toast.success("自动路由映射已保存");
-    } catch (e) {
-      toast.error(errorText(e));
-    } finally {
-      setRouteBusy(false);
+      await persist({ ...route, targets });
+    } catch (error) {
+      toast.error(errorText(error));
     }
   };
-  const deleteRoute = async (id: string) => {
-    try {
-      await unit(`/model-routes/${id}`, "DELETE");
-      setRoutes(await unit<ModelRoute[]>("/model-routes"));
-      toast.success("映射已删除");
-    } catch (e) {
-      toast.error(errorText(e));
-    }
-  };
-  const detectRoutes = async () => {
+
+  const detect = async () => {
     setDetectBusy(true);
     try {
       const result = await unit<{ candidates: unknown[] }>(
@@ -567,20 +566,39 @@ function Models({ me, generation }: { me: Me; generation: number }) {
         "POST",
         { apply: true },
       );
-      setRoutes(await unit<ModelRoute[]>("/model-routes"));
+      await load();
       toast.success(`已生成 ${result.candidates.length} 组自动路由映射`);
-    } catch (e) {
-      toast.error(errorText(e));
+    } catch (error) {
+      toast.error(errorText(error));
     } finally {
       setDetectBusy(false);
     }
   };
+
+  const providerLabel = (id: string) => {
+    const resource = resources.find((item) => item.id === id);
+    return resource ? `${resource.ownerName} 的 ${resource.name}` : id;
+  };
+
+  const filtered = routes.filter((route) => {
+    const keyword = search.trim().toLowerCase();
+    const text =
+      `${route.displayName} ${route.model} ${route.targets.map(providerLabel).join(" ")}`.toLowerCase();
+    return (
+      (!keyword || text.includes(keyword)) &&
+      (!providerFilter || route.targets.includes(providerFilter)) &&
+      (!modelFilter || route.model === modelFilter)
+    );
+  });
+  const totalPages = Math.max(1, Math.ceil(filtered.length / 10));
+  const current = Math.min(page, totalPages);
+  const visible = filtered.slice((current - 1) * 10, current * 10);
+  const modelOptions = [...new Set(routes.map((route) => route.model))].sort();
+
   return (
     <>
       <div className="u-page-lead">
-        <p>
-          选择可用模型，创建设备密钥，并获取聚合模型同步命令。官方共享账号池会在可用账号间调度。
-        </p>
+        <p>三步接入：勾选模型 → 保存选择 → 复制同步命令到远程主机执行。</p>
         <button
           className="u-button"
           disabled={saving || busy}
@@ -591,7 +609,7 @@ function Models({ me, generation }: { me: Me; generation: number }) {
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         {[
-          ["1", "选择模型", "下方勾选要使用的模型，自动路由条目可展开调整供应商顺序。"],
+          ["1", "选择模型", "勾选要用的模型；点“映射”可把多个供应商合并成自动路由。"],
           ["2", "保存选择", "点右上角“保存选择”，服务端按你的选择生成模型目录。"],
           ["3", "复制命令到主机", "在“同步聚合模型”里复制命令，到目标机器执行即可完成接入。"],
         ].map(([step, title, description]) => (
@@ -612,77 +630,91 @@ function Models({ me, generation }: { me: Me; generation: number }) {
         ))}
       </div>
       <AggregationSyncPanel />
-      <div className="flex flex-col gap-4">
-      <div className="u-cards">
-        <div className="u-card">
-          <small>可选模型</small>
-          <strong>{models.length}</strong>
-        </div>
-        <div className="u-card">
-          <small>已选择</small>
-          <strong>{selected.size}</strong>
-        </div>
-        <div className="u-card u-wide">
-          <small>本周期调用 / 额度</small>
-          <strong>
-            {num(me.quota.usage.requests)}{" "}
-            <span>
-              /{" "}
-              {me.quota.budget.requests == null
-                ? "不限"
-                : num(me.quota.budget.requests)}
-            </span>
-          </strong>
+      <div className="u-panel">
+        <div className="u-panel-title">
+          <Route size={17} />
+          模型与路由
           <small>
-            预留 {num(me.quota.usage.reservedRequests)} 次 ·{" "}
-            {me.quota.periodKey} UTC
+            已选 {selected.size} / {routes.length} 条
           </small>
         </div>
-      </div>
-      <Collapsible defaultOpen={false} className="u-panel">
-        <CollapsibleTrigger asChild>
-          <button type="button" className="u-panel-title w-full text-left">
-            <ChevronDown className="u-collapsible-icon h-4 w-4 shrink-0" />
-            <span>模型选择</span>
-            <small>
-              已选择 {selected.size} / {models.length}
-            </small>
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
+        <div className="u-panel-body">
           <div className="u-toolbar">
             <div className="u-search">
               <Search size={15} />
               <input
-                placeholder="搜索模型或供应商"
+                placeholder="搜索名称、模型或供应商"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(event) => setSearch(event.target.value)}
               />
             </div>
+            <select
+              value={providerFilter}
+              onChange={(event) => setProviderFilter(event.target.value)}
+            >
+              <option value="">所有供应商</option>
+              {resources.map((resource) => (
+                <option key={resource.id} value={resource.id}>
+                  {resource.ownerName} 的 {resource.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={modelFilter}
+              onChange={(event) => setModelFilter(event.target.value)}
+            >
+              <option value="">所有模型</option>
+              {modelOptions.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
             <button
               className="u-quiet"
-              onClick={() => setSelected(new Set(models.map((m) => m.slug)))}
+              type="button"
+              disabled={detectBusy}
+              onClick={() => void detect()}
+            >
+              {detectBusy ? "识别中…" : "自动识别映射"}
+            </button>
+            <button
+              className="u-quiet"
+              type="button"
+              onClick={() =>
+                setSelected(
+                  new Set(routes.map((route) => routeSlug(route, resources))),
+                )
+              }
             >
               全选
             </button>
-            <button className="u-quiet" onClick={() => setSelected(new Set())}>
+            <button
+              className="u-quiet"
+              type="button"
+              onClick={() => setSelected(new Set())}
+            >
               清空
             </button>
-            <span className="u-spacer" />
             <label className="u-inline">
               启动模型
               <select
                 value={prefs.startupModel || ""}
-                onChange={(e) =>
-                  setPrefs({ ...prefs, startupModel: e.target.value })
+                onChange={(event) =>
+                  setPrefs({ ...prefs, startupModel: event.target.value })
                 }
               >
                 <option value="">第一个已选模型</option>
-                {models
-                  .filter((m) => selected.has(m.slug))
-                  .map((m) => (
-                    <option key={m.slug} value={m.slug}>
-                      {m.display_name || m.slug}
+                {routes
+                  .filter((route) =>
+                    selected.has(routeSlug(route, resources)),
+                  )
+                  .map((route) => (
+                    <option
+                      key={route.id}
+                      value={routeSlug(route, resources)}
+                    >
+                      {route.displayName}
                     </option>
                   ))}
               </select>
@@ -694,234 +726,179 @@ function Models({ me, generation }: { me: Me; generation: number }) {
             </Empty>
           ) : visible.length ? (
             <div className="u-model-list">
-              {visible.map((m) => (
-                <label className="u-model" key={m.slug}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(m.slug)}
-                    onChange={() =>
-                      setSelected((old) => {
-                        const next = new Set(old);
-                        if (next.has(m.slug)) next.delete(m.slug);
-                        else next.add(m.slug);
-                        return next;
-                      })
-                    }
-                  />
-                  <div>
-                    <strong>{m.display_name || m.slug}</strong>
-                    <code>{m.slug}</code>
+              {visible.map((route) => {
+                const slug = routeSlug(route, resources);
+                const open = expanded === route.id;
+                return (
+                  <div
+                    className="u-model"
+                    key={route.id}
+                    style={{ alignItems: "flex-start" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(slug)}
+                      onChange={() =>
+                        setSelected((old) => {
+                          const next = new Set(old);
+                          if (next.has(slug)) next.delete(slug);
+                          else next.add(slug);
+                          return next;
+                        })
+                      }
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          key={`${route.id}-${route.displayName}`}
+                          defaultValue={route.displayName}
+                          aria-label="显示名称"
+                          onBlur={(event) => {
+                            const name = event.target.value.trim();
+                            if (name && name !== route.displayName) {
+                              void persist({ ...route, displayName: name }).catch(
+                                (error) => toast.error(errorText(error)),
+                              );
+                            }
+                          }}
+                        />
+                        <span className="u-tag">
+                          {route.targets.length >= 2 ? "自动路由" : "单对单"}
+                        </span>
+                        <code>{route.model}</code>
+                      </div>
+                      <div
+                        className="mt-1 text-xs"
+                        style={{ color: "var(--u-muted)" }}
+                      >
+                        {route.targets
+                          .map((id, index) => `${index + 1}. ${providerLabel(id)}`)
+                          .join(" · ")}
+                      </div>
+                      {open && (
+                        <div className="mt-2 space-y-1">
+                          {route.targets.map((id, index) => (
+                            <div
+                              key={id}
+                              draggable
+                              onDragStart={() => setDragFrom(index)}
+                              onDragOver={(event) => event.preventDefault()}
+                              onDrop={() => {
+                                if (dragFrom !== null) {
+                                  void moveTarget(route, dragFrom, index);
+                                }
+                                setDragFrom(null);
+                              }}
+                              className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs"
+                            >
+                              <span className="cursor-move">⋮⋮</span>
+                              <span className="flex-1">
+                                {index + 1}. {providerLabel(id)}
+                              </span>
+                              <button
+                                className="u-quiet"
+                                type="button"
+                                disabled={index === 0}
+                                onClick={() => void moveTarget(route, index, index - 1)}
+                              >
+                                上移
+                              </button>
+                              <button
+                                className="u-quiet"
+                                type="button"
+                                disabled={index === route.targets.length - 1}
+                                onClick={() => void moveTarget(route, index, index + 1)}
+                              >
+                                下移
+                              </button>
+                              <button
+                                className="u-quiet u-danger"
+                                type="button"
+                                onClick={() =>
+                                  void persist({
+                                    ...route,
+                                    targets: route.targets.filter((item) => item !== id),
+                                  }).catch((error) => toast.error(errorText(error)))
+                                }
+                              >
+                                移除
+                              </button>
+                            </div>
+                          ))}
+                          <select
+                            value=""
+                            onChange={(event) => {
+                              if (!event.target.value) return;
+                              void persist({
+                                ...route,
+                                targets: [...route.targets, event.target.value],
+                              }).catch((error) => toast.error(errorText(error)));
+                            }}
+                          >
+                            <option value="">+ 添加供应商目标</option>
+                            {resources
+                              .filter(
+                                (resource) =>
+                                  resource.models.some(
+                                    (model) => model.slug === route.model,
+                                  ) &&
+                                  !route.targets.includes(resource.id),
+                              )
+                              .map((resource) => (
+                                <option key={resource.id} value={resource.id}>
+                                  {resource.ownerName} 的 {resource.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="u-quiet"
+                      type="button"
+                      onClick={() => setExpanded(open ? null : route.id)}
+                    >
+                      {open ? "收起" : "映射"}
+                    </button>
                   </div>
-                  {m.context_window && (
-                    <span className="u-tag">
-                      {num(m.context_window / 1000)}K
-                    </span>
-                  )}
-                </label>
-              ))}
+                );
+              })}
             </div>
           ) : (
-            <Empty>暂无可选模型。请添加供应商，或联系提供者授权。</Empty>
+            <Empty>没有匹配的模型。</Empty>
           )}
-        </CollapsibleContent>
-      </Collapsible>
-      <section className="u-panel">
-        <div className="u-panel-title">
-          <Route size={17} />
-          自动路由映射
-          <small>{routes.length} 组 · 按顺序选择有额度的供应商</small>
-        </div>
-        <div className="u-panel-body">
-          <p className="u-note">
-            把多家供应商的同一个模型聚合为一个入口（ccs-auto/基础模型），在 Codex 中显示为你设置的名字；
-            请求会按下面的顺序选择第一个有额度且可用的供应商。
-          </p>
-          <div className="u-actions">
-            <button
-              className="u-button"
-              type="button"
-              disabled={detectBusy}
-              onClick={() => void detectRoutes()}
-            >
-              {detectBusy ? <Busy /> : "自动识别映射"}
-            </button>
+          <div className="u-pagination">
+            <span>
+              共 {filtered.length} 条 · 每页 10 条
+            </span>
             <button
               className="u-quiet"
               type="button"
-              onClick={() =>
-                setDraft({
-                  displayName: "",
-                  model:
-                    resources.flatMap((r) => r.models.map((m) => m.slug))[0] ??
-                    "",
-                  targets: [],
-                })
-              }
+              disabled={current <= 1}
+              onClick={() => setPage(current - 1)}
             >
-              <Plus size={14} />
-              新增映射
+              上一页
+            </button>
+            <span>
+              第 {current} / {totalPages} 页
+            </span>
+            <button
+              className="u-quiet"
+              type="button"
+              disabled={current >= totalPages}
+              onClick={() => setPage(current + 1)}
+            >
+              下一页
             </button>
           </div>
-          {routes.length ? (
-            <div className="u-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>显示名称</th>
-                    <th>基础模型</th>
-                    <th>供应商顺序</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {routes.map((route) => (
-                    <tr key={route.id}>
-                      <td>{route.displayName}</td>
-                      <td>
-                        <code>{route.model}</code>
-                      </td>
-                      <td>
-                        {route.targets.map((target, index) => (
-                          <span className="u-tag" key={target}>
-                            {index + 1}. {resourceLabel(target)}
-                          </span>
-                        ))}
-                      </td>
-                      <td>
-                        <button
-                          className="u-quiet"
-                          type="button"
-                          onClick={() => setDraft({ ...route })}
-                        >
-                          编辑
-                        </button>
-                        <button
-                          className="u-quiet u-danger"
-                          type="button"
-                          onClick={() => void deleteRoute(route.id)}
-                        >
-                          <Trash2 size={13} />
-                          删除
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <Empty>还没有自动路由映射，点“自动识别映射”生成，或手动新增。</Empty>
-          )}
-          {draft && (
-            <fieldset className="u-budget">
-              <legend>编辑映射</legend>
-              <div className="u-grid2">
-                <Field label="显示名称">
-                  <input
-                    value={draft.displayName}
-                    onChange={(e) =>
-                      setDraft({ ...draft, displayName: e.target.value })
-                    }
-                    placeholder="例如 gpt-5.6-sol（自动路由）"
-                  />
-                </Field>
-                <Field label="基础模型">
-                  <select
-                    value={draft.model}
-                    onChange={(e) =>
-                      setDraft({ ...draft, model: e.target.value, targets: [] })
-                    }
-                  >
-                    <option value="">选择模型</option>
-                    {[
-                      ...new Set(
-                        resources.flatMap((r) => r.models.map((m) => m.slug)),
-                      ),
-                    ].map((slug) => (
-                      <option key={slug} value={slug}>
-                        {slug}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-              {draft.model && (
-                <div className="u-model-chips">
-                  {routeTargets(draft.model).map((resource) => {
-                    const index = draft.targets.indexOf(resource.id);
-                    return (
-                      <label className="u-model" key={resource.id}>
-                        <input
-                          type="checkbox"
-                          checked={index >= 0}
-                          onChange={() => {
-                            const targets =
-                              index >= 0
-                                ? draft.targets.filter(
-                                    (item) => item !== resource.id,
-                                  )
-                                : [...draft.targets, resource.id];
-                            setDraft({ ...draft, targets });
-                          }}
-                        />
-                        <div>
-                          <strong>
-                            {index >= 0 ? `${index + 1}. ` : ""}
-                            {resource.ownerName} 的 {resource.name}
-                          </strong>
-                        </div>
-                        {index > 0 && (
-                          <button
-                            className="u-quiet"
-                            type="button"
-                            onClick={() => {
-                              const targets = [...draft.targets];
-                              [targets[index - 1], targets[index]] = [
-                                targets[index],
-                                targets[index - 1],
-                              ];
-                              setDraft({ ...draft, targets });
-                            }}
-                          >
-                            上移
-                          </button>
-                        )}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-              <div className="u-actions">
-                <button
-                  className="u-button"
-                  type="button"
-                  disabled={
-                    routeBusy ||
-                    !draft.displayName.trim() ||
-                    !draft.model ||
-                    !draft.targets.length
-                  }
-                  onClick={() => void saveRoute(draft)}
-                >
-                  {routeBusy ? <Busy /> : "保存映射"}
-                </button>
-                <button
-                  className="u-quiet"
-                  type="button"
-                  onClick={() => setDraft(null)}
-                >
-                  取消
-                </button>
-              </div>
-            </fieldset>
-          )}
         </div>
-      </section>
-      <Keys generation={generation} />
       </div>
+      <Keys generation={generation} />
     </>
   );
 }
+
+
 type GrantRow = {
   userId: string;
   username: string;
@@ -938,13 +915,6 @@ type ModelRoute = {
   model: string;
   targets: string[];
   enabled: boolean;
-};
-
-type ModelRouteDraft = {
-  id?: string;
-  displayName: string;
-  model: string;
-  targets: string[];
 };
 
 function Allocations({ generation }: { generation: number }) {
