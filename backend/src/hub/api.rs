@@ -579,8 +579,23 @@ async fn delete_resource(
 ) -> Result<Json<Value>> {
     let r = resources::get(&app.db, &resource)?;
     resources::own(&user, &r)?;
+    // 官方供应商与官方账号一一对应：删除供应商时同步解绑并移除授权账号，避免账号残留。
+    if r.official {
+        if let Some(account) = r.account_id.clone() {
+            let _ = app
+                .codex_oauth_state
+                .read()
+                .await
+                .remove_account(&account)
+                .await;
+            conn(&app.db)?.execute(
+                "DELETE FROM hub_account_owners WHERE account_id=?1 AND owner_id=?2",
+                params![account, &user.id],
+            )?;
+        }
+    }
     conn(&app.db)?.execute(
-        "UPDATE hub_resources SET deleted=1,published=0 WHERE id=?1",
+        "UPDATE hub_resources SET deleted=1,published=0,official=0,account_id=NULL WHERE id=?1",
         [&resource],
     )?;
     audit(&app.db, &user.id, "resource.delete", &resource, json!({}))?;
@@ -1968,7 +1983,17 @@ async fn account_delete(
     Extension(user): Extension<Identity>,
     Path(account): Path<String>,
 ) -> Result<Json<Value>> {
-    owns_account(&app.db, &user, &account)?;
+    if owns_account(&app.db, &user, &account).is_err() {
+        // 兼容旧授权中心遗留的孤立账号：只要没有被任何供应商引用就允许删除。
+        let referenced: bool = conn(&app.db)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM hub_resources WHERE account_id=?1 AND deleted=0)",
+            [&account],
+            |row| row.get(0),
+        )?;
+        if referenced {
+            return Err(Error::forbidden());
+        }
+    }
     app.codex_oauth_state
         .read()
         .await
@@ -1976,8 +2001,12 @@ async fn account_delete(
         .await
         .map_err(|_| Error::bad("账号删除失败"))?;
     conn(&app.db)?.execute(
-        "UPDATE hub_resources SET published=0,health='removed' WHERE account_id=?1",
+        "UPDATE hub_resources SET published=0,health='removed',account_id=NULL WHERE account_id=?1",
         [&account],
+    )?;
+    conn(&app.db)?.execute(
+        "DELETE FROM hub_account_owners WHERE account_id=?1 AND owner_id=?2",
+        params![account, &user.id],
     )?;
     audit(&app.db, &user.id, "account.delete", &account, json!({}))?;
     Ok(Json(json!({"ok":true})))
