@@ -39,6 +39,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { unit, formatDate, type Budget } from "@/components/unit/client";
+import { TokenLimitField } from "@/components/unit/TokenLimitField";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -1061,20 +1062,9 @@ export function ProviderList({
                 </label>
                 <label className="space-y-1 text-xs text-muted-foreground">
                   Token 数量
-                  <Input
-                    type="number"
-                    min={0}
-                    placeholder="不限"
-                    value={applyBudget.tokens ?? ""}
-                    onChange={(event) =>
-                      setApplyBudget({
-                        ...applyBudget,
-                        tokens:
-                          event.target.value === ""
-                            ? null
-                            : Number(event.target.value),
-                      })
-                    }
+                  <TokenLimitField
+                    value={applyBudget.tokens}
+                    change={(tokens) => setApplyBudget({ ...applyBudget, tokens })}
                   />
                 </label>
               </div>

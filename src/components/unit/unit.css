@@ -975,6 +975,104 @@ button.u-panel-title:hover {
   background: color-mix(in srgb, var(--u-accent) 10%, transparent);
   color: var(--u-accent);
 }
+
+/* Token 额度：数字 + 单位下拉（K/M/G），内部按绝对值保存。 */
+.u-token-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 8px;
+  align-items: center;
+}
+.u-token-field > select {
+  width: 100%;
+}
+.u-token-field > small {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--u-muted);
+}
+
+/* 申请卡片：把申请条件、批阅参数、操作区分层排布。 */
+.u-request-list {
+  display: grid;
+  gap: 16px;
+  padding: 18px 20px 20px;
+}
+.u-request {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--u-line);
+  border-radius: 9px;
+  background: hsl(var(--card));
+}
+.u-request-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.u-request-head strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.u-request-message {
+  margin: 0;
+  padding: 10px 14px;
+  border-left: 3px solid var(--u-accent);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--u-accent) 7%, transparent);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--u-ink);
+}
+.u-request-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.u-request-meta > div {
+  padding: 10px 12px;
+  border: 1px solid var(--u-line);
+  border-radius: 7px;
+  background: color-mix(in srgb, hsl(var(--muted)) 16%, transparent);
+}
+.u-request-meta small {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: var(--u-muted);
+}
+.u-request-meta strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.u-request-fields {
+  display: grid;
+  gap: 14px;
+  padding: 15px 16px;
+  border: 1px dashed var(--u-line);
+  border-radius: 8px;
+}
+.u-request-fields .u-budget,
+.u-request-fields .u-grid2 .u-field,
+.u-request-fields > .u-field {
+  margin: 0;
+}
+.u-request-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 14px;
+  border-top: 1px solid var(--u-line);
+}
+.u-request-hint {
+  margin-right: auto;
+  font-size: 11px;
+  color: var(--u-muted);
+}
 .u-created-panel {
   display: grid;
   gap: 12px;

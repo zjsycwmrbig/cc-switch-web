@@ -71,6 +71,7 @@ import {
   dollars,
 } from "./client";
 import "./unit.css";
+import { TokenLimitField } from "./TokenLimitField";
 import { UnitSession, useUnitSession } from "./session";
 
 const SwitchApp = lazy(() => import("@/App"));
@@ -143,51 +144,6 @@ function Field({
     </label>
   );
 }
-function formatTokenText(value?: number | null) {
-  if (value == null || Number.isNaN(value)) return "";
-  if (value >= 1_000_000) return `${+(value / 1_000_000).toFixed(2)}M`;
-  if (value >= 1_000) return `${+(value / 1_000).toFixed(2)}K`;
-  return String(value);
-}
-
-/** 解析 500K / 10M 这类写法；返回 undefined 表示输入还不完整。 */
-function parseTokenText(text: string): number | null | undefined {
-  const normalized = text.trim().toUpperCase().replace(/,/g, "");
-  if (!normalized) return null;
-  const match = normalized.match(/^(\d+(?:\.\d+)?)([KMG]?)$/);
-  if (!match) return undefined;
-  const scale =
-    match[2] === "G" ? 1_000_000_000 : match[2] === "M" ? 1_000_000 : match[2] === "K" ? 1_000 : 1;
-  return Math.round(Number(match[1]) * scale);
-}
-
-function TokenInput({
-  value,
-  change,
-}: {
-  value?: number | null;
-  change: (value: number | null) => void;
-}) {
-  const [text, setText] = useState(() => formatTokenText(value));
-  useEffect(() => {
-    setText(formatTokenText(value));
-  }, [value]);
-  return (
-    <input
-      type="text"
-      inputMode="decimal"
-      placeholder="不限，可填 500K / 10M"
-      value={text}
-      onChange={(event) => {
-        setText(event.target.value);
-        const parsed = parseTokenText(event.target.value);
-        if (parsed !== undefined) change(parsed);
-      }}
-      onBlur={() => setText(formatTokenText(value))}
-    />
-  );
-}
-
 function BudgetFields({
   value,
   change,
@@ -214,7 +170,7 @@ function BudgetFields({
         {fields.map(([key, label]) => (
           <Field key={key} label={label}>
             {key === "tokens" ? (
-              <TokenInput
+              <TokenLimitField
                 value={value.tokens}
                 change={(tokens) => change({ ...value, tokens })}
               />
@@ -2114,40 +2070,28 @@ function Allocations({ generation }: { generation: number }) {
                           />
                         </Field>
                         <Field label="总 Token 量">
-                          <input
-                            type="number"
-                            min={0}
-                            placeholder="不限"
-                            value={policy.autoApprove?.totalTokens ?? ""}
-                            onChange={(event) =>
+                          <TokenLimitField
+                            value={policy.autoApprove?.totalTokens}
+                            change={(totalTokens) =>
                               setPolicy({
                                 ...policy,
                                 autoApprove: {
                                   ...(policy.autoApprove || { enabled: false }),
-                                  totalTokens:
-                                    event.target.value === ""
-                                      ? null
-                                      : Number(event.target.value),
+                                  totalTokens,
                                 },
                               })
                             }
                           />
                         </Field>
                         <Field label="单人最多申请 Token">
-                          <input
-                            type="number"
-                            min={0}
-                            placeholder="不限"
-                            value={policy.autoApprove?.perUserTokens ?? ""}
-                            onChange={(event) =>
+                          <TokenLimitField
+                            value={policy.autoApprove?.perUserTokens}
+                            change={(perUserTokens) =>
                               setPolicy({
                                 ...policy,
                                 autoApprove: {
                                   ...(policy.autoApprove || { enabled: false }),
-                                  perUserTokens:
-                                    event.target.value === ""
-                                      ? null
-                                      : Number(event.target.value),
+                                  perUserTokens,
                                 },
                               })
                             }
@@ -2171,77 +2115,104 @@ function Allocations({ generation }: { generation: number }) {
                       <small>{selectedReceived.length} 条待处理</small>
                     </div>
                     {selectedReceived.length ? (
-                      <div className="u-panel-body space-y-4">
+                      <div className="u-request-list">
                         {selectedReceived.map((application) => {
                           const decision = decisionFor(application);
                           return (
-                            <div
-                              key={application.id}
-                              className="space-y-3 rounded-lg border border-border p-3"
-                            >
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <strong>{application.counterpartyName}</strong>
+                            <article className="u-request" key={application.id}>
+                              <header className="u-request-head">
+                                <strong>
+                                  {application.counterpartyName} 申请使用
+                                </strong>
                                 <span className="u-tag">
                                   提交于 {date(application.createdAt)}
                                 </span>
-                              </div>
+                              </header>
                               {application.message && (
-                                <p className="u-note">{application.message}</p>
+                                <p className="u-request-message">
+                                  {application.message}
+                                </p>
                               )}
-                              <p className="u-note">
-                                申请参数：
-                                {budgetText(application.budget)}
-                                {" · "}
-                                {application.models.length
-                                  ? `限定 ${application.models.length} 个模型`
-                                  : "全部模型"}
-                                {" · "}时间截止{" "}
-                                {deadlineText(application.requestedExpiresAt)}
-                              </p>
-                              <BudgetFields
-                                title="授权额度（请求次数 / Token）"
-                                value={decision.budget}
-                                change={(budget) =>
-                                  updateDecision(application, { budget })
-                                }
-                                hideCredits
-                              />
-                              <div className="u-grid2">
-                                <Field label="时间截止（留空为不限）">
-                                  <input
-                                    type="datetime-local"
-                                    value={decision.deadline}
-                                    onChange={(event) =>
-                                      updateDecision(application, {
-                                        deadline: event.target.value,
-                                      })
-                                    }
-                                  />
-                                </Field>
-                                <Field label="批阅说明（可选）">
-                                  <input
-                                    value={decision.note}
-                                    placeholder="例如：先授权到本月底，到期可以再申请"
-                                    onChange={(event) =>
-                                      updateDecision(application, {
-                                        note: event.target.value,
-                                      })
-                                    }
-                                  />
+                              <div className="u-request-meta">
+                                <div>
+                                  <small>请求次数</small>
+                                  <strong>
+                                    {application.budget.requests == null
+                                      ? "不限"
+                                      : `${num(application.budget.requests)} 次`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <small>Token 数量</small>
+                                  <strong>
+                                    {application.budget.tokens == null
+                                      ? "不限"
+                                      : `${num(application.budget.tokens)} Token`}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <small>期望截止</small>
+                                  <strong>
+                                    {deadlineText(
+                                      application.requestedExpiresAt,
+                                    )}
+                                  </strong>
+                                </div>
+                                <div>
+                                  <small>模型范围</small>
+                                  <strong>
+                                    {application.models.length
+                                      ? `${application.models.length} 个模型`
+                                      : "全部可见模型"}
+                                  </strong>
+                                </div>
+                              </div>
+                              <div className="u-request-fields">
+                                <BudgetFields
+                                  title="批准额度（留空为不限）"
+                                  value={decision.budget}
+                                  change={(budget) =>
+                                    updateDecision(application, { budget })
+                                  }
+                                  hideCredits
+                                />
+                                <div className="u-grid2">
+                                  <Field label="时间截止（留空为不限）">
+                                    <input
+                                      type="datetime-local"
+                                      value={decision.deadline}
+                                      onChange={(event) =>
+                                        updateDecision(application, {
+                                          deadline: event.target.value,
+                                        })
+                                      }
+                                    />
+                                  </Field>
+                                  <Field label="批阅说明（可选）">
+                                    <input
+                                      value={decision.note}
+                                      placeholder="例如：先授权到本月底，到期可以再申请"
+                                      onChange={(event) =>
+                                        updateDecision(application, {
+                                          note: event.target.value,
+                                        })
+                                      }
+                                    />
+                                  </Field>
+                                </div>
+                                <Field label="允许的模型（留空为全部可见模型）">
+                                  {modelPicker(
+                                    decision.models,
+                                    (models) =>
+                                      updateDecision(application, { models }),
+                                    selected?.visibleModels,
+                                  )}
                                 </Field>
                               </div>
-                              <Field label="允许的模型（留空为全部）">
-                                {modelPicker(
-                                  decision.models,
-                                  (models) =>
-                                    updateDecision(application, { models }),
-                                  selected?.visibleModels,
-                                )}
-                              </Field>
-                              <small>
-                                同意时会按上面的参数写入授权；如果调整了参数，申请记录会标记为“修改后同意”。
-                              </small>
-                              <div className="u-actions">
+                              <footer className="u-request-actions">
+                                <span className="u-request-hint">
+                                  同意时按上面的参数写入授权；调整过参数会记录为“修改后同意”。
+                                </span>
                                 <button
                                   className="u-button"
                                   type="button"
@@ -2260,8 +2231,8 @@ function Allocations({ generation }: { generation: number }) {
                                 >
                                   驳回
                                 </button>
-                              </div>
-                            </div>
+                              </footer>
+                            </article>
                           );
                         })}
                       </div>
