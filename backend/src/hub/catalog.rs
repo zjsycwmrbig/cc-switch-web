@@ -230,8 +230,6 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
     let mut official = std::collections::BTreeMap::new();
     let mut templates: std::collections::HashMap<String, Value> =
         std::collections::HashMap::new();
-    let mut route_keys: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
     let pool_key = auth::setting(db, "officialPoolKey", "official");
     for r in resources::all(db)? {
         if r.app_type != "codex" || !r.published || r.disabled {
@@ -247,7 +245,9 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             templates
                 .entry(name.to_string())
                 .or_insert_with(|| raw.clone());
-            route_keys.insert(r.id.clone(), r.route_key.clone());
+            let mut row = raw.clone();
+            crate::web_model_catalog::publish(&mut row, &r.route_key, &r.name, models.len() + 1)?;
+            models.push(row);
             if r.official {
                 official.entry(name.to_owned()).or_insert_with(|| {
                     let mut row = raw.clone();
@@ -258,7 +258,8 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             }
         }
     }
-    // 模型列表以用户映射为唯一来源：单目标保留原供应商 slug，多目标走自动路由。
+    models.extend(official.into_values());
+    // 用户自定义的自动路由 / 单对单映射，用用户设置的显示名出现在客户端。
     for route in super::api::list_model_routes(db, &user.id)? {
         if !route["enabled"].as_bool().unwrap_or(false) {
             continue;
@@ -272,24 +273,11 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
         let mut row = templates.get(base).cloned().unwrap_or_else(|| {
             json!({"slug":base,"display_name":base,"visibility":"list"})
         });
-        let targets = route["targets"]
-            .as_array()
-            .map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let key = if targets.len() >= 2 {
-            "auto".to_string()
-        } else {
-            targets
-                .first()
-                .and_then(|id| route_keys.get(*id).cloned())
-                .unwrap_or_else(|| "auto".to_string())
-        };
-        row["slug"] = json!(encode("codex", &key, base));
+        row["slug"] = json!(encode("codex", "auto", base));
         row["display_name"] = json!(name);
         row["visibility"] = json!("list");
         models.push(row);
     }
-    models.extend(official.into_values());
     models.retain(|row| !selected || chosen.is_none_or(|choices| choices.contains(&row["slug"])));
     for (i, row) in models.iter_mut().enumerate() {
         row["priority"] = json!(i + 1);
