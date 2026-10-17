@@ -51,6 +51,7 @@ import { AggregationSyncPanel } from "@/components/providers/AggregationSyncPane
 import {
   unit,
   Budget,
+  ApplicationRow,
   Usage as UsageNumbers,
   Policy,
   defaultPolicy,
@@ -653,10 +654,19 @@ type UsageBucket = Record<string, string | number>;
 function Allocations({ generation }: { generation: number }) {
   const [resources, setResources] = useState<Resource[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [mode, setMode] = useState<"grants" | "codes">("grants");
+  const [mode, setMode] = useState<"grants" | "codes" | "applications">(
+    "grants",
+  );
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [buckets, setBuckets] = useState<UsageBucket[]>([]);
   const [codes, setCodes] = useState<ShareCode[]>([]);
+  const [applications, setApplications] = useState<{
+    mine: ApplicationRow[];
+    received: ApplicationRow[];
+  }>({ mine: [], received: [] });
+  const [decisionBudgets, setDecisionBudgets] = useState<
+    Record<string, Budget>
+  >({});
   const [createdCode, setCreatedCode] = useState<ShareCode | null>(null);
   const [policy, setPolicy] = useState<Policy>(defaultPolicy());
   const [busy, setBusy] = useState(true);
@@ -674,6 +684,11 @@ function Allocations({ generation }: { generation: number }) {
 
   const selected = resources.find((resource) => resource.id === selectedId);
   const selectedCodes = codes.filter((code) => code.resourceId === selectedId);
+  const selectedReceived = applications.received.filter(
+    (application) =>
+      application.resourceId === selectedId && application.state === "pending",
+  );
+  const myApplications = applications.mine;
 
   const loadResources = useCallback(async () => {
     const [all, shareCodes] = await Promise.all([
@@ -696,12 +711,16 @@ function Allocations({ generation }: { generation: number }) {
       setBuckets([]);
       return;
     }
-    const [grantRows, usageBuckets] = await Promise.all([
+    const [grantRows, usageBuckets, applicationRows] = await Promise.all([
       unit<GrantRow[]>(`/resources/${selectedId}/grants`),
       unit<UsageBucket[]>(`/resources/${selectedId}/usage`),
+      unit<{ mine: ApplicationRow[]; received: ApplicationRow[] }>(
+        "/applications",
+      ),
     ]);
     setGrants(grantRows);
     setBuckets(usageBuckets);
+    setApplications(applicationRows);
   }, [selectedId]);
 
   useEffect(() => {
@@ -764,6 +783,66 @@ function Allocations({ generation }: { generation: number }) {
       toast.error(errorText(error));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveAutoApprove = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selected) return;
+    const nextPolicy: Policy = {
+      ...policy,
+      autoApprove: policy.autoApprove ?? { enabled: false },
+    };
+    setSaving(true);
+    try {
+      await unit(`/resources/${selected.id}/policy`, "PUT", nextPolicy);
+      setResources((current) =>
+        current.map((resource) =>
+          resource.id === selected.id
+            ? { ...resource, policy: nextPolicy }
+            : resource,
+        ),
+      );
+      toast.success("免审设置已保存");
+    } catch (error) {
+      toast.error(errorText(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const decideApplication = async (
+    application: ApplicationRow,
+    approve: boolean,
+  ) => {
+    try {
+      await unit(`/applications/${application.id}/decision`, "POST", {
+        approve,
+        budget: approve
+          ? decisionBudgets[application.id] ?? application.budget
+          : {},
+        models: approve ? application.models : [],
+        expiresAt: null,
+      });
+      toast.success(approve ? "已通过申请并写入额度" : "已驳回申请");
+      setDecisionBudgets((current) => {
+        const next = { ...current };
+        delete next[application.id];
+        return next;
+      });
+      await Promise.all([loadDetails(), loadResources()]);
+    } catch (error) {
+      toast.error(errorText(error));
+    }
+  };
+
+  const cancelApplication = async (application: ApplicationRow) => {
+    try {
+      await unit(`/applications/${application.id}`, "DELETE");
+      toast.success("已撤销申请");
+      await loadDetails();
+    } catch (error) {
+      toast.error(errorText(error));
     }
   };
 
@@ -962,6 +1041,19 @@ function Allocations({ generation }: { generation: number }) {
                 >
                   <KeyRound size={15} />
                   分享口令
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "applications"}
+                  className={mode === "applications" ? "active" : ""}
+                  onClick={() => setMode("applications")}
+                >
+                  <UserPlus size={15} />
+                  申请审批
+                  {selectedReceived.length > 0
+                    ? ` ${selectedReceived.length}`
+                    : ""}
                 </button>
               </div>
 
@@ -1233,7 +1325,7 @@ function Allocations({ generation }: { generation: number }) {
                     </section>
                   )}
                 </>
-              ) : (
+              ) : mode === "codes" ? (
                 <>
                   {createdCode?.url && (
                     <div className="u-created u-created-panel">
@@ -1417,6 +1509,232 @@ function Allocations({ generation }: { generation: number }) {
                     </div>
                     {!selectedCodes.length && (
                       <Empty>还没有分享口令。</Empty>
+                    )}
+                  </section>
+                </>
+              ) : (
+                <>
+                  <section className="u-panel">
+                    <div className="u-panel-title">
+                      <UserPlus size={17} />
+                      免审设置
+                      <small>符合上限的申请自动通过，超出的转人工审批</small>
+                    </div>
+                    <form className="u-panel-body" onSubmit={saveAutoApprove}>
+                      <label className="u-inline">
+                        <input
+                          type="checkbox"
+                          checked={policy.autoApprove?.enabled ?? false}
+                          onChange={(event) =>
+                            setPolicy({
+                              ...policy,
+                              autoApprove: {
+                                ...(policy.autoApprove || { enabled: false }),
+                                enabled: event.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        开启免审：满足下列上限的申请直接通过
+                      </label>
+                      <div className="u-grid3">
+                        <Field label="限定人数（人）">
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder="不限"
+                            value={policy.autoApprove?.maxUsers ?? ""}
+                            onChange={(event) =>
+                              setPolicy({
+                                ...policy,
+                                autoApprove: {
+                                  ...(policy.autoApprove || { enabled: false }),
+                                  maxUsers:
+                                    event.target.value === ""
+                                      ? null
+                                      : Number(event.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field label="总 Token 量">
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder="不限"
+                            value={policy.autoApprove?.totalTokens ?? ""}
+                            onChange={(event) =>
+                              setPolicy({
+                                ...policy,
+                                autoApprove: {
+                                  ...(policy.autoApprove || { enabled: false }),
+                                  totalTokens:
+                                    event.target.value === ""
+                                      ? null
+                                      : Number(event.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field label="单人最多申请 Token">
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder="不限"
+                            value={policy.autoApprove?.perUserTokens ?? ""}
+                            onChange={(event) =>
+                              setPolicy({
+                                ...policy,
+                                autoApprove: {
+                                  ...(policy.autoApprove || { enabled: false }),
+                                  perUserTokens:
+                                    event.target.value === ""
+                                      ? null
+                                      : Number(event.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+                      </div>
+                      <button
+                        className="u-button"
+                        disabled={saving}
+                        type="submit"
+                      >
+                        {saving ? <Busy /> : "保存免审设置"}
+                      </button>
+                    </form>
+                  </section>
+
+                  <section className="u-panel">
+                    <div className="u-panel-title">
+                      <Users size={17} />
+                      收到的申请
+                      <small>{selectedReceived.length} 条待处理</small>
+                    </div>
+                    {selectedReceived.length ? (
+                      <div className="u-panel-body space-y-4">
+                        {selectedReceived.map((application) => (
+                          <div
+                            key={application.id}
+                            className="space-y-3 rounded-lg border border-border p-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <strong>{application.counterpartyName}</strong>
+                              <span className="u-tag">
+                                {date(application.createdAt)}
+                              </span>
+                            </div>
+                            {application.message && (
+                              <p className="u-note">{application.message}</p>
+                            )}
+                            <BudgetFields
+                              title={`${application.counterpartyName} 的授权额度`}
+                              value={
+                                decisionBudgets[application.id] ??
+                                application.budget
+                              }
+                              change={(next) =>
+                                setDecisionBudgets((current) => ({
+                                  ...current,
+                                  [application.id]: next,
+                                }))
+                              }
+                            />
+                            <div className="u-actions">
+                              <button
+                                className="u-button"
+                                type="button"
+                                onClick={() =>
+                                  void decideApplication(application, true)
+                                }
+                              >
+                                通过并授权
+                              </button>
+                              <button
+                                className="u-quiet u-danger"
+                                type="button"
+                                onClick={() =>
+                                  void decideApplication(application, false)
+                                }
+                              >
+                                驳回
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <Empty>当前供应商没有待处理的申请。</Empty>
+                    )}
+                  </section>
+
+                  <section className="u-panel">
+                    <div className="u-panel-title">
+                      <WalletCards size={17} />
+                      我的申请
+                      <small>{myApplications.length} 条</small>
+                    </div>
+                    <div className="u-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>供应商</th>
+                            <th>提供者</th>
+                            <th>申请额度</th>
+                            <th>状态</th>
+                            <th>提交时间</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {myApplications.map((application) => (
+                            <tr key={application.id}>
+                              <td>{application.resourceName}</td>
+                              <td>{application.counterpartyName}</td>
+                              <td>{budgetText(application.budget)}</td>
+                              <td>
+                                <span
+                                  className={`u-tag ${
+                                    application.state === "approved"
+                                      ? "u-green"
+                                      : ""
+                                  }`}
+                                >
+                                  {application.state === "pending"
+                                    ? "待审批"
+                                    : application.state === "approved"
+                                      ? application.decidedBy === "auto"
+                                        ? "免审通过"
+                                        : "已通过"
+                                      : "已驳回"}
+                                </span>
+                              </td>
+                              <td>{date(application.createdAt)}</td>
+                              <td>
+                                {application.state === "pending" && (
+                                  <button
+                                    type="button"
+                                    className="u-quiet u-danger"
+                                    onClick={() =>
+                                      void cancelApplication(application)
+                                    }
+                                  >
+                                    <Trash2 size={13} />
+                                    撤销
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {!myApplications.length && (
+                      <Empty>还没有提交过申请。</Empty>
                     )}
                   </section>
                 </>

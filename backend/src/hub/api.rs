@@ -47,6 +47,18 @@ pub fn routes(app: Arc<AppState>) -> Router {
             "/api/unit/resources/:id/grants/:user",
             axum::routing::delete(delete_grant),
         )
+        .route(
+            "/api/unit/applications",
+            get(applications).post(create_application),
+        )
+        .route(
+            "/api/unit/applications/:id/decision",
+            post(decide_application),
+        )
+        .route(
+            "/api/unit/applications/:id",
+            axum::routing::delete(cancel_application),
+        )
         .route("/api/unit/share-codes", get(share_codes))
         .route(
             "/api/unit/resources/:id/share-codes",
@@ -659,6 +671,283 @@ async fn delete_grant(
         &resource,
         json!({"userId":target}),
     )?;
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplicationInput {
+    resource_id: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    budget: Budget,
+    #[serde(default)]
+    models: Vec<String>,
+}
+
+fn normalize_application_models(
+    r: &resources::Resource,
+    models: &[String],
+) -> Result<Vec<String>> {
+    if models.len() > 500 || models.iter().any(|model| model.len() > 200) {
+        return Err(Error::bad("申请的模型列表过长"));
+    }
+    let available = r
+        .models
+        .iter()
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    if models
+        .iter()
+        .any(|model| !available.contains(model.as_str()))
+    {
+        return Err(Error::bad("申请包含该供应商未发布的模型"));
+    }
+    Ok(models.to_vec())
+}
+
+/// 免审规则：满足提供者设定的上限时自动通过；超出上限则转人工审批。
+fn auto_approve_budget(
+    db: &crate::database::Database,
+    resource: &resources::Resource,
+    requested: &Budget,
+) -> Result<Option<Budget>> {
+    let rule = &resource.policy.auto_approve;
+    if !rule.enabled {
+        return Ok(None);
+    }
+    if (rule.per_user_tokens.is_some() || rule.total_tokens.is_some()) && requested.tokens.is_none()
+    {
+        return Ok(None);
+    }
+    let (users, tokens) = conn(db)?.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(CAST(json_extract(budget,'$.tokens') AS INTEGER)),0)
+         FROM hub_grants WHERE resource_id=?1 AND allowed=1",
+        [&resource.id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    if rule.max_users.is_some_and(|max| users + 1 > max) {
+        return Ok(None);
+    }
+    if let (Some(per_user), Some(want)) = (rule.per_user_tokens, requested.tokens) {
+        if want > per_user {
+            return Ok(None);
+        }
+    }
+    if let (Some(total), Some(want)) = (rule.total_tokens, requested.tokens) {
+        if tokens + want > total {
+            return Ok(None);
+        }
+    }
+    Ok(Some(requested.clone()))
+}
+
+async fn applications(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+) -> Result<Json<Value>> {
+    let c = conn(&app.db)?;
+    let mut mine_statement = c.prepare(
+        "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at
+         FROM hub_applications a
+         JOIN hub_resources r ON r.id=a.resource_id
+         JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
+         JOIN hub_users u ON u.id=a.owner_id
+         WHERE a.applicant_id=?1 ORDER BY a.created_at DESC LIMIT 300",
+    )?;
+    let mine = mine_statement
+        .query_map([&user.id], application_view)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut received_statement = c.prepare(
+        "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at
+         FROM hub_applications a
+         JOIN hub_resources r ON r.id=a.resource_id
+         JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
+         JOIN hub_users u ON u.id=a.applicant_id
+         WHERE a.owner_id=?1 ORDER BY a.created_at DESC LIMIT 300",
+    )?;
+    let received = received_statement
+        .query_map([&user.id], application_view)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Json(json!({"mine":mine,"received":received})))
+}
+
+fn application_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({
+        "id": row.get::<_, String>(0)?,
+        "resourceId": row.get::<_, String>(1)?,
+        "resourceName": row.get::<_, String>(2)?,
+        "counterpartyName": row.get::<_, String>(3)?,
+        "message": row.get::<_, String>(4)?,
+        "budget": parse::<Budget>(&row.get::<_, String>(5)?),
+        "models": parse::<Vec<String>>(&row.get::<_, String>(6)?),
+        "state": row.get::<_, String>(7)?,
+        "decidedBy": row.get::<_, Option<String>>(8)?,
+        "createdAt": row.get::<_, i64>(9)?,
+        "decidedAt": row.get::<_, Option<i64>>(10)?,
+    }))
+}
+
+async fn create_application(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Json(v): Json<ApplicationInput>,
+) -> Result<Json<Value>> {
+    let r = resources::get(&app.db, &v.resource_id)?;
+    if r.owner_id == user.id {
+        return Err(Error::bad("不能申请自己的供应商"));
+    }
+    if !r.published || r.disabled {
+        return Err(Error::bad("该供应商当前不可申请"));
+    }
+    v.budget.validate()?;
+    let message = v.message.trim().to_string();
+    if message.chars().count() > 500 {
+        return Err(Error::bad("申请说明过长"));
+    }
+    let models = normalize_application_models(&r, &v.models)?;
+    let auto = auto_approve_budget(&app.db, &r, &v.budget)?;
+    let state = if auto.is_some() { "approved" } else { "pending" };
+    let application_id = super::id();
+    conn(&app.db)?
+        .execute(
+            "INSERT INTO hub_applications(id,resource_id,applicant_id,owner_id,message,budget,models,state,created_at,decided_at,decided_by)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                application_id,
+                r.id,
+                &user.id,
+                r.owner_id,
+                message,
+                json_text(&v.budget),
+                json_text(&models),
+                state,
+                now(),
+                auto.as_ref().map(|_| now()),
+                auto.as_ref().map(|_| "auto")
+            ],
+        )
+        .map_err(|error| {
+            if error.to_string().contains("UNIQUE") {
+                Error::bad("你已提交过申请，请在额度分配页查看进度")
+            } else {
+                Error::from(error)
+            }
+        })?;
+    if auto.is_some() {
+        conn(&app.db)?.execute(
+            "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models,expires_at)
+             VALUES(?1,?2,1,?3,?4,NULL)
+             ON CONFLICT(resource_id,user_id) DO UPDATE SET allowed=1,budget=?3,models=?4",
+            params![
+                r.id,
+                &user.id,
+                json_text(&v.budget),
+                json_text(&models)
+            ],
+        )?;
+    }
+    audit(
+        &app.db,
+        &user.id,
+        if auto.is_some() {
+            "application.auto_approve"
+        } else {
+            "application.create"
+        },
+        &r.id,
+        json!({"applicationId":application_id,"budget":v.budget,"models":models}),
+    )?;
+    Ok(Json(json!({"id":application_id,"state":state})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplicationDecision {
+    approve: bool,
+    #[serde(default)]
+    budget: Budget,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
+}
+
+async fn decide_application(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(application): Path<String>,
+    Json(v): Json<ApplicationDecision>,
+) -> Result<Json<Value>> {
+    let (resource_id, applicant_id, state): (String, String, String) = conn(&app.db)?
+        .query_row(
+            "SELECT resource_id,applicant_id,state FROM hub_applications WHERE id=?1",
+            [&application],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| Error::bad("申请不存在"))?;
+    let r = resources::get(&app.db, &resource_id)?;
+    resources::own(&user, &r)?;
+    if state != "pending" {
+        return Err(Error::bad("该申请已处理"));
+    }
+    let mut models = v.models.clone();
+    if v.approve {
+        v.budget.validate()?;
+        if v.expires_at.is_some_and(|expires| expires <= now()) {
+            return Err(Error::bad("授权到期时间必须晚于当前时间"));
+        }
+        models = normalize_application_models(&r, &v.models)?;
+        conn(&app.db)?.execute(
+            "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models,expires_at)
+             VALUES(?1,?2,1,?3,?4,?5)
+             ON CONFLICT(resource_id,user_id) DO UPDATE SET allowed=1,budget=?3,models=?4,expires_at=?5",
+            params![
+                resource_id,
+                applicant_id,
+                json_text(&v.budget),
+                json_text(&models),
+                v.expires_at
+            ],
+        )?;
+    }
+    conn(&app.db)?.execute(
+        "UPDATE hub_applications SET state=?2,decided_at=?3,decided_by=?4 WHERE id=?1",
+        params![
+            application,
+            if v.approve { "approved" } else { "rejected" },
+            now(),
+            &user.id
+        ],
+    )?;
+    audit(
+        &app.db,
+        &user.id,
+        if v.approve {
+            "application.approve"
+        } else {
+            "application.reject"
+        },
+        &application,
+        json!({"resourceId":resource_id,"applicantId":applicant_id,"budget":v.budget,"models":models}),
+    )?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn cancel_application(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(application): Path<String>,
+) -> Result<Json<Value>> {
+    let changed = conn(&app.db)?.execute(
+        "DELETE FROM hub_applications WHERE id=?1 AND applicant_id=?2 AND state='pending'",
+        params![application, &user.id],
+    )?;
+    if changed == 0 {
+        return Err(Error::bad("申请不存在或已处理"));
+    }
     Ok(Json(json!({"ok":true})))
 }
 

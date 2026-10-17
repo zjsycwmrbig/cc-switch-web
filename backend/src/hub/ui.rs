@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Extension, Router,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -73,6 +73,15 @@ async fn library(
         let mut view = resources::safe_view(&app.db, &user, &r);
         view["modelCount"] = json!(r.models.len());
         view["accessible"] = json!(visible(&app.db, &user, &r));
+        let my_application: Option<String> = conn(&app.db)?
+            .query_row(
+                "SELECT state FROM hub_applications WHERE resource_id=?1 AND applicant_id=?2
+                 ORDER BY created_at DESC LIMIT 1",
+                params![r.id, &user.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        view["myApplication"] = json!(my_application);
         value["unitResource"] = view;
         rows.insert(p.id, value);
     }

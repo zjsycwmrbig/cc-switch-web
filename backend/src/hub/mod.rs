@@ -116,6 +116,26 @@ impl Budget {
         Ok(())
     }
 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct AutoApprove {
+    pub enabled: bool,
+    pub max_users: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub per_user_tokens: Option<i64>,
+}
+impl AutoApprove {
+    pub fn validate(&self) -> Result<()> {
+        if [self.max_users, self.total_tokens, self.per_user_tokens]
+            .iter()
+            .flatten()
+            .any(|n| *n < 0 || *n > 1_000_000_000_000_000)
+        {
+            return Err(Error::bad("免审设置必须为非负整数，留空表示不限"));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct Policy {
@@ -125,6 +145,7 @@ pub struct Policy {
     pub shared_budget: Budget,
     pub models: Vec<String>,
     pub expires_at: Option<i64>,
+    pub auto_approve: AutoApprove,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -135,6 +156,7 @@ impl Default for Policy {
             shared_budget: Budget::default(),
             models: vec![],
             expires_at: None,
+            auto_approve: AutoApprove::default(),
         }
     }
 }
@@ -146,7 +168,8 @@ impl Policy {
             return Err(Error::bad("无效的共享范围或额度周期"));
         }
         self.default_budget.validate()?;
-        self.shared_budget.validate()
+        self.shared_budget.validate()?;
+        self.auto_approve.validate()
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

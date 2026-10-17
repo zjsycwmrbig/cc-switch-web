@@ -510,6 +510,11 @@ impl Database {
                         crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
                         Self::set_user_version(conn, 18)?;
                     }
+                    18 => {
+                        log::info!("迁移数据库从 v18 到 v19（供应商库申请与免审规则）");
+                        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+                        Self::set_user_version(conn, 19)?;
+                    }
                     _ => {
                         return Err(AppError::Database(format!(
                             "未知的数据库版本 {version}，无法迁移到 {SCHEMA_VERSION}"

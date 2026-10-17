@@ -52,6 +52,13 @@ export interface Policy {
   sharedBudget: Budget;
   models: string[];
   expiresAt?: number | null;
+  autoApprove?: AutoApprove;
+}
+export interface AutoApprove {
+  enabled: boolean;
+  maxUsers?: number | null;
+  totalTokens?: number | null;
+  perUserTokens?: number | null;
 }
 export const defaultPolicy = (): Policy => ({
   visibility: "public",
@@ -59,7 +66,21 @@ export const defaultPolicy = (): Policy => ({
   defaultBudget: {},
   sharedBudget: {},
   models: [],
+  autoApprove: { enabled: false },
 });
+export interface ApplicationRow {
+  id: string;
+  resourceId: string;
+  resourceName: string;
+  counterpartyName: string;
+  message: string;
+  budget: Budget;
+  models: string[];
+  state: "pending" | "approved" | "rejected";
+  decidedBy?: string | null;
+  createdAt: number;
+  decidedAt?: number | null;
+}
 export interface Model {
   slug: string;
   display_name?: string;

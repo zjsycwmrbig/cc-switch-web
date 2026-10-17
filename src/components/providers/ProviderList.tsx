@@ -32,7 +32,13 @@ import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PageTabs } from "@/components/ui/page-tabs";
-import { unit } from "@/components/unit/client";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { unit, type Budget } from "@/components/unit/client";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -60,12 +66,14 @@ type UnitLibraryProvider = {
   name: string;
   icon?: string;
   unitResource: {
+    id: string;
     ownerName: string;
     owned: boolean;
     disabled: boolean;
     official: boolean;
     accessible?: boolean;
     modelCount?: number;
+    myApplication?: string | null;
   };
 };
 
@@ -246,6 +254,12 @@ export function ProviderList({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [unitTab, setUnitTab] = useState<UnitProviderTab>("owned");
   const [unitPage, setUnitPage] = useState(1);
+  const [applyTarget, setApplyTarget] = useState<UnitLibraryProvider | null>(
+    null,
+  );
+  const [applyBudget, setApplyBudget] = useState<Budget>({});
+  const [applyMessage, setApplyMessage] = useState("");
+  const [applyBusy, setApplyBusy] = useState(false);
   const { data: claudeDesktopStatus } = useQuery({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => claudeDesktopApi.getStatus(),
@@ -395,6 +409,42 @@ export function ProviderList({
         ),
       );
   }, [searchTerm, unitLibrary]);
+
+  const submitApplication = async () => {
+    if (!applyTarget) return;
+    setApplyBusy(true);
+    try {
+      const result = await unit<{ id: string; state: string }>(
+        "/applications",
+        "POST",
+        {
+          resourceId: applyTarget.unitResource.id,
+          budget: applyBudget,
+          models: [],
+          message: applyMessage,
+        },
+      );
+      toast.success(
+        result.state === "approved"
+          ? "已按免审规则自动通过，可直接使用"
+          : "申请已提交，等待提供者审批",
+      );
+      setApplyTarget(null);
+      setApplyBudget({});
+      setApplyMessage("");
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["unit", "providerLibrary", appId],
+        }),
+        queryClient.invalidateQueries({ queryKey: ["unit", "applications"] }),
+        queryClient.invalidateQueries({ queryKey: ["providers", appId] }),
+      ]);
+    } catch (error) {
+      toast.error(extractErrorMessage(error));
+    } finally {
+      setApplyBusy(false);
+    }
+  };
 
   useEffect(() => {
     setUnitPage(1);
@@ -674,11 +724,29 @@ export function ProviderList({
                           已停用
                         </span>
                       )}
-                      {!resource.accessible && (
-                        <span className="text-[11px] text-muted-foreground">
-                          未授权，需提供者分享后可用
-                        </span>
-                      )}
+                      {!resource.owned &&
+                        (resource.accessible ? (
+                          <span className="text-[11px] text-muted-foreground">
+                            已授权
+                          </span>
+                        ) : resource.myApplication === "pending" ? (
+                          <span className="theme-chip-primary inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
+                            待审批
+                          </span>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setApplyTarget(entry);
+                              setApplyBudget({});
+                              setApplyMessage("");
+                            }}
+                          >
+                            申请使用
+                          </Button>
+                        ))}
                     </div>
                   </div>
                 );
@@ -899,6 +967,82 @@ export function ProviderList({
       ) : (
         renderProviderList()
       )}
+
+      <Dialog
+        open={Boolean(applyTarget)}
+        onOpenChange={(open) => {
+          if (!open) setApplyTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>申请使用供应商</DialogTitle>
+          </DialogHeader>
+          {applyTarget && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                {applyTarget.unitResource.ownerName} 的 {applyTarget.name}
+                ：提交后由提供者审批，通过后按授权额度使用。
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                {(
+                  [
+                    ["requests", "请求次数"],
+                    ["tokens", "Token 数量"],
+                    ["credits", "点数"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label
+                    key={key}
+                    className="space-y-1 text-xs text-muted-foreground"
+                  >
+                    {label}
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="不限"
+                      value={applyBudget[key] ?? ""}
+                      onChange={(event) =>
+                        setApplyBudget({
+                          ...applyBudget,
+                          [key]:
+                            event.target.value === ""
+                              ? null
+                              : Number(event.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                申请说明（可选）
+                <Input
+                  value={applyMessage}
+                  placeholder="例如：用于日常开发，预计每月 2000 万 token"
+                  onChange={(event) => setApplyMessage(event.target.value)}
+                />
+              </label>
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setApplyTarget(null)}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  disabled={applyBusy}
+                  onClick={() => void submitApplication()}
+                >
+                  {applyBusy ? "提交中…" : "提交申请"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         isOpen={showStreamCheckConfirm}

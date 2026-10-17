@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS hub_grants (
  allowed INTEGER NOT NULL DEFAULT 1, budget TEXT NOT NULL DEFAULT '{}', models TEXT NOT NULL DEFAULT '[]',
  expires_at INTEGER, PRIMARY KEY(resource_id,user_id)
 );
+CREATE TABLE IF NOT EXISTS hub_applications (
+ id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES hub_resources(id),
+ applicant_id TEXT NOT NULL REFERENCES hub_users(id), owner_id TEXT NOT NULL REFERENCES hub_users(id),
+ message TEXT NOT NULL DEFAULT '', budget TEXT NOT NULL DEFAULT '{}', models TEXT NOT NULL DEFAULT '[]',
+ state TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, decided_at INTEGER, decided_by TEXT
+);
+CREATE INDEX IF NOT EXISTS hub_application_resource ON hub_applications(resource_id,state,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS hub_application_pending ON hub_applications(resource_id,applicant_id)
+ WHERE state='pending';
 CREATE TABLE IF NOT EXISTS hub_share_codes (
  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES hub_resources(id),
  created_by TEXT NOT NULL REFERENCES hub_users(id), token_hash TEXT NOT NULL UNIQUE,
