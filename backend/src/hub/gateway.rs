@@ -125,23 +125,67 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     } else {
         None
     };
+    let auto_targets = if key == "auto" {
+        let route = super::api::list_model_routes(&state.db, &user.id)?
+            .into_iter()
+            .find(|row| {
+                row["model"].as_str() == Some(model.as_str())
+                    && row["enabled"].as_bool().unwrap_or(false)
+            })
+            .ok_or_else(|| Error::bad("自动路由映射不存在，请先在“模型与接入”中保存"))?;
+        Some(
+            route["targets"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
     let mut candidates = resources::all(&state.db)?
         .into_iter()
         .filter(|r| {
             r.app_type == app.as_str()
-                && if pooled {
-                    r.official
-                } else {
-                    r.route_key == key
+                && match &auto_targets {
+                    Some(targets) => targets.contains(&r.id),
+                    None => {
+                        if pooled {
+                            r.official
+                        } else {
+                            r.route_key == key
+                        }
+                    }
                 }
         })
         .filter(|r| affinity.as_ref().is_none_or(|a| a == &r.id))
         .filter(|r| resources::usable(&state.db, &user, r, &model).is_ok())
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        return Err(Error::forbidden());
+        return Err(if auto_targets.is_some() {
+            Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no_eligible_account",
+                "自动路由组里当前没有有额度且可用的供应商".into(),
+            )
+        } else {
+            Error::forbidden()
+        });
     }
-    candidates.sort_by_key(|r| (r.owner_id != user.id, r.last_used_at, r.id.clone()));
+    match &auto_targets {
+        // 自动路由严格按用户设置的顺序尝试。
+        Some(targets) => candidates.sort_by_key(|r| {
+            targets
+                .iter()
+                .position(|target| target == &r.id)
+                .unwrap_or(usize::MAX)
+        }),
+        None => candidates.sort_by_key(|r| (r.owner_id != user.id, r.last_used_at, r.id.clone())),
+    }
     if pooled {
         let c = conn(&state.db)?;
         candidates.retain(|r|r.cooldown_until<=now() && !["reauth_required","removed"].contains(&r.health.as_str()) && !c.query_row("SELECT EXISTS(SELECT 1 FROM hub_model_health WHERE resource_id=?1 AND model=?2 AND until_at>?3)",params![r.id,model,now()],|r|r.get::<_,bool>(0)).unwrap_or(true));

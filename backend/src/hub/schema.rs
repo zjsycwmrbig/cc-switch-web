@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS hub_applications (
 CREATE INDEX IF NOT EXISTS hub_application_resource ON hub_applications(resource_id,state,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS hub_application_pending ON hub_applications(resource_id,applicant_id)
  WHERE state='pending';
+CREATE TABLE IF NOT EXISTS hub_model_routes (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hub_users(id),
+ display_name TEXT NOT NULL, model TEXT NOT NULL, targets TEXT NOT NULL DEFAULT '[]',
+ enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS hub_model_route_user ON hub_model_routes(user_id,enabled);
 CREATE TABLE IF NOT EXISTS hub_share_codes (
  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES hub_resources(id),
  created_by TEXT NOT NULL REFERENCES hub_users(id), token_hash TEXT NOT NULL UNIQUE,

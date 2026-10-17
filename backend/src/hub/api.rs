@@ -59,6 +59,18 @@ pub fn routes(app: Arc<AppState>) -> Router {
             "/api/unit/applications/:id",
             axum::routing::delete(cancel_application),
         )
+        .route(
+            "/api/unit/model-routes",
+            get(model_routes).post(save_model_route),
+        )
+        .route(
+            "/api/unit/model-routes/detect",
+            post(detect_model_routes),
+        )
+        .route(
+            "/api/unit/model-routes/:id",
+            axum::routing::delete(delete_model_route),
+        )
         .route("/api/unit/share-codes", get(share_codes))
         .route(
             "/api/unit/resources/:id/share-codes",
@@ -787,6 +799,209 @@ fn application_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "createdAt": row.get::<_, i64>(9)?,
         "decidedAt": row.get::<_, Option<i64>>(10)?,
     }))
+}
+
+/// 用户的模型路由映射（自动路由 = 多个供应商目标，单对单 = 一个目标）。
+pub(super) fn list_model_routes(
+    db: &crate::database::Database,
+    user_id: &str,
+) -> Result<Vec<Value>> {
+    let c = conn(db)?;
+    let mut statement = c.prepare(
+        "SELECT id,display_name,model,targets,enabled,created_at,updated_at FROM hub_model_routes
+         WHERE user_id=?1 ORDER BY created_at,id",
+    )?;
+    let rows = statement
+        .query_map([user_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "displayName": row.get::<_, String>(1)?,
+                "model": row.get::<_, String>(2)?,
+                "targets": parse::<Vec<String>>(&row.get::<_, String>(3)?),
+                "enabled": row.get::<_, bool>(4)?,
+                "createdAt": row.get::<_, i64>(5)?,
+                "updatedAt": row.get::<_, i64>(6)?,
+            }))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+async fn model_routes(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+) -> Result<Json<Value>> {
+    Ok(Json(json!(list_model_routes(&app.db, &user.id)?)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ModelRouteInput {
+    #[serde(default)]
+    id: Option<String>,
+    display_name: String,
+    model: String,
+    #[serde(default)]
+    targets: Vec<String>,
+}
+
+async fn save_model_route(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Json(v): Json<ModelRouteInput>,
+) -> Result<Json<Value>> {
+    let display_name = v.display_name.trim().to_string();
+    if display_name.is_empty() || display_name.chars().count() > 60 {
+        return Err(Error::bad("名称需为 1-60 个字符"));
+    }
+    let model = v.model.trim().to_string();
+    if model.is_empty() || model.len() > 200 || model.contains('/') {
+        return Err(Error::bad("基础模型 ID 无效"));
+    }
+    if v.targets.is_empty() || v.targets.len() > 50 {
+        return Err(Error::bad("请选择 1-50 个供应商目标"));
+    }
+    let all = resources::all(&app.db)?;
+    let mut seen = std::collections::HashSet::new();
+    for target in &v.targets {
+        if !seen.insert(target.clone()) {
+            return Err(Error::bad("同一供应商只能出现一次"));
+        }
+        let r = all
+            .iter()
+            .find(|r| &r.id == target)
+            .ok_or_else(|| Error::bad("目标供应商不存在"))?;
+        if resources::usable(&app.db, &user, r, &model).is_err() {
+            return Err(Error::bad("包含未授权或暂不可用的供应商目标"));
+        }
+    }
+    let id = v.id.clone().unwrap_or_else(super::id);
+    let existing: Option<String> = conn(&app.db)?
+        .query_row(
+            "SELECT user_id FROM hub_model_routes WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some_and(|owner| owner != user.id) {
+        return Err(Error::forbidden());
+    }
+    conn(&app.db)?.execute(
+        "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,1,?6,?6)
+         ON CONFLICT(id) DO UPDATE SET display_name=?3,model=?4,targets=?5,updated_at=?6",
+        params![
+            id,
+            &user.id,
+            display_name,
+            model,
+            json_text(&v.targets),
+            now()
+        ],
+    )?;
+    audit(
+        &app.db,
+        &user.id,
+        "modelRoute.save",
+        &id,
+        json!({"model":model,"targets":v.targets}),
+    )?;
+    Ok(Json(json!({"id":id})))
+}
+
+async fn delete_model_route(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(route): Path<String>,
+) -> Result<Json<Value>> {
+    let changed = conn(&app.db)?.execute(
+        "DELETE FROM hub_model_routes WHERE id=?1 AND user_id=?2",
+        params![route, &user.id],
+    )?;
+    if changed == 0 {
+        return Err(Error::bad("映射不存在"));
+    }
+    Ok(Json(json!({"ok":true})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DetectInput {
+    #[serde(default)]
+    apply: bool,
+}
+
+/// 自动识别映射：把同一模型出现在多个可用供应商的情形整理成候选自动路由组。
+async fn detect_model_routes(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Json(v): Json<DetectInput>,
+) -> Result<Json<Value>> {
+    let all = resources::all(&app.db)?;
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for r in &all {
+        if r.app_type != "codex" || !r.published || r.disabled {
+            continue;
+        }
+        for raw in &r.models {
+            let Some(model) = raw["slug"].as_str() else {
+                continue;
+            };
+            if resources::usable(&app.db, &user, r, model).is_err() {
+                continue;
+            }
+            groups
+                .entry(model.to_string())
+                .or_default()
+                .push(r.id.clone());
+        }
+    }
+    let existing = list_model_routes(&app.db, &user.id)?;
+    let have = existing
+        .iter()
+        .filter_map(|row| row["model"].as_str().map(str::to_string))
+        .collect::<std::collections::HashSet<_>>();
+    let mut candidates = vec![];
+    for (model, mut targets) in groups {
+        targets.dedup();
+        if targets.len() < 2 || have.contains(&model) {
+            continue;
+        }
+        candidates.push(json!({
+            "model": model,
+            "displayName": format!("{model}（自动路由）"),
+            "targets": targets,
+        }));
+    }
+    if v.apply {
+        for candidate in &candidates {
+            let id = super::id();
+            conn(&app.db)?.execute(
+                "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,1,?6,?6)",
+                params![
+                    id,
+                    &user.id,
+                    candidate["displayName"].as_str().unwrap_or(""),
+                    candidate["model"].as_str().unwrap_or(""),
+                    json_text(&candidate["targets"]),
+                    now()
+                ],
+            )?;
+        }
+    }
+    audit(
+        &app.db,
+        &user.id,
+        if v.apply {
+            "modelRoute.detectApply"
+        } else {
+            "modelRoute.detect"
+        },
+        "",
+        json!({"count":candidates.len()}),
+    )?;
+    Ok(Json(json!({"candidates":candidates,"applied":v.apply})))
 }
 
 async fn create_application(

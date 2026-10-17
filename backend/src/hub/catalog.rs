@@ -228,6 +228,8 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
     let chosen = prefs.get("models").and_then(Value::as_array);
     let mut models = vec![];
     let mut official = std::collections::BTreeMap::new();
+    let mut templates: std::collections::HashMap<String, Value> =
+        std::collections::HashMap::new();
     let pool_key = auth::setting(db, "officialPoolKey", "official");
     for r in resources::all(db)? {
         if r.app_type != "codex" || !r.published || r.disabled {
@@ -240,6 +242,9 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             if resources::grant(db, user, &r, Some(name)).is_err() {
                 continue;
             }
+            templates
+                .entry(name.to_string())
+                .or_insert_with(|| raw.clone());
             let mut row = raw.clone();
             crate::web_model_catalog::publish(&mut row, &r.route_key, &r.name, models.len() + 1)?;
             models.push(row);
@@ -254,6 +259,25 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
         }
     }
     models.extend(official.into_values());
+    // 用户自定义的自动路由 / 单对单映射，用用户设置的显示名出现在客户端。
+    for route in super::api::list_model_routes(db, &user.id)? {
+        if !route["enabled"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let Some(base) = route["model"].as_str() else {
+            continue;
+        };
+        let Some(name) = route["displayName"].as_str() else {
+            continue;
+        };
+        let mut row = templates.get(base).cloned().unwrap_or_else(|| {
+            json!({"slug":base,"display_name":base,"visibility":"list"})
+        });
+        row["slug"] = json!(encode("codex", "auto", base));
+        row["display_name"] = json!(name);
+        row["visibility"] = json!("list");
+        models.push(row);
+    }
     models.retain(|row| !selected || chosen.is_none_or(|choices| choices.contains(&row["slug"])));
     for (i, row) in models.iter_mut().enumerate() {
         row["priority"] = json!(i + 1);
