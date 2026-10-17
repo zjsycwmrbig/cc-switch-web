@@ -75,6 +75,39 @@ pub fn rows_from_names(names: &[String], existing: &[Value]) -> Result<Vec<Value
     }
     Ok(rows)
 }
+
+/// 将资源编辑器提交的模型行规范化，同时保留可编辑的展示名。
+pub fn rows_from_values(values: &[Value], existing: &[Value]) -> Result<Vec<Value>> {
+    let names = values
+        .iter()
+        .filter_map(|value| {
+            value
+                .get("slug")
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    let mut rows = rows_from_names(&names, existing)?;
+    for row in &mut rows {
+        let slug = row["slug"].as_str().unwrap_or_default();
+        if let Some(input) = values.iter().find(|value| {
+            value
+                .get("slug")
+                .or_else(|| value.get("id"))
+                .and_then(Value::as_str)
+                == Some(slug)
+        }) {
+            if let Some(display_name) = input.get("display_name").and_then(Value::as_str) {
+                let display_name = display_name.trim();
+                if !display_name.is_empty() && display_name.chars().count() <= 256 {
+                    row["display_name"] = json!(display_name);
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
 pub async fn refresh(
     app: &AppState,
     user: &Identity,

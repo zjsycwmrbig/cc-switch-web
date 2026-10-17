@@ -42,6 +42,7 @@ import {
 import type { CopilotModel } from "@/lib/api/copilot";
 import {
   fetchModelsForConfig,
+  fetchModelsFromUnitResource,
   fetchCodexOauthModels,
   fetchXaiOauthModels,
   showFetchModelsError,
@@ -75,6 +76,7 @@ interface ClaudeFormFieldsProps {
     models: import("@/types").ClaudeStackModel[] | undefined,
   ) => void;
   providerId?: string;
+  resourceId?: string;
   // API Key
   shouldShowApiKey: boolean;
   apiKey: string;
@@ -162,6 +164,7 @@ export function ClaudeFormFields({
   aggregationModels,
   onAggregationModelsChange,
   providerId,
+  resourceId,
   shouldShowApiKey,
   apiKey,
   onApiKeyChange,
@@ -269,6 +272,27 @@ export function ClaudeFormFields({
     selectedXaiAccountId,
   ]);
   const handleFetchModels = useCallback(() => {
+    if (resourceId) {
+      const generation = ++modelFetchGeneration.current;
+      setIsFetchingModels(true);
+      fetchModelsFromUnitResource(resourceId)
+        .then((models) => {
+          if (generation !== modelFetchGeneration.current) return;
+          setFetchedModels(models);
+          toast.success(
+            t("providerForm.fetchModelsSuccess", { count: models.length }),
+          );
+        })
+        .catch((error) => {
+          if (generation !== modelFetchGeneration.current) return;
+          showFetchModelsError(error, t);
+        })
+        .finally(() => {
+          if (generation === modelFetchGeneration.current)
+            setIsFetchingModels(false);
+        });
+      return;
+    }
     if (!isCodexOauthPreset && !isXaiOauthPreset && (!baseUrl || !apiKey)) {
       showFetchModelsError(null, t, {
         hasApiKey: !!apiKey,
@@ -324,6 +348,7 @@ export function ClaudeFormFields({
     isFullUrl,
     isCodexOauthPreset,
     isXaiOauthPreset,
+    resourceId,
     selectedCodexAccountId,
     selectedXaiAccountId,
     t,

@@ -17,6 +17,8 @@ import {
   providersApi,
   type AppId,
 } from "@/lib/api";
+import { UnitResourceModelsEditor } from "./UnitResourceModelsEditor";
+import type { Model } from "@/components/unit/client";
 
 interface EditProviderDialogProps {
   open: boolean;
@@ -71,6 +73,13 @@ export function EditProviderDialog({
       appId !== "grokbuild") ||
     !!providerEditor.view;
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [resourceModels, setResourceModels] = useState<Model[]>(
+    provider?.unitResource?.models ?? [],
+  );
+
+  useEffect(() => {
+    setResourceModels(provider?.unitResource?.models ?? []);
+  }, [provider?.id, open]);
 
   // 默认使用传入的 provider.settingsConfig，若当前编辑对象是"当前生效供应商"，则尝试读取实时配置替换初始值
   const [liveSettings, setLiveSettings] = useState<Record<
@@ -204,6 +213,7 @@ export function EditProviderDialog({
       meta: provider.meta,
       icon: provider.icon,
       iconColor: provider.iconColor,
+      unitResource: provider.unitResource,
     };
   }, [
     open, // 修复：编辑保存后再次打开显示旧数据，依赖 open 确保每次打开时重新读取最新 provider 数据
@@ -240,6 +250,14 @@ export function EditProviderDialog({
         ...(values.presetCategory ? { category: values.presetCategory } : {}),
         // 保留或更新 meta 字段
         ...(values.meta ? { meta: values.meta } : {}),
+        ...(provider.unitResource
+          ? {
+              unitResource: {
+                ...provider.unitResource,
+                models: resourceModels,
+              },
+            }
+          : {}),
       };
 
       if (
@@ -277,6 +295,7 @@ export function EditProviderDialog({
       provider,
       providerEditor.view,
       editorConflict.run,
+      resourceModels,
     ],
   );
 
@@ -316,6 +335,13 @@ export function EditProviderDialog({
           </div>
         ) : (
           <>
+            {provider.unitResource?.owned && (
+              <UnitResourceModelsEditor
+                resourceId={provider.unitResource.id}
+                models={resourceModels}
+                onChange={setResourceModels}
+              />
+            )}
             {(appId === "claude" ||
               appId === "codex" ||
               appId === "gemini" ||

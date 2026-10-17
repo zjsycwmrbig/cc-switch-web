@@ -86,6 +86,7 @@ pub fn routes(app: Arc<AppState>) -> Router {
             "/api/unit/resources/:id/models/refresh",
             post(refresh_models),
         )
+        .route("/api/unit/resources/:id/models", put(save_models))
         .route("/api/unit/resources/:id/usage", get(resource_usage))
         .route("/api/unit/catalog", get(catalog))
         .route("/api/unit/install.sh", get(installer))
@@ -442,6 +443,8 @@ pub(super) struct ResourceInput {
     provider: Option<crate::provider::Provider>,
     #[serde(default)]
     base_config: Option<Value>,
+    #[serde(default)]
+    model_rows: Option<Vec<Value>>,
 }
 async fn save_resource(
     State(app): State<Arc<AppState>>,
@@ -530,7 +533,9 @@ pub(super) async fn save_resource_impl(
         .as_ref()
         .map(|r| r.models.clone())
         .unwrap_or_else(|| catalog::stored_rows(&provider, &v.app_type));
-    let rows = if v.models.is_empty() && previous.is_none() {
+    let rows = if let Some(model_rows) = &v.model_rows {
+        catalog::rows_from_values(model_rows, &previous_rows)?
+    } else if v.models.is_empty() && previous.is_none() {
         previous_rows
     } else {
         catalog::rows_from_names(&v.models, &previous_rows)?
@@ -563,6 +568,8 @@ pub(super) async fn save_resource_impl(
     }
     tx.commit()?;
     drop(c);
+    let saved_resource = resources::get(&app.db, &resource_id)?;
+    prune_model_routes_for_resource(&app.db, &saved_resource)?;
     audit(
         &app.db,
         &user.id,
@@ -1656,6 +1663,8 @@ async fn refresh_models(
 ) -> Result<Json<Value>> {
     let r = resources::get(&app.db, &resource)?;
     let rows = catalog::refresh(&app, &user, &r).await?;
+    let updated = resources::get(&app.db, &resource)?;
+    prune_model_routes_for_resource(&app.db, &updated)?;
     audit(
         &app.db,
         &user.id,
@@ -1665,6 +1674,85 @@ async fn refresh_models(
     )?;
     Ok(Json(json!(rows)))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ModelsInput {
+    models: Vec<Value>,
+}
+
+async fn save_models(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(resource): Path<String>,
+    Json(v): Json<ModelsInput>,
+) -> Result<Json<Value>> {
+    let r = resources::get(&app.db, &resource)?;
+    resources::own(&user, &r)?;
+    if v.models.len() > 1000 {
+        return Err(Error::bad("模型数量不能超过 1000 个"));
+    }
+    let rows = catalog::rows_from_values(&v.models, &r.models)?;
+    if rows.is_empty() {
+        return Err(Error::bad("至少保留一个模型"));
+    }
+    conn(&app.db)?.execute(
+        "UPDATE hub_resources SET models=?1,health='ready',cooldown_until=0 WHERE id=?2",
+        params![json_text(&rows), resource],
+    )?;
+    let updated = resources::get(&app.db, &resource)?;
+    prune_model_routes_for_resource(&app.db, &updated)?;
+    audit(
+        &app.db,
+        &user.id,
+        "models.save",
+        &resource,
+        json!({"count":rows.len()}),
+    )?;
+    Ok(Json(json!(rows)))
+}
+fn prune_model_routes_for_resource(
+    db: &crate::database::Database,
+    resource: &resources::Resource,
+) -> Result<()> {
+    let rows = {
+        let c = conn(db)?;
+        let mut statement = c.prepare(
+            "SELECT id,model,targets FROM hub_model_routes WHERE targets LIKE ?1",
+        )?;
+        let result = statement
+            .query_map([format!("%{}%", resource.id)], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    parse::<Vec<String>>(&row.get::<_, String>(2)?),
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        result
+    };
+    for (id, model, mut targets) in rows {
+        if !targets.contains(&resource.id)
+            || resource
+                .models
+                .iter()
+                .any(|item| item["slug"].as_str() == Some(model.as_str()))
+        {
+            continue;
+        }
+        targets.retain(|target| target != &resource.id);
+        if targets.is_empty() {
+            conn(db)?.execute("DELETE FROM hub_model_routes WHERE id=?1", [&id])?;
+        } else {
+            conn(db)?.execute(
+                "UPDATE hub_model_routes SET targets=?1,updated_at=?2 WHERE id=?3",
+                params![json_text(&targets), now(), id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 async fn resource_usage(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,

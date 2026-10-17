@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/runtime/client/core";
+import { unit } from "@/components/unit/client";
 import type { TFunction } from "i18next";
 import { toast } from "sonner";
 
@@ -10,6 +11,18 @@ export interface FetchedModel {
 export interface OpenCodeModelRef {
   providerId: string;
   modelId: string;
+}
+
+export async function fetchModelsFromUnitResource(
+  resourceId: string,
+): Promise<FetchedModel[]> {
+  const rows = await unit<
+    Array<{ slug?: string; id?: string; display_name?: string }>
+  >(`/resources/${encodeURIComponent(resourceId)}/models/refresh`, "POST");
+  return rows.flatMap((row) => {
+      const id = row.slug || row.id;
+      return id ? [{ id, ownedBy: null as string | null }] : [];
+    });
 }
 
 export async function getOpenCodeModels(): Promise<OpenCodeModelRef[]> {

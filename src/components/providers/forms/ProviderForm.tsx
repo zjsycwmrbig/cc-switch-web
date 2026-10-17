@@ -237,6 +237,7 @@ export interface ProviderFormProps {
     meta?: ProviderMeta;
     icon?: string;
     iconColor?: string;
+    unitResource?: import("@/components/unit/client").Resource;
   };
   showButtons?: boolean;
 }
@@ -2007,6 +2008,7 @@ function ProviderFormFull({
               aggregationModels={aggregationModels}
               onAggregationModelsChange={setAggregationModels}
               providerId={providerId}
+              resourceId={initialData?.unitResource?.id}
               shouldShowApiKey={
                 (category !== "cloud_provider" ||
                   hasApiKeyField(form.getValues("settingsConfig"), "claude")) &&
@@ -2096,12 +2098,16 @@ function ProviderFormFull({
             <>
               {category === "official" && (
                 <CodexOAuthSection
+                  mode="select"
                   selectedAccountId={selectedCodexAccountId}
                   onAccountSelect={setSelectedCodexAccountId}
+                  allowUnboundSelection={false}
+                  requireExplicitSelection
                 />
               )}
               <CodexFormFields
                 providerId={providerId}
+                resourceId={initialData?.unitResource?.id}
                 isXaiOauthPreset={
                   presetProviderType === "xai_oauth" ||
                   initialData?.meta?.providerType === "xai_oauth"

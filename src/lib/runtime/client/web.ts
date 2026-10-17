@@ -1832,7 +1832,7 @@ export async function updateWebProvider(
     return requestWithBody<boolean>(
       `/api/unit/ui/providers/${appId}/save`,
       "POST",
-      { provider, add: false },
+      { provider, add: false, models: provider.unitResource?.models },
     );
   return requestWithBody<boolean>(
     `/api/providers/${appId}/${encodeURIComponent(originalId ?? provider.id)}`,

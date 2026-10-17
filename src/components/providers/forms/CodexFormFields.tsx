@@ -43,6 +43,7 @@ import {
 import { XaiOAuthSection } from "./XaiOAuthSection";
 import {
   fetchModelsForConfig,
+  fetchModelsFromUnitResource,
   fetchXaiOauthModels,
   showFetchModelsError,
   type FetchedModel,
@@ -64,6 +65,7 @@ interface EndpointCandidate {
 interface CodexFormFieldsProps {
   appId?: "codex" | "grokbuild";
   providerId?: string;
+  resourceId?: string;
   isXaiOauthPreset?: boolean;
   isXaiOauthAuthenticated?: boolean;
   selectedXaiAccountId?: string | null;
@@ -170,6 +172,7 @@ function catalogRowsMatchModels(
 export function CodexFormFields({
   appId = "codex",
   providerId,
+  resourceId,
   isXaiOauthPreset,
   isXaiOauthAuthenticated,
   selectedXaiAccountId,
@@ -401,6 +404,26 @@ export function CodexFormFields({
   );
 
   const handleFetchModels = useCallback(() => {
+    if (resourceId) {
+      const seq = ++fetchModelsSeqRef.current;
+      setIsFetchingModels(true);
+      fetchModelsFromUnitResource(resourceId)
+        .then((models) => {
+          if (seq !== fetchModelsSeqRef.current) return;
+          setFetchedModels(models);
+          toast.success(
+            t("providerForm.fetchModelsSuccess", { count: models.length }),
+          );
+        })
+        .catch((error) => {
+          if (seq !== fetchModelsSeqRef.current) return;
+          showFetchModelsError(error, t);
+        })
+        .finally(() => {
+          if (seq === fetchModelsSeqRef.current) setIsFetchingModels(false);
+        });
+      return;
+    }
     if (isXaiOauthPreset) {
       if (!isXaiOauthAuthenticated) {
         toast.error(t("xaiOauth.loginRequired"));
@@ -476,6 +499,7 @@ export function CodexFormFields({
     isXaiOauthAuthenticated,
     isXaiOauthPreset,
     selectedXaiAccountId,
+    resourceId,
     t,
   ]);
 

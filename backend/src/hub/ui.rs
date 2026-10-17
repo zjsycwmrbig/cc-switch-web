@@ -107,6 +107,8 @@ struct SaveProvider {
     provider: Provider,
     add: bool,
     base_config: Option<Value>,
+    #[serde(default)]
+    models: Option<Vec<Value>>,
 }
 async fn save_provider(
     State(app): State<Arc<AppState>>,
@@ -128,24 +130,47 @@ async fn save_provider(
         resources::own(&user, r)?;
     }
     let config = v.provider.settings_config.clone();
-    let models = previous
+    let models = v
+        .models
         .as_ref()
-        .map(|r| {
-            r.models
-                .iter()
-                .filter_map(|m| m["slug"].as_str().map(str::to_string))
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|m| {
+                    m.get("slug")
+                        .or_else(|| m.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            previous.as_ref().map(|r| {
+                r.models
+                    .iter()
+                    .filter_map(|m| m["slug"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
         })
         .unwrap_or_default();
     let input = serde_json::from_value::<api::ResourceInput>(json!({
         "name":v.provider.name,"appType":kind,"settingsConfig":config,
         "apiFormat":v.provider.meta.as_ref().and_then(|m|m.api_format.clone()),
         "models":models,"policy":previous.as_ref().map(|r|r.policy.clone()).unwrap_or_default(),
+        "modelRows":v.models,
         "provider":v.provider,"baseConfig":v.base_config,
     }))
     .map_err(|_| Error::bad("供应商表单数据无效"))?;
-    let _ = api::save_resource_impl(&app, &user, previous.as_ref().map(|r| r.id.as_str()), input)
+    let resource_id = api::save_resource_impl(&app, &user, previous.as_ref().map(|r| r.id.as_str()), input)
         .await?;
+    if v.add {
+        if let Some(id) = resource_id.get("id").and_then(Value::as_str) {
+            if let Ok(resource) = resources::get(&app.db, id) {
+                if let Err(error) = catalog::refresh(&app, &user, &resource).await {
+                    audit(&app.db, &user.id, "models.initial_refresh_failed", id, json!({"error":error.2}))?;
+                }
+            }
+        }
+    }
     Ok(Json(json!(true)))
 }
 async fn status(State(app): State<Arc<AppState>>) -> Result<Json<Value>> {
