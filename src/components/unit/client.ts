@@ -80,6 +80,20 @@ export interface ApplicationRow {
   decidedBy?: string | null;
   createdAt: number;
   decidedAt?: number | null;
+  /** 申请时填写的期望截止时间，null 表示不限时间。 */
+  requestedExpiresAt?: number | null;
+  /** 批阅后实际生效的截止时间，null 表示不限时间。 */
+  decidedExpiresAt?: number | null;
+  /** 批阅后实际生效的模型清单。 */
+  decidedModels?: string[];
+  /** approve / modify / reject / auto，用于在记录里区分同意、修改后同意与驳回。 */
+  decisionKind?: string;
+  /** 批阅说明（驳回原因或参数调整说明）。 */
+  decisionNote?: string;
+}
+
+export interface UnitNotices {
+  pendingApplications: number;
 }
 export interface Model {
   slug: string;
@@ -103,6 +117,8 @@ export interface Resource {
   accountId?: string;
   health: string;
   myBudget?: Budget;
+  /** 共享给我的授权截止时间，null/未设置表示不限时间。 */
+  myExpiresAt?: number | null;
   cooldownUntil?: number;
 }
 export interface Me {

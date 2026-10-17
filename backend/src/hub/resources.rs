@@ -153,6 +153,18 @@ pub fn safe_view(db: &crate::database::Database, user: &Identity, r: &Resource) 
     }
     if let Ok(budget) = grant(db, user, r, None) {
         v["myBudget"] = json!(budget);
+        // 共享授权的截止时间：申请审批时由提供者设定，null 表示不限时间。
+        if let Ok(Some(expires)) = conn(db).and_then(|c| {
+            c.query_row(
+                "SELECT expires_at FROM hub_grants WHERE resource_id=?1 AND user_id=?2",
+                params![r.id, user.id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(Error::from)
+        }) {
+            v["myExpiresAt"] = json!(expires);
+        }
     }
     v
 }

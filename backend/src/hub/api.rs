@@ -21,6 +21,7 @@ pub fn routes(app: Arc<AppState>) -> Router {
         .route("/api/unit/me", get(me))
         .merge(super::ui::routes())
         .route("/api/unit/password", put(password))
+        .route("/api/unit/account", axum::routing::delete(delete_account))
         .route("/api/unit/keys", get(keys).post(create_key))
         .route("/api/unit/keys/:id", axum::routing::delete(revoke_key))
         .route(
@@ -59,6 +60,7 @@ pub fn routes(app: Arc<AppState>) -> Router {
             "/api/unit/applications/:id",
             axum::routing::delete(cancel_application),
         )
+        .route("/api/unit/notices", get(notices))
         .route(
             "/api/unit/model-routes",
             get(model_routes).post(save_model_route),
@@ -586,6 +588,18 @@ async fn delete_resource(
 ) -> Result<Json<Value>> {
     let r = resources::get(&app.db, &resource)?;
     resources::own(&user, &r)?;
+    purge_resource(&app, &user.id, &resource).await?;
+    audit(&app.db, &user.id, "resource.delete", &resource, json!({}))?;
+    Ok(Json(json!({"ok":true})))
+}
+
+/// 删除供应商时的统一清理：解绑官方账号并软删除资源。
+pub(super) async fn purge_resource(
+    app: &AppState,
+    owner: &str,
+    resource: &str,
+) -> Result<()> {
+    let r = resources::get(&app.db, resource)?;
     // 官方供应商与官方账号一一对应：删除供应商时同步解绑并移除授权账号，避免账号残留。
     if r.official {
         if let Some(account) = r.account_id.clone() {
@@ -597,16 +611,19 @@ async fn delete_resource(
                 .await;
             conn(&app.db)?.execute(
                 "DELETE FROM hub_account_owners WHERE account_id=?1 AND owner_id=?2",
-                params![account, &user.id],
+                params![account, owner],
             )?;
         }
     }
+    // 清掉所有用户模型路由里指向这个供应商的目标（等价于模型被全部下架）。
+    let mut gone = r.clone();
+    gone.models.clear();
+    prune_model_routes_for_resource(&app.db, &gone)?;
     conn(&app.db)?.execute(
         "UPDATE hub_resources SET deleted=1,published=0,official=0,account_id=NULL WHERE id=?1",
-        [&resource],
+        [resource],
     )?;
-    audit(&app.db, &user.id, "resource.delete", &resource, json!({}))?;
-    Ok(Json(json!({"ok":true})))
+    Ok(())
 }
 #[derive(Deserialize)]
 struct Published {
@@ -741,6 +758,16 @@ struct ApplicationInput {
     budget: Budget,
     #[serde(default)]
     models: Vec<String>,
+    /// 期望的时间截止（unix 秒）；留空表示不限时间。
+    #[serde(default)]
+    expires_at: Option<i64>,
+}
+
+fn validate_requested_deadline(expires_at: Option<i64>) -> Result<()> {
+    if expires_at.is_some_and(|expires| expires <= now()) {
+        return Err(Error::bad("时间截止必须晚于当前时间"));
+    }
+    Ok(())
 }
 
 fn normalize_application_models(
@@ -806,7 +833,8 @@ async fn applications(
 ) -> Result<Json<Value>> {
     let c = conn(&app.db)?;
     let mut mine_statement = c.prepare(
-        "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at
+        "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at,
+                a.requested_expires_at,a.decided_expires_at,a.decided_models,a.decision_kind,a.decision_note
          FROM hub_applications a
          JOIN hub_resources r ON r.id=a.resource_id
          JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
@@ -817,7 +845,8 @@ async fn applications(
         .query_map([&user.id], application_view)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut received_statement = c.prepare(
-        "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at
+        "SELECT a.id,a.resource_id,p.name,u.username,a.message,a.budget,a.models,a.state,a.decided_by,a.created_at,a.decided_at,
+                a.requested_expires_at,a.decided_expires_at,a.decided_models,a.decision_kind,a.decision_note
          FROM hub_applications a
          JOIN hub_resources r ON r.id=a.resource_id
          JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
@@ -843,6 +872,11 @@ fn application_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "decidedBy": row.get::<_, Option<String>>(8)?,
         "createdAt": row.get::<_, i64>(9)?,
         "decidedAt": row.get::<_, Option<i64>>(10)?,
+        "requestedExpiresAt": row.get::<_, Option<i64>>(11)?,
+        "decidedExpiresAt": row.get::<_, Option<i64>>(12)?,
+        "decidedModels": parse::<Vec<String>>(&row.get::<_, String>(13)?),
+        "decisionKind": row.get::<_, String>(14)?,
+        "decisionNote": row.get::<_, String>(15)?,
     }))
 }
 
@@ -1147,6 +1181,7 @@ async fn create_application(
         return Err(Error::bad("该供应商当前不可申请"));
     }
     v.budget.validate()?;
+    validate_requested_deadline(v.expires_at)?;
     let message = v.message.trim().to_string();
     if message.chars().count() > 500 {
         return Err(Error::bad("申请说明过长"));
@@ -1154,11 +1189,18 @@ async fn create_application(
     let models = normalize_application_models(&r, &v.models)?;
     let auto = auto_approve_budget(&app.db, &r, &v.budget)?;
     let state = if auto.is_some() { "approved" } else { "pending" };
+    let auto_decided = auto.is_some();
+    let decided_models_text = if auto_decided {
+        json_text(&models)
+    } else {
+        "[]".to_string()
+    };
     let application_id = super::id();
     conn(&app.db)?
         .execute(
-            "INSERT INTO hub_applications(id,resource_id,applicant_id,owner_id,message,budget,models,state,created_at,decided_at,decided_by)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            "INSERT INTO hub_applications(id,resource_id,applicant_id,owner_id,message,budget,models,state,created_at,decided_at,decided_by,
+                    requested_expires_at,decided_expires_at,decided_models,decision_kind)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 application_id,
                 r.id,
@@ -1170,7 +1212,11 @@ async fn create_application(
                 state,
                 now(),
                 auto.as_ref().map(|_| now()),
-                auto.as_ref().map(|_| "auto")
+                auto.as_ref().map(|_| "auto"),
+                v.expires_at,
+                if auto_decided { v.expires_at } else { None },
+                decided_models_text,
+                if auto_decided { "auto" } else { "" },
             ],
         )
         .map_err(|error| {
@@ -1183,13 +1229,14 @@ async fn create_application(
     if auto.is_some() {
         conn(&app.db)?.execute(
             "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models,expires_at)
-             VALUES(?1,?2,1,?3,?4,NULL)
-             ON CONFLICT(resource_id,user_id) DO UPDATE SET allowed=1,budget=?3,models=?4",
+             VALUES(?1,?2,1,?3,?4,?5)
+             ON CONFLICT(resource_id,user_id) DO UPDATE SET allowed=1,budget=?3,models=?4,expires_at=?5",
             params![
                 r.id,
                 &user.id,
                 json_text(&v.budget),
-                json_text(&models)
+                json_text(&models),
+                v.expires_at
             ],
         )?;
     }
@@ -1202,7 +1249,7 @@ async fn create_application(
             "application.create"
         },
         &r.id,
-        json!({"applicationId":application_id,"budget":v.budget,"models":models}),
+        json!({"applicationId":application_id,"budget":v.budget,"models":models,"expiresAt":v.expires_at}),
     )?;
     Ok(Json(json!({"id":application_id,"state":state})))
 }
@@ -1215,8 +1262,12 @@ struct ApplicationDecision {
     budget: Budget,
     #[serde(default)]
     models: Vec<String>,
+    /// 批阅后实际生效的时间截止；留空表示不限时间。
     #[serde(default)]
     expires_at: Option<i64>,
+    /// 批阅说明，驳回或修改参数时用来解释原因。
+    #[serde(default)]
+    note: String,
 }
 
 async fn decide_application(
@@ -1225,11 +1276,17 @@ async fn decide_application(
     Path(application): Path<String>,
     Json(v): Json<ApplicationDecision>,
 ) -> Result<Json<Value>> {
-    let (resource_id, applicant_id, state): (String, String, String) = conn(&app.db)?
+    let (resource_id, applicant_id, state, requested_models, requested_expires): (
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+    ) = conn(&app.db)?
         .query_row(
-            "SELECT resource_id,applicant_id,state FROM hub_applications WHERE id=?1",
+            "SELECT resource_id,applicant_id,state,models,requested_expires_at FROM hub_applications WHERE id=?1",
             [&application],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .optional()?
         .ok_or_else(|| Error::bad("申请不存在"))?;
@@ -1238,12 +1295,14 @@ async fn decide_application(
     if state != "pending" {
         return Err(Error::bad("该申请已处理"));
     }
+    let note = v.note.trim().to_string();
+    if note.chars().count() > 300 {
+        return Err(Error::bad("批阅说明过长"));
+    }
     let mut models = v.models.clone();
     if v.approve {
         v.budget.validate()?;
-        if v.expires_at.is_some_and(|expires| expires <= now()) {
-            return Err(Error::bad("授权到期时间必须晚于当前时间"));
-        }
+        validate_requested_deadline(v.expires_at)?;
         models = normalize_application_models(&r, &v.models)?;
         conn(&app.db)?.execute(
             "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models,expires_at)
@@ -1258,13 +1317,26 @@ async fn decide_application(
             ],
         )?;
     }
+    let requested_models = parse::<Vec<String>>(&requested_models);
+    let kind = if !v.approve {
+        "reject"
+    } else if models != requested_models || v.expires_at != requested_expires {
+        "modify"
+    } else {
+        "approve"
+    };
     conn(&app.db)?.execute(
-        "UPDATE hub_applications SET state=?2,decided_at=?3,decided_by=?4 WHERE id=?1",
+        "UPDATE hub_applications SET state=?2,decided_at=?3,decided_by=?4,decided_expires_at=?5,
+                decided_models=?6,decision_kind=?7,decision_note=?8 WHERE id=?1",
         params![
             application,
             if v.approve { "approved" } else { "rejected" },
             now(),
-            &user.id
+            &user.id,
+            if v.approve { v.expires_at } else { None },
+            json_text(&models),
+            kind,
+            note
         ],
     )?;
     audit(
@@ -1276,7 +1348,16 @@ async fn decide_application(
             "application.reject"
         },
         &application,
-        json!({"resourceId":resource_id,"applicantId":applicant_id,"budget":v.budget,"models":models}),
+        json!({
+            "resourceId":resource_id,
+            "applicantId":applicant_id,
+            "budget":v.budget,
+            "models":models,
+            "expiresAt":if v.approve { v.expires_at } else { None },
+            "expiresAtBefore":requested_expires,
+            "kind":kind,
+            "note":note,
+        }),
     )?;
     Ok(Json(json!({"ok":true})))
 }
@@ -1294,6 +1375,136 @@ async fn cancel_application(
         return Err(Error::bad("申请不存在或已处理"));
     }
     Ok(Json(json!({"ok":true})))
+}
+
+/// 登录后的提醒：待我审批的申请数量。
+async fn notices(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+) -> Result<Json<Value>> {
+    let pending: i64 = conn(&app.db)?.query_row(
+        "SELECT COUNT(*) FROM hub_applications WHERE owner_id=?1 AND state='pending'",
+        [&user.id],
+        |row| row.get(0),
+    )?;
+    Ok(Json(json!({"pendingApplications":pending})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AccountDeletion {
+    password: String,
+}
+
+/// 注销自己的账号：清理个人数据并停用账号，管理员账号不允许自助注销。
+async fn delete_account(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Json(v): Json<AccountDeletion>,
+) -> Result<Response> {
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+    if user.role == "admin" {
+        return Err(Error::bad(
+            "管理员账号不能自助注销，请先在“用户与额度”里移交或删除该账号",
+        ));
+    }
+    let db = app.db.clone();
+    let uid = user.id.clone();
+    tokio::task::spawn_blocking({
+        let password = v.password.clone();
+        move || -> Result<()> {
+            let current: Option<String> = conn(&db)?
+                .query_row(
+                    "SELECT password_hash FROM hub_users WHERE id=?1",
+                    [&uid],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let ok = current
+                .as_deref()
+                .and_then(|hash| PasswordHash::new(hash).ok())
+                .is_some_and(|parsed| {
+                    Argon2::default()
+                        .verify_password(password.as_bytes(), &parsed)
+                        .is_ok()
+                });
+            if !ok {
+                return Err(Error::bad("密码错误，无法注销账号"));
+            }
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|_| Error::bad("注销失败，请稍后重试"))??;
+
+    // 先清掉自己名下的官方账号登录态，避免授权中心残留。
+    let accounts: Vec<String> = {
+        let c = conn(&app.db)?;
+        let mut statement =
+            c.prepare("SELECT account_id FROM hub_account_owners WHERE owner_id=?1")?;
+        let rows = statement
+            .query_map([&user.id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    for account in accounts {
+        let _ = app
+            .codex_oauth_state
+            .read()
+            .await
+            .remove_account(&account)
+            .await;
+    }
+
+    let owned: Vec<String> = resources::all(&app.db)?
+        .into_iter()
+        .filter(|resource| resource.owner_id == user.id)
+        .map(|resource| resource.id)
+        .collect();
+    for resource in owned {
+        purge_resource(&app, &user.id, &resource).await?;
+    }
+
+    {
+        let mut c = conn(&app.db)?;
+        let tx = c.transaction()?;
+        tx.execute(
+            "DELETE FROM hub_grants WHERE user_id=?1 OR resource_id IN
+             (SELECT id FROM hub_resources WHERE owner_id=?1)",
+            [&user.id],
+        )?;
+        tx.execute(
+            "DELETE FROM hub_applications WHERE applicant_id=?1 OR owner_id=?1",
+            [&user.id],
+        )?;
+        tx.execute(
+            "DELETE FROM hub_share_claims WHERE user_id=?1 OR share_id IN
+             (SELECT id FROM hub_share_codes WHERE created_by=?1)",
+            [&user.id],
+        )?;
+        tx.execute("DELETE FROM hub_share_codes WHERE created_by=?1", [&user.id])?;
+        tx.execute("DELETE FROM hub_sessions WHERE user_id=?1", [&user.id])?;
+        tx.execute("DELETE FROM hub_api_keys WHERE user_id=?1", [&user.id])?;
+        tx.execute("DELETE FROM hub_preferences WHERE user_id=?1", [&user.id])?;
+        tx.execute(
+            "DELETE FROM hub_account_owners WHERE owner_id=?1",
+            [&user.id],
+        )?;
+        tx.execute(
+            "UPDATE hub_users SET active=0,password_hash=NULL,budget='{}',username=?2 WHERE id=?1",
+            params![&user.id, format!("deleted-{}", &user.id)],
+        )?;
+        tx.commit()?;
+    }
+    audit(&app.db, &user.id, "user.delete", &user.id, json!({}))?;
+    Ok((
+        [(
+            header::SET_COOKIE,
+            auth::session_cookie("", 0, public_url(&app.db).starts_with("https://")),
+        )],
+        Json(json!({"ok":true})),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]

@@ -21,6 +21,18 @@ const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px - match App.tsx
 const HEADER_HEIGHT = 64; // px - match App.tsx
 
 /**
+ * 全屏面板需要占满整个窗口，否则会有一部分被左侧栏遮挡而显得“偏移”。
+ * 用计数支持面板嵌套，关闭最后一个面板后恢复侧栏。
+ */
+let openPanelCount = 0;
+function markPanelOpen(open: boolean) {
+  openPanelCount = Math.max(0, openPanelCount + (open ? 1 : -1));
+  if (typeof document !== "undefined") {
+    document.body.dataset.fullscreenPanel = openPanelCount > 0 ? "true" : "false";
+  }
+}
+
+/**
  * Reusable full-screen panel component
  * Handles portal rendering, header with back button, and footer
  * Keeps behavior stable while providing a richer workspace-style shell
@@ -41,6 +53,12 @@ export const FullScreenPanel: React.FC<FullScreenPanelProps> = ({
     return () => {
       document.body.style.overflow = "";
     };
+  }, [isOpen]);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+    markPanelOpen(true);
+    return () => markPanelOpen(false);
   }, [isOpen]);
 
   // ESC 键关闭面板

@@ -17,7 +17,8 @@ import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import { Plus, ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import { UnitApplicationNotice } from "@/components/unit/UnitNotices";
 import type { Provider, VisibleApps } from "@/types";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import { hermesApi, providersApi, settingsApi, type AppId } from "@/lib/api";
@@ -149,6 +150,10 @@ function App() {
     return session ? "providers" : getInitialView();
   });
   const [isAddOpen, setIsAddOpen] = useState(false);
+  // 侧栏默认展开，展开时挤压主体内容而不是覆盖在上面。
+  const [sidebarExpanded, setSidebarExpanded] = useState(
+    () => localStorage.getItem("cc-switch-web-sidebar-expanded") !== "false",
+  );
 
   const handleViewChange = (nextView: View) => {
     setCurrentView(nextView);
@@ -316,8 +321,6 @@ function App() {
       }
     }
   }, [activeApp, currentView]);
-
-  const addActionButtonClass = "theme-floating-action rounded-full w-8 h-8";
 
   const {
     isRunning: isProxyRunning,
@@ -788,7 +791,9 @@ function App() {
 
   return (
     <div
-      className="app-shell md:pl-14 flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4"
+      className={`app-shell flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4 transition-[padding] duration-200 ${
+        sidebarExpanded ? "md:pl-56" : "md:pl-14"
+      }`}
       style={{
         overflowX: "hidden",
         paddingTop: `calc(${headerTopOffset}px + var(--web-header-height, ${HEADER_HEIGHT}px))`,
@@ -827,7 +832,9 @@ function App() {
       )}
 
       <header
-        className="fixed inset-x-0 md:left-14 z-50 transition-colors duration-300 bg-background/80 backdrop-blur-md"
+        className={`fixed inset-x-0 z-50 transition-colors duration-300 bg-background/80 backdrop-blur-md ${
+          sidebarExpanded ? "md:left-56" : "md:left-14"
+        }`}
         style={{
           top: headerTopOffset,
           height: `var(--web-header-height, ${HEADER_HEIGHT}px)`,
@@ -885,19 +892,6 @@ function App() {
                     )}
                 </div>
               )}
-            <div className="flex shrink-0 items-center">
-              <div className="flex shrink-0 items-center gap-1.5 ml-auto">
-                {currentView === "providers" && (
-                  <Button
-                    onClick={() => setIsAddOpen(true)}
-                    size="icon"
-                    className={`ml-2 inline-flex ${addActionButtonClass}`}
-                  >
-                    <Plus className="w-5 h-5" />
-                  </Button>
-                )}
-              </div>
-            </div>
           </div>
         </div>
       </header>
@@ -908,12 +902,17 @@ function App() {
         activeApp={activeApp}
         onAppChange={setActiveApp}
         visibleApps={sidebarApps}
+        expanded={sidebarExpanded}
+        onExpandedChange={setSidebarExpanded}
       />
 
       <main
         ref={mainScrollRef}
         className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in"
       >
+        <UnitApplicationNotice
+          onOpen={() => handleViewChange("allocations")}
+        />
         {isOpenClawView && openclawHealthWarnings.length > 0 && (
           <OpenClawHealthBanner warnings={openclawHealthWarnings} />
         )}

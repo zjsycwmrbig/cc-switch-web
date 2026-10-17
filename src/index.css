@@ -826,3 +826,9 @@ html[data-window-active="false"] .status-heartbeat {
   .resource-toolbar-page [data-page-toolbar] > div:last-child > div { margin-left: 0; }
   .resource-toolbar-page [data-page-toolbar] > div:last-child > div:last-child { min-width: 0; overflow-x: auto; flex-shrink: 1; }
 }
+
+/* 打开全屏面板（例如新增供应商）时让出整屏，避免内容被侧栏遮挡而显得偏移。 */
+body[data-fullscreen-panel="true"] [data-web-sidebar],
+body[data-fullscreen-panel="true"] [data-web-sidebar-toggle] {
+  display: none;
+}

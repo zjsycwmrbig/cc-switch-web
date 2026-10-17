@@ -1,4 +1,5 @@
 import { useUnitSession } from "@/components/unit/session";
+import { usePendingApplications } from "@/components/unit/UnitNotices";
 import { memo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -41,28 +42,30 @@ export const WebSidebar = memo(function WebSidebar({
   activeApp,
   onAppChange,
   visibleApps,
+  expanded,
+  onExpandedChange,
 }: {
   currentView: string;
   onView: (view: GlobalView) => void;
   activeApp: AppId;
   onAppChange: (app: AppId) => void;
   visibleApps?: VisibleApps;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }) {
   const { t } = useTranslation();
   const session = useUnitSession();
-  const [expanded, setExpanded] = useState(
-    () => localStorage.getItem("cc-switch-web-sidebar-expanded") === "true",
-  );
+  const pendingApplications = usePendingApplications(Boolean(session));
   const [appsOpen, setAppsOpen] = useState(
     () => localStorage.getItem(APPS_STORAGE_KEY) !== "false",
   );
   const [mobileOpen, setMobileOpen] = useState(false);
   const railHidden = !expanded && !mobileOpen;
-  const toggle = () =>
-    setExpanded((value) => {
-      localStorage.setItem("cc-switch-web-sidebar-expanded", String(!value));
-      return !value;
-    });
+  const toggle = () => {
+    const next = !expanded;
+    localStorage.setItem("cc-switch-web-sidebar-expanded", String(next));
+    onExpandedChange(next);
+  };
   const toggleApps = (open: boolean) => {
     setAppsOpen(open);
     localStorage.setItem(APPS_STORAGE_KEY, String(open));
@@ -84,7 +87,12 @@ export const WebSidebar = memo(function WebSidebar({
     toggleApps(true);
     selectView("providers");
   };
-  const item = (id: GlobalView, label: string, icon: ReactNode) => (
+  const item = (
+    id: GlobalView,
+    label: string,
+    icon: ReactNode,
+    badge?: number,
+  ) => (
     <button
       key={id}
       type="button"
@@ -101,6 +109,18 @@ export const WebSidebar = memo(function WebSidebar({
       <span className={cn("whitespace-nowrap", railHidden && "sr-only")}>
         {label}
       </span>
+      {badge ? (
+        railHidden ? (
+          <span
+            aria-hidden
+            className="ml-auto h-2 w-2 shrink-0 rounded-full bg-destructive"
+          />
+        ) : (
+          <span className="ml-auto min-w-5 shrink-0 rounded-full bg-destructive/15 px-1.5 text-center text-xs font-medium text-destructive">
+            {badge > 99 ? "99+" : badge}
+          </span>
+        )
+      ) : null}
     </button>
   );
 
@@ -115,6 +135,7 @@ export const WebSidebar = memo(function WebSidebar({
         type="button"
         aria-label={t("nav.menu", { defaultValue: "导航菜单" })}
         onClick={() => setMobileOpen(true)}
+        data-web-sidebar-toggle
         className="fixed bottom-5 left-3 z-[65] rounded-full border bg-card p-3 shadow-md md:hidden"
       >
         <Menu className="h-5 w-5" />
@@ -160,6 +181,7 @@ export const WebSidebar = memo(function WebSidebar({
               "allocations",
               "额度分配",
               <Share2 className="h-4 w-4 shrink-0" />,
+              pendingApplications,
             )}
           {item("usage", t("nav.usage"), <BarChart2 className="h-4 w-4 shrink-0" />)}
           <div

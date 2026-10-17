@@ -38,7 +38,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { unit, type Budget } from "@/components/unit/client";
+import { unit, formatDate, type Budget } from "@/components/unit/client";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -94,6 +94,7 @@ type UnitLibraryProvider = {
     modelCount?: number;
     myApplication?: string | null;
     myBudget?: Budget;
+    myExpiresAt?: number | null;
   };
 };
 
@@ -277,7 +278,7 @@ export function ProviderList({
   const [applyTarget, setApplyTarget] = useState<UnitLibraryProvider | null>(
     null,
   );
-  const [applyBudget, setApplyBudget] = useState<Budget>({});
+  const [applyExpires, setApplyExpires] = useState("");
   const [applyMessage, setApplyMessage] = useState("");
   const [applyBusy, setApplyBusy] = useState(false);
   const { data: claudeDesktopStatus } = useQuery({
@@ -449,9 +450,11 @@ export function ProviderList({
         "POST",
         {
           resourceId: applyTarget.unitResource.id,
-          budget: applyBudget,
           models: [],
           message: applyMessage,
+          expiresAt: applyExpires
+            ? Math.floor(new Date(applyExpires).getTime() / 1000)
+            : null,
         },
       );
       toast.success(
@@ -460,7 +463,7 @@ export function ProviderList({
           : "申请已提交，等待提供者审批",
       );
       setApplyTarget(null);
-      setApplyBudget({});
+      setApplyExpires("");
       setApplyMessage("");
       await Promise.all([
         queryClient.invalidateQueries({
@@ -759,16 +762,18 @@ export function ProviderList({
                           <span className="theme-chip-primary inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
                             待审批
                           </span>
-                        ) : resource.accessible &&
-                          isUnlimitedBudget(resource.myBudget) ? (
-                          <span className="text-[11px] text-muted-foreground">
-                            已授权 · 额度不限
-                          </span>
                         ) : (
                           <div className="flex flex-wrap items-center gap-2">
                             {resource.accessible && (
                               <span className="text-[11px] text-muted-foreground">
-                                当前额度 {budgetLabel(resource.myBudget)}
+                                已授权 ·{" "}
+                                {isUnlimitedBudget(resource.myBudget)
+                                  ? "额度不限"
+                                  : `额度 ${budgetLabel(resource.myBudget)}`}
+                                {" · "}
+                                {resource.myExpiresAt
+                                  ? `截止 ${formatDate(resource.myExpiresAt)}`
+                                  : "不限时间"}
                               </span>
                             )}
                             <Button
@@ -777,11 +782,11 @@ export function ProviderList({
                               size="sm"
                               onClick={() => {
                                 setApplyTarget(entry);
-                                setApplyBudget({});
+                                setApplyExpires("");
                                 setApplyMessage("");
                               }}
                             >
-                              {resource.accessible ? "申请追加额度" : "申请使用"}
+                              {resource.accessible ? "申请调整授权" : "申请使用"}
                             </Button>
                           </div>
                         ))}
@@ -1020,39 +1025,16 @@ export function ProviderList({
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 {applyTarget.unitResource.ownerName} 的 {applyTarget.name}
-                ：提交后由提供者审批，通过后按授权额度使用。
+                ：提交后由提供者审批，提供者可以调整时间截止；留空表示不限时间。
               </p>
-              <div className="grid grid-cols-3 gap-3">
-                {(
-                  [
-                    ["requests", "请求次数"],
-                    ["tokens", "Token 数量"],
-                    ["credits", "点数"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <label
-                    key={key}
-                    className="space-y-1 text-xs text-muted-foreground"
-                  >
-                    {label}
-                    <Input
-                      type="number"
-                      min={0}
-                      placeholder="不限"
-                      value={applyBudget[key] ?? ""}
-                      onChange={(event) =>
-                        setApplyBudget({
-                          ...applyBudget,
-                          [key]:
-                            event.target.value === ""
-                              ? null
-                              : Number(event.target.value),
-                        })
-                      }
-                    />
-                  </label>
-                ))}
-              </div>
+              <label className="block space-y-1 text-xs text-muted-foreground">
+                时间截止（留空表示不限时间）
+                <Input
+                  type="datetime-local"
+                  value={applyExpires}
+                  onChange={(event) => setApplyExpires(event.target.value)}
+                />
+              </label>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 申请说明（可选）
                 <Input

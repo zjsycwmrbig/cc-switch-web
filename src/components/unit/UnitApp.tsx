@@ -15,6 +15,7 @@ import {
   Boxes,
   ChevronDown,
   Copy,
+  History,
   KeyRound,
   Link2,
   LoaderCircle,
@@ -272,6 +273,37 @@ function budgetText(value: Budget): string {
   ]
     .filter(Boolean)
     .join(" / ") || "不限";
+}
+
+/** 时间截止的展示：空值统一按“不限时间”处理。 */
+function deadlineText(value?: number | null): string {
+  return value ? date(value) : "不限时间";
+}
+
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
+/** unix 秒 -> datetime-local 需要的时间字符串。 */
+function deadlineToInput(value?: number | null): string {
+  if (!value) return "";
+  const at = new Date(value * 1000);
+  return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}T${pad2(
+    at.getHours(),
+  )}:${pad2(at.getMinutes())}`;
+}
+
+function inputToDeadline(value?: string): number | null {
+  if (!value) return null;
+  const at = new Date(value).getTime();
+  return Number.isFinite(at) ? Math.floor(at / 1000) : null;
+}
+
+/** 申请记录里的处理结论文案。 */
+function decisionLabel(application: ApplicationRow): string {
+  if (application.state === "pending") return "待审批";
+  if (application.state === "rejected") return "已驳回";
+  if (application.decidedBy === "auto" || application.decisionKind === "auto")
+    return "免审通过";
+  return application.decisionKind === "modify" ? "修改后同意" : "同意";
 }
 function remainingBudget(budget: Budget, usage: UsageNumbers): Budget {
   const left = (
@@ -986,8 +1018,9 @@ function Allocations({ generation }: { generation: number }) {
     mine: ApplicationRow[];
     received: ApplicationRow[];
   }>({ mine: [], received: [] });
-  const [decisionBudgets, setDecisionBudgets] = useState<
-    Record<string, Budget>
+  // 批阅时可以调整申请参数：时间截止、模型、以及说明。
+  const [decisions, setDecisions] = useState<
+    Record<string, { deadline: string; models: string[]; note: string }>
   >({});
   const [createdCode, setCreatedCode] = useState<ShareCode | null>(null);
   const [policy, setPolicy] = useState<Policy>(defaultPolicy());
@@ -1017,7 +1050,25 @@ function Allocations({ generation }: { generation: number }) {
     (application) =>
       application.resourceId === selectedId && application.state === "pending",
   );
+  const receivedAll = applications.received.filter(
+    (application) => application.resourceId === selectedId,
+  );
   const myApplications = applications.mine;
+
+  const decisionFor = (application: ApplicationRow) =>
+    decisions[application.id] ?? {
+      deadline: deadlineToInput(application.requestedExpiresAt),
+      models: application.models,
+      note: "",
+    };
+  const updateDecision = (
+    application: ApplicationRow,
+    patch: Partial<{ deadline: string; models: string[]; note: string }>,
+  ) =>
+    setDecisions((current) => ({
+      ...current,
+      [application.id]: { ...decisionFor(application), ...patch },
+    }));
 
   const loadResources = useCallback(async () => {
     const [all, shareCodes] = await Promise.all([
@@ -1144,17 +1195,22 @@ function Allocations({ generation }: { generation: number }) {
     application: ApplicationRow,
     approve: boolean,
   ) => {
+    const decision = decisionFor(application);
+    const deadline = inputToDeadline(decision.deadline);
+    if (approve && deadline !== null && deadline * 1000 <= Date.now()) {
+      toast.error("时间截止必须晚于当前时间");
+      return;
+    }
     try {
       await unit(`/applications/${application.id}/decision`, "POST", {
         approve,
-        budget: approve
-          ? decisionBudgets[application.id] ?? application.budget
-          : {},
-        models: approve ? application.models : [],
-        expiresAt: null,
+        budget: {},
+        models: approve ? decision.models : [],
+        expiresAt: approve ? deadline : null,
+        note: decision.note,
       });
-      toast.success(approve ? "已通过申请并写入额度" : "已驳回申请");
-      setDecisionBudgets((current) => {
+      toast.success(approve ? "已同意申请并写入授权" : "已驳回申请");
+      setDecisions((current) => {
         const next = { ...current };
         delete next[application.id];
         return next;
@@ -1288,6 +1344,69 @@ function Allocations({ generation }: { generation: number }) {
     </div>
   );
 
+  // 申请方和提供方看到同一份申请记录，包含申请参数与批阅结果。
+  const myApplicationsTable = (
+    <div className="u-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>供应商</th>
+            <th>提供者</th>
+            <th>申请模型</th>
+            <th>期望截止</th>
+            <th>处理结果</th>
+            <th>生效截止</th>
+            <th>批阅说明</th>
+            <th>提交时间</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {myApplications.map((application) => (
+            <tr key={application.id}>
+              <td>{application.resourceName}</td>
+              <td>{application.counterpartyName}</td>
+              <td>
+                {application.models.length
+                  ? `${application.models.length} 个`
+                  : "全部模型"}
+              </td>
+              <td>{deadlineText(application.requestedExpiresAt)}</td>
+              <td>
+                <span
+                  className={`u-tag ${
+                    application.state === "approved" ? "u-green" : ""
+                  }`}
+                >
+                  {decisionLabel(application)}
+                </span>
+              </td>
+              <td>
+                {application.state === "approved"
+                  ? deadlineText(application.decidedExpiresAt)
+                  : "—"}
+              </td>
+              <td>{application.decisionNote || "—"}</td>
+              <td>{date(application.createdAt)}</td>
+              <td>
+                {application.state === "pending" && (
+                  <button
+                    type="button"
+                    className="u-quiet u-danger"
+                    onClick={() => void cancelApplication(application)}
+                  >
+                    <Trash2 size={13} />
+                    撤销
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
   const renderApplicantView = () => (
     <>
       <section className="u-panel">
@@ -1305,6 +1424,7 @@ function Allocations({ generation }: { generation: number }) {
                   <th>提供者</th>
                   <th>我的额度</th>
                   <th>可用模型</th>
+                  <th>时间截止</th>
                   <th>状态</th>
                 </tr>
               </thead>
@@ -1315,6 +1435,7 @@ function Allocations({ generation }: { generation: number }) {
                     <td>{resource.ownerName}</td>
                     <td>{budgetText(resource.myBudget || {})}</td>
                     <td>{resource.models.length} 个</td>
+                    <td>{deadlineText(resource.myExpiresAt)}</td>
                     <td>
                       <span className="u-tag u-green">
                         {resource.health === "ready" ? "就绪" : "可用"}
@@ -1338,57 +1459,7 @@ function Allocations({ generation }: { generation: number }) {
           我的申请
           <small>{myApplications.length} 条</small>
         </div>
-        <div className="u-table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>供应商</th>
-                <th>提供者</th>
-                <th>申请额度</th>
-                <th>状态</th>
-                <th>提交时间</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {myApplications.map((application) => (
-                <tr key={application.id}>
-                  <td>{application.resourceName}</td>
-                  <td>{application.counterpartyName}</td>
-                  <td>{budgetText(application.budget)}</td>
-                  <td>
-                    <span
-                      className={`u-tag ${
-                        application.state === "approved" ? "u-green" : ""
-                      }`}
-                    >
-                      {application.state === "pending"
-                        ? "待审批"
-                        : application.state === "approved"
-                          ? application.decidedBy === "auto"
-                            ? "免审通过"
-                            : "已通过"
-                          : "已驳回"}
-                    </span>
-                  </td>
-                  <td>{date(application.createdAt)}</td>
-                  <td>
-                    {application.state === "pending" && (
-                      <button
-                        type="button"
-                        className="u-quiet u-danger"
-                        onClick={() => void cancelApplication(application)}
-                      >
-                        <Trash2 size={13} />
-                        撤销
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {myApplicationsTable}
         {!myApplications.length && <Empty>还没有提交过申请。</Empty>}
       </section>
     </>
@@ -2077,58 +2148,150 @@ function Allocations({ generation }: { generation: number }) {
                     </div>
                     {selectedReceived.length ? (
                       <div className="u-panel-body space-y-4">
-                        {selectedReceived.map((application) => (
-                          <div
-                            key={application.id}
-                            className="space-y-3 rounded-lg border border-border p-3"
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <strong>{application.counterpartyName}</strong>
-                              <span className="u-tag">
-                                {date(application.createdAt)}
-                              </span>
+                        {selectedReceived.map((application) => {
+                          const decision = decisionFor(application);
+                          return (
+                            <div
+                              key={application.id}
+                              className="space-y-3 rounded-lg border border-border p-3"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <strong>{application.counterpartyName}</strong>
+                                <span className="u-tag">
+                                  提交于 {date(application.createdAt)}
+                                </span>
+                              </div>
+                              {application.message && (
+                                <p className="u-note">{application.message}</p>
+                              )}
+                              <p className="u-note">
+                                申请参数：
+                                {application.models.length
+                                  ? `限定 ${application.models.length} 个模型`
+                                  : "全部模型"}
+                                {" · "}时间截止{" "}
+                                {deadlineText(application.requestedExpiresAt)}
+                              </p>
+                              <div className="u-grid2">
+                                <Field label="时间截止（留空为不限）">
+                                  <input
+                                    type="datetime-local"
+                                    value={decision.deadline}
+                                    onChange={(event) =>
+                                      updateDecision(application, {
+                                        deadline: event.target.value,
+                                      })
+                                    }
+                                  />
+                                </Field>
+                                <Field label="批阅说明（可选）">
+                                  <input
+                                    value={decision.note}
+                                    placeholder="例如：先授权到本月底，到期可以再申请"
+                                    onChange={(event) =>
+                                      updateDecision(application, {
+                                        note: event.target.value,
+                                      })
+                                    }
+                                  />
+                                </Field>
+                              </div>
+                              <Field label="允许的模型（留空为全部）">
+                                {modelPicker(decision.models, (models) =>
+                                  updateDecision(application, { models }),
+                                )}
+                              </Field>
+                              <small>
+                                同意时会按上面的参数写入授权；如果调整了参数，申请记录会标记为“修改后同意”。
+                              </small>
+                              <div className="u-actions">
+                                <button
+                                  className="u-button"
+                                  type="button"
+                                  onClick={() =>
+                                    void decideApplication(application, true)
+                                  }
+                                >
+                                  同意授权
+                                </button>
+                                <button
+                                  className="u-quiet u-danger"
+                                  type="button"
+                                  onClick={() =>
+                                    void decideApplication(application, false)
+                                  }
+                                >
+                                  驳回
+                                </button>
+                              </div>
                             </div>
-                            {application.message && (
-                              <p className="u-note">{application.message}</p>
-                            )}
-                            <BudgetFields
-                              title={`${application.counterpartyName} 的授权额度`}
-                              value={
-                                decisionBudgets[application.id] ??
-                                application.budget
-                              }
-                              change={(next) =>
-                                setDecisionBudgets((current) => ({
-                                  ...current,
-                                  [application.id]: next,
-                                }))
-                              }
-                            />
-                            <div className="u-actions">
-                              <button
-                                className="u-button"
-                                type="button"
-                                onClick={() =>
-                                  void decideApplication(application, true)
-                                }
-                              >
-                                通过并授权
-                              </button>
-                              <button
-                                className="u-quiet u-danger"
-                                type="button"
-                                onClick={() =>
-                                  void decideApplication(application, false)
-                                }
-                              >
-                                驳回
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <Empty>当前供应商没有待处理的申请。</Empty>
+                    )}
+                  </section>
+
+                  <section className="u-panel">
+                    <div className="u-panel-title">
+                      <History size={17} />
+                      申请记录
+                      <small>
+                        {receivedAll.length} 条 · 同意、修改、驳回都留痕
+                      </small>
+                    </div>
+                    {receivedAll.length ? (
+                      <div className="u-table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>申请人</th>
+                              <th>申请参数</th>
+                              <th>期望截止</th>
+                              <th>处理结果</th>
+                              <th>生效截止</th>
+                              <th>批阅说明</th>
+                              <th>处理时间</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {receivedAll.map((application) => (
+                              <tr key={application.id}>
+                                <td>{application.counterpartyName}</td>
+                                <td>
+                                  {application.models.length
+                                    ? `${application.models.length} 个模型`
+                                    : "全部模型"}
+                                </td>
+                                <td>
+                                  {deadlineText(application.requestedExpiresAt)}
+                                </td>
+                                <td>
+                                  <span
+                                    className={`u-tag ${
+                                      application.state === "approved"
+                                        ? "u-green"
+                                        : ""
+                                    }`}
+                                  >
+                                    {decisionLabel(application)}
+                                  </span>
+                                </td>
+                                <td>
+                                  {application.state === "approved"
+                                    ? deadlineText(application.decidedExpiresAt)
+                                    : "—"}
+                                </td>
+                                <td>{application.decisionNote || "—"}</td>
+                                <td>{date(application.decidedAt || undefined)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <Empty>这个供应商还没有申请记录。</Empty>
                     )}
                   </section>
 
@@ -2138,61 +2301,7 @@ function Allocations({ generation }: { generation: number }) {
                       我的申请
                       <small>{myApplications.length} 条</small>
                     </div>
-                    <div className="u-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>供应商</th>
-                            <th>提供者</th>
-                            <th>申请额度</th>
-                            <th>状态</th>
-                            <th>提交时间</th>
-                            <th />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {myApplications.map((application) => (
-                            <tr key={application.id}>
-                              <td>{application.resourceName}</td>
-                              <td>{application.counterpartyName}</td>
-                              <td>{budgetText(application.budget)}</td>
-                              <td>
-                                <span
-                                  className={`u-tag ${
-                                    application.state === "approved"
-                                      ? "u-green"
-                                      : ""
-                                  }`}
-                                >
-                                  {application.state === "pending"
-                                    ? "待审批"
-                                    : application.state === "approved"
-                                      ? application.decidedBy === "auto"
-                                        ? "免审通过"
-                                        : "已通过"
-                                      : "已驳回"}
-                                </span>
-                              </td>
-                              <td>{date(application.createdAt)}</td>
-                              <td>
-                                {application.state === "pending" && (
-                                  <button
-                                    type="button"
-                                    className="u-quiet u-danger"
-                                    onClick={() =>
-                                      void cancelApplication(application)
-                                    }
-                                  >
-                                    <Trash2 size={13} />
-                                    撤销
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    {myApplicationsTable}
                     {!myApplications.length && (
                       <Empty>还没有提交过申请。</Empty>
                     )}
@@ -2632,6 +2741,9 @@ function Profile({
   const [currentPassword, setCurrent] = useState("");
   const [newPassword, setNew] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -2660,6 +2772,19 @@ function Profile({
       toast.error(errorText(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const removeAccount = async () => {
+    setDeleting(true);
+    try {
+      await unit("/account", "DELETE", { password: deletePassword });
+      toast.success("账号已注销，感谢使用");
+      loggedOut();
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -2876,6 +3001,65 @@ function Profile({
             </form>
           </CollapsibleContent>
         </Collapsible>
+      </section>
+      <section className="u-panel">
+        <div className="u-panel-title">
+          <Trash2 size={17} />
+          注销账号
+          <small>删除个人数据并停用账号</small>
+        </div>
+        <div className="u-panel-body u-narrow">
+          {me.user.role === "admin" ? (
+            <p className="u-note">
+              管理员账号不能自助注销。如果需要停用，请先在“用户与额度”里把权限移交给其他账号。
+            </p>
+          ) : (
+            <>
+              <p className="u-note">
+                注销会删除你的供应商、授权、申请记录、API
+                密钥与登录态，操作不可恢复。注销前需要验证当前密码。
+              </p>
+              <Field label="当前密码">
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                />
+              </Field>
+              {confirmDelete ? (
+                <div className="u-actions">
+                  <span className="u-note">确认注销？该操作不可恢复。</span>
+                  <button
+                    type="button"
+                    className="u-button u-danger"
+                    disabled={deleting}
+                    onClick={() => void removeAccount()}
+                  >
+                    {deleting ? <Busy /> : "确认注销"}
+                  </button>
+                  <button
+                    type="button"
+                    className="u-quiet"
+                    disabled={deleting}
+                    onClick={() => setConfirmDelete(false)}
+                  >
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="u-button u-danger"
+                  disabled={!deletePassword}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  注销我的账号
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </section>
     </>
   );

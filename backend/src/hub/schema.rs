@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS hub_applications (
  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL REFERENCES hub_resources(id),
  applicant_id TEXT NOT NULL REFERENCES hub_users(id), owner_id TEXT NOT NULL REFERENCES hub_users(id),
  message TEXT NOT NULL DEFAULT '', budget TEXT NOT NULL DEFAULT '{}', models TEXT NOT NULL DEFAULT '[]',
- state TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, decided_at INTEGER, decided_by TEXT
+ state TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, decided_at INTEGER, decided_by TEXT,
+ requested_expires_at INTEGER, decided_expires_at INTEGER,
+ decided_models TEXT NOT NULL DEFAULT '[]', decision_kind TEXT NOT NULL DEFAULT '',
+ decision_note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS hub_application_resource ON hub_applications(resource_id,state,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS hub_application_pending ON hub_applications(resource_id,applicant_id)
@@ -107,5 +110,48 @@ CREATE TABLE IF NOT EXISTS hub_model_health (resource_id TEXT NOT NULL,model TEX
  until_at INTEGER NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(resource_id,model));
 CREATE TABLE IF NOT EXISTS hub_audit (id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
  target TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL);
-"#)
+"#)?;
+    // 申请从“点数额度”改为“时间截止”，旧库需要补齐记录审批参数的列。
+    add_column_if_missing(c, "hub_applications", "requested_expires_at", "INTEGER")?;
+    add_column_if_missing(c, "hub_applications", "decided_expires_at", "INTEGER")?;
+    add_column_if_missing(
+        c,
+        "hub_applications",
+        "decided_models",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    add_column_if_missing(
+        c,
+        "hub_applications",
+        "decision_kind",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        c,
+        "hub_applications",
+        "decision_note",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    c: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    let exists = {
+        let mut statement = c.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        names.iter().any(|name| name == column)
+    };
+    if !exists {
+        c.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+        ))?;
+    }
+    Ok(())
 }
