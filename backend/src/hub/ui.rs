@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/unit/ui/providers/:app", get(providers))
+        .route("/api/unit/ui/library/:app", get(library))
         .route("/api/unit/ui/providers/:app/save", post(save_provider))
         .route("/api/unit/ui/mode/:app", get(mode))
         .route("/api/unit/ui/status", get(status))
@@ -49,6 +50,33 @@ async fn providers(
         rows.insert(p.id, value);
     }
     Ok(Json(json!({"providers":rows,"currentProviderId":""})))
+}
+/// 供应商库：平台上所有用户已发布（上传）的供应商，用于跨用户浏览与识别归属。
+async fn library(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(kind): Path<String>,
+) -> Result<Json<Value>> {
+    let mut rows = serde_json::Map::new();
+    for r in resources::all(&app.db)?
+        .into_iter()
+        .filter(|r| r.app_type == kind && r.published)
+    {
+        let Some(p) = app.db.get_provider_by_id(&r.provider_id, &r.app_type)? else {
+            continue;
+        };
+        let mut value = if r.owner_id == user.id {
+            serde_json::to_value(&p).map_err(|_| Error::bad("供应商配置读取失败"))?
+        } else {
+            json!({"id":p.id,"name":p.name,"settingsConfig":{},"icon":p.icon,"iconColor":p.icon_color,"category":p.category})
+        };
+        let mut view = resources::safe_view(&app.db, &user, &r);
+        view["modelCount"] = json!(r.models.len());
+        view["accessible"] = json!(visible(&app.db, &user, &r));
+        value["unitResource"] = view;
+        rows.insert(p.id, value);
+    }
+    Ok(Json(json!({"providers": rows})))
 }
 async fn mode(
     State(app): State<Arc<AppState>>,

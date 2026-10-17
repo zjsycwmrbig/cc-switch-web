@@ -333,15 +333,15 @@ export function ProviderCard({
           <div className="min-w-0 space-y-1.5">
             <div className="flex min-h-7 flex-wrap items-center gap-2">
               <h3 className="break-words text-base font-semibold leading-none tracking-tight">
-                {provider.name}
+                {sharedReadOnly && provider.unitResource
+                  ? `${provider.unitResource.ownerName} 的 ${provider.name}`
+                  : provider.name}
               </h3>
 
               {provider.unitResource && (
                 <span className="text-xs font-normal text-muted-foreground">
-                  {sharedReadOnly
-                    ? `共享自 ${provider.unitResource.ownerName}`
-                    : "我的供应商"}{" "}
-                  · {provider.unitResource.models.length} 个模型
+                  {sharedReadOnly ? "共享资源" : "我的供应商"} ·{" "}
+                  {provider.unitResource.models.length} 个模型
                   {sharedReadOnly ? " · 只读" : ""}
                 </span>
               )}

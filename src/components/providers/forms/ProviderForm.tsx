@@ -33,32 +33,17 @@ import type {
   PromptCacheRoutingMode,
   ClaudeApiKeyField,
 } from "@/types";
+import type { ProviderPreset } from "@/config/claudeProviderPresets";
+import type { CodexProviderPreset } from "@/config/codexProviderPresets";
+import type { GeminiProviderPreset } from "@/config/geminiProviderPresets";
+import type { OpenCodeProviderPreset } from "@/config/opencodeProviderPresets";
 import {
-  providerPresets,
-  type ProviderPreset,
-} from "@/config/claudeProviderPresets";
-import {
-  codexProviderPresets,
-  type CodexProviderPreset,
-} from "@/config/codexProviderPresets";
-import {
-  geminiProviderPresets,
-  type GeminiProviderPreset,
-} from "@/config/geminiProviderPresets";
-import {
-  opencodeProviderPresets,
-  type OpenCodeProviderPreset,
-} from "@/config/opencodeProviderPresets";
-import {
-  openclawProviderPresets,
   rebaseOpenClawSuggestedDefaults,
   type OpenClawProviderPreset,
   type OpenClawSuggestedDefaults,
 } from "@/config/openclawProviderPresets";
-import {
-  hermesProviderPresets,
-  type HermesProviderPreset,
-} from "@/config/hermesProviderPresets";
+import type { HermesProviderPreset } from "@/config/hermesProviderPresets";
+import { buildPresetEntries } from "./providerPresetEntries";
 import { OpenCodeFormFields } from "./OpenCodeFormFields";
 import { OpenClawFormFields } from "./OpenClawFormFields";
 import { HermesFormFields } from "./HermesFormFields";
@@ -123,17 +108,6 @@ import { useHermesLiveProviderIds } from "@/hooks/useHermes";
 import { GrokBuildProviderForm } from "./GrokBuildProviderForm";
 import { ClaudeDesktopProviderForm } from "./ClaudeDesktopProviderForm";
 import { PiProviderForm } from "./PiProviderForm";
-
-type PresetEntry = {
-  id: string;
-  preset:
-    | ProviderPreset
-    | CodexProviderPreset
-    | GeminiProviderPreset
-    | OpenCodeProviderPreset
-    | OpenClawProviderPreset
-    | HermesProviderPreset;
-};
 
 // 跟随上游 cc-switch 1c82b8a3：把 TOML wire_api 字符串归一为 CodexApiFormat。
 const codexApiFormatFromWireApi = (
@@ -675,40 +649,7 @@ function ProviderFormFull({
     [t],
   );
 
-  const presetEntries = useMemo(() => {
-    if (appId === "codex") {
-      return codexProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `codex-${index}`,
-        preset,
-      }));
-    } else if (appId === "gemini") {
-      return geminiProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `gemini-${index}`,
-        preset,
-      }));
-    } else if (appId === "opencode") {
-      return opencodeProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `opencode-${index}`,
-        preset,
-      }));
-    } else if (appId === "openclaw") {
-      return openclawProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `openclaw-${index}`,
-        preset,
-      }));
-    } else if (appId === "hermes") {
-      return hermesProviderPresets.map<PresetEntry>((preset, index) => ({
-        id: `hermes-${index}`,
-        preset,
-      }));
-    }
-    return providerPresets
-      .filter((preset) => !preset.hidden)
-      .map<PresetEntry>((preset, index) => ({
-        id: `claude-${index}`,
-        preset,
-      }));
-  }, [appId]);
+  const presetEntries = useMemo(() => buildPresetEntries(appId), [appId]);
 
   const presetProviderType = useMemo(() => {
     if (!selectedPresetId) return undefined;

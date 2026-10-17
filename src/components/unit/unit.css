@@ -478,6 +478,7 @@ button.u-panel-title:hover {
   overflow-x: auto;
 }
 .unit-app table,
+.unit-content table,
 .unit-modal table {
   border-collapse: collapse;
   width: 100%;
@@ -486,6 +487,7 @@ button.u-panel-title:hover {
   white-space: nowrap;
 }
 .unit-app th,
+.unit-content th,
 .unit-modal th {
   font-size: 10px;
   color: var(--u-muted);
@@ -494,13 +496,16 @@ button.u-panel-title:hover {
 }
 .unit-app td,
 .unit-app th,
+.unit-content td,
+.unit-content th,
 .unit-modal td,
 .unit-modal th {
   padding: 13px 18px;
   border-bottom: 1px solid var(--u-line);
   vertical-align: middle;
 }
-.unit-app td small {
+.unit-app td small,
+.unit-content td small {
   display: block;
   font-size: 10px;
   color: var(--u-muted);

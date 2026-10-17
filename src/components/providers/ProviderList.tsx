@@ -2,7 +2,14 @@ import { useUnitSession } from "@/components/unit/session";
 import type { AppModeView } from "@/types/proxy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, Plus, Search, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  Search,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -23,6 +30,9 @@ import {
 import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
+import { ProviderIcon } from "@/components/ProviderIcon";
+import { PageTabs } from "@/components/ui/page-tabs";
+import { unit } from "@/components/unit/client";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -39,6 +49,25 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api/settings";
 import { invalidatePiProviderCaches } from "@/lib/query/pi";
+
+type UnitProviderTab = "library" | "owned" | "shared";
+
+const UNIT_PAGE_SIZE = 6;
+
+/** 供应商库条目：平台上一个已发布的供应商，以及它的归属信息。 */
+type UnitLibraryProvider = {
+  id: string;
+  name: string;
+  icon?: string;
+  unitResource: {
+    ownerName: string;
+    owned: boolean;
+    disabled: boolean;
+    official: boolean;
+    accessible?: boolean;
+    modelCount?: number;
+  };
+};
 
 interface ProviderListProps {
   modeView?: AppModeView;
@@ -215,6 +244,8 @@ export function ProviderList({
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [unitTab, setUnitTab] = useState<UnitProviderTab>("owned");
+  const [unitPage, setUnitPage] = useState(1);
   const { data: claudeDesktopStatus } = useQuery({
     queryKey: ["claudeDesktopStatus"],
     queryFn: () => claudeDesktopApi.getStatus(),
@@ -337,6 +368,37 @@ export function ProviderList({
       );
     });
   }, [searchTerm, sortedProviders]);
+
+  const { data: unitLibrary } = useQuery({
+    queryKey: ["unit", "providerLibrary", appId],
+    queryFn: () =>
+      unit<{ providers: Record<string, UnitLibraryProvider> }>(
+        `/ui/library/${appId}`,
+      ),
+    enabled: Boolean(session),
+  });
+
+  const unitLibraryEntries = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return Object.values(unitLibrary?.providers ?? {})
+      .filter((entry) =>
+        keyword
+          ? `${entry.unitResource.ownerName} 的 ${entry.name}`
+              .toLowerCase()
+              .includes(keyword)
+          : true,
+      )
+      .sort((a, b) =>
+        `${a.unitResource.ownerName} 的 ${a.name}`.localeCompare(
+          `${b.unitResource.ownerName} 的 ${b.name}`,
+          "zh-Hans-CN",
+        ),
+      );
+  }, [searchTerm, unitLibrary]);
+
+  useEffect(() => {
+    setUnitPage(1);
+  }, [unitTab, searchTerm, appId]);
 
   const claudeDesktopStatusMessages = useMemo(() => {
     if (appId !== "claude-desktop" || !claudeDesktopStatus) return [];
@@ -491,53 +553,153 @@ export function ProviderList({
     </div>
   );
 
-  const renderProviderList = () => {
-    if (!session) return renderProviderCards(filteredProviders);
+  const renderProviderList = () => renderProviderCards(filteredProviders);
+
+  const renderUnitPager = (
+    total: number,
+    currentPage: number,
+    totalPages: number,
+  ) =>
+    total > UNIT_PAGE_SIZE ? (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-border-default bg-background/60 px-4 py-3">
+        <span className="text-xs text-muted-foreground">
+          共 {total} 个 · 每页 {UNIT_PAGE_SIZE} 个
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={currentPage <= 1}
+            onClick={() => setUnitPage(currentPage - 1)}
+          >
+            <ChevronLeft className="mr-1 h-4 w-4" />
+            上一页
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            第 {currentPage} / {totalPages} 页
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={currentPage >= totalPages}
+            onClick={() => setUnitPage(currentPage + 1)}
+          >
+            下一页
+            <ChevronRight className="ml-1 h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    ) : null;
+
+  const renderUnitWorkbench = () => {
     const owned = filteredProviders.filter(
       (provider) => !provider.unitResource || provider.unitResource.owned,
     );
     const shared = filteredProviders.filter(
       (provider) => provider.unitResource && !provider.unitResource.owned,
     );
-    const section = (
-      title: string,
-      description: string,
-      list: Provider[],
-      key: string,
-    ) => (
-      <section key={key} className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h3 className="text-base font-semibold text-foreground">{title}</h3>
-            <p className="text-xs text-muted-foreground">{description}</p>
-          </div>
-          <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-xs font-medium">
-            {list.length}
-          </span>
-        </div>
-        {list.length ? (
-          renderProviderCards(list)
-        ) : (
-          <div className="rounded-xl border border-dashed border-border-default px-4 py-6 text-sm text-muted-foreground">
-            {key === "owned" ? "还没有自己的供应商。" : "暂时没有共享给你的供应商。"}
-          </div>
-        )}
-      </section>
+    const items =
+      unitTab === "owned" ? owned : unitTab === "shared" ? shared : [];
+    const total =
+      unitTab === "library" ? unitLibraryEntries.length : items.length;
+    const totalPages = Math.max(1, Math.ceil(total / UNIT_PAGE_SIZE));
+    const currentPage = Math.min(unitPage, totalPages);
+    const offset = (currentPage - 1) * UNIT_PAGE_SIZE;
+    const pageItems = items.slice(offset, offset + UNIT_PAGE_SIZE);
+    const pageLibraryEntries = unitLibraryEntries.slice(
+      offset,
+      offset + UNIT_PAGE_SIZE,
     );
+
     return (
-      <div className="space-y-7">
-        {section(
-          "我的供应商",
-          "由你创建、发布和维护，只有你能修改配置。",
-          owned,
-          "owned",
+      <div className="space-y-5">
+        <PageTabs
+          aria-label="供应商分类"
+          value={unitTab}
+          onValueChange={setUnitTab}
+          items={[
+            {
+              value: "library",
+              label: `供应商库 ${unitLibraryEntries.length}`,
+            },
+            { value: "owned", label: `我的供应商 ${owned.length}` },
+            {
+              value: "shared",
+              label: `共享给我的供应商 ${shared.length}`,
+            },
+          ]}
+        />
+
+        {unitTab === "library" ? (
+          pageLibraryEntries.length ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {pageLibraryEntries.map((entry) => {
+                const resource = entry.unitResource;
+                return (
+                  <div
+                    key={entry.id}
+                    className="glass-card flex flex-col gap-3 rounded-[22px] border border-border-default p-4"
+                  >
+                    <div className="flex min-w-0 items-start gap-3">
+                      {entry.icon ? (
+                        <ProviderIcon
+                          icon={entry.icon}
+                          name={entry.name}
+                          size={20}
+                          className="mt-0.5 flex-shrink-0"
+                        />
+                      ) : (
+                        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-border-default bg-muted/60 text-xs font-semibold text-muted-foreground">
+                          {entry.name.slice(0, 1).toUpperCase()}
+                        </span>
+                      )}
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-foreground">
+                          {resource.ownerName} 的 {entry.name}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {resource.modelCount ?? 0} 个模型
+                          {resource.official ? " · 官方账号" : ""}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-auto flex flex-wrap items-center gap-2">
+                      <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
+                        {resource.owned ? "我上传的" : "其他用户上传"}
+                      </span>
+                      {resource.disabled && (
+                        <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
+                          已停用
+                        </span>
+                      )}
+                      {!resource.accessible && (
+                        <span className="text-[11px] text-muted-foreground">
+                          未授权，需提供者分享后可用
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-[22px] border border-dashed border-border-default px-4 py-8 text-center text-sm text-muted-foreground">
+              还没有任何用户发布供应商。
+            </div>
+          )
+        ) : pageItems.length ? (
+          renderProviderCards(pageItems)
+        ) : (
+          <div className="rounded-[22px] border border-dashed border-border-default px-4 py-8 text-center text-sm text-muted-foreground">
+            {unitTab === "owned"
+              ? "还没有自己的供应商。"
+              : "暂时没有共享给你的供应商。"}
+          </div>
         )}
-        {section(
-          "共享给我的供应商",
-          "由其他用户提供，按授权额度使用，配置为只读。",
-          shared,
-          "shared",
-        )}
+
+        {renderUnitPager(total, currentPage, totalPages)}
       </div>
     );
   };
@@ -715,7 +877,9 @@ export function ProviderList({
         )}
       </AnimatePresence>
 
-      {filteredProviders.length === 0 ? (
+      {session ? (
+        renderUnitWorkbench()
+      ) : filteredProviders.length === 0 ? (
         <div className="glass-card rounded-[28px] border border-dashed border-border-default px-6 py-10 text-center">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-muted/70">
             <Search className="h-6 w-6 text-muted-foreground" />
