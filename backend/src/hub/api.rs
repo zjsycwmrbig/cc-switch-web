@@ -599,10 +599,14 @@ async fn publication(
     let r = resources::get(&app.db, &resource)?;
     resources::own(&user, &r)?;
     if v.published && r.models.is_empty() {
-        return Err(Error::bad("请先添加或获取模型"));
+        return Err(Error::bad(
+            "该供应商还没有模型：请先在卡片上点击“获取模型”，再点“加入”",
+        ));
     }
     if v.published && r.official && r.account_id.is_none() {
-        return Err(Error::bad("官方供应商需要先绑定官方账号再发布"));
+        return Err(Error::bad(
+            "官方供应商需要先在卡片上绑定“官方账号”，再点“加入”",
+        ));
     }
     conn(&app.db)?.execute(
         "UPDATE hub_resources SET published=?1 WHERE id=?2",

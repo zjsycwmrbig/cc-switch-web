@@ -589,6 +589,29 @@ function Models({ me, generation }: { me: Me; generation: number }) {
           {saving ? <Busy /> : "保存选择"}
         </button>
       </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        {[
+          ["1", "选择模型", "下方勾选要使用的模型，自动路由条目可展开调整供应商顺序。"],
+          ["2", "保存选择", "点右上角“保存选择”，服务端按你的选择生成模型目录。"],
+          ["3", "复制命令到主机", "在“同步聚合模型”里复制命令，到目标机器执行即可完成接入。"],
+        ].map(([step, title, description]) => (
+          <div
+            key={step}
+            className="rounded-lg border border-border bg-card/60 p-3"
+          >
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-xs text-primary">
+                {step}
+              </span>
+              {title}
+            </div>
+            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+              {description}
+            </p>
+          </div>
+        ))}
+      </div>
+      <AggregationSyncPanel />
       <div className="flex flex-col gap-4">
       <div className="u-cards">
         <div className="u-card">
@@ -894,7 +917,6 @@ function Models({ me, generation }: { me: Me; generation: number }) {
           )}
         </div>
       </section>
-      <AggregationSyncPanel />
       <Keys generation={generation} />
       </div>
     </>

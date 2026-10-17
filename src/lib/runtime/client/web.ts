@@ -277,11 +277,19 @@ async function getErrorMessage(
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("application/json")) {
       const payload = (await response.json()) as {
-        error?: string;
+        error?: string | { message?: string } | null;
         message?: string;
         detail?: string;
       };
-      const detail = payload.error || payload.message || payload.detail;
+      const nested =
+        payload.error && typeof payload.error === "object"
+          ? payload.error.message
+          : undefined;
+      const detail =
+        (typeof payload.error === "string" ? payload.error : undefined) ||
+        nested ||
+        payload.message ||
+        payload.detail;
       if (detail && detail.trim()) {
         return detail;
       }
