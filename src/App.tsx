@@ -1,6 +1,7 @@
 import { useUnitSession } from "@/components/unit/session";
 import { UnitPanel } from "@/components/unit/UnitApp";
 import { WebSidebar } from "@/components/shell/WebSidebar";
+import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
 import { APP_DISPLAY_NAME } from "@/config/appMeta";
 import type { ProviderEditorSave } from "@/lib/api/providers";
 import {
@@ -78,6 +79,7 @@ type View =
   | "allocations"
   | "profile"
   | "admin"
+  | "auth"
   | "usage";
 
 const DRAG_BAR_HEIGHT = 0; // px
@@ -657,6 +659,12 @@ function App() {
         case "profile":
         case "admin":
           return <UnitPanel page={currentView} />;
+        case "auth":
+          return (
+            <div className="px-3 md:px-6 py-4">
+              <AuthCenterPanel />
+            </div>
+          );
         case "usage":
           return (
             <div className="px-3 md:px-6 py-4">

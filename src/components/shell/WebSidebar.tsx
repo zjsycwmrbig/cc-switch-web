@@ -9,6 +9,7 @@ import {
   Menu,
   PanelLeftClose,
   Share2,
+  ShieldCheck,
   UserRound,
   Users,
 } from "lucide-react";
@@ -27,6 +28,7 @@ export type GlobalView =
   | "models"
   | "usage"
   | "allocations"
+  | "auth"
   | "admin"
   | "profile";
 
@@ -232,6 +234,11 @@ export const WebSidebar = memo(function WebSidebar({
         <div className="mt-2 space-y-1 border-t border-border pt-2">
           {session && (
             <>
+              {item(
+                "auth",
+                "授权中心",
+                <ShieldCheck className="h-4 w-4 shrink-0" />,
+              )}
               {session.me.user.role === "admin" &&
                 item("admin", "用户与额度", <Users className="h-4 w-4 shrink-0" />)}
               {item(
