@@ -430,6 +430,16 @@ export function ProviderList({
       );
   }, [searchTerm, unitLibrary]);
 
+  useEffect(() => {
+    const ownedCount = filteredProviders.filter(
+      (provider) => !provider.unitResource || provider.unitResource.owned,
+    ).length;
+    if (session && unitTab === "owned" && ownedCount === 0 && unitLibraryEntries.length > 0) {
+      setUnitTab("library");
+      setUnitPage(1);
+    }
+  }, [filteredProviders, session, unitLibraryEntries.length, unitTab]);
+
   const submitApplication = async () => {
     if (!applyTarget) return;
     setApplyBusy(true);
@@ -518,7 +528,7 @@ export function ProviderList({
     );
   }
 
-  if (sortedProviders.length === 0) {
+  if (sortedProviders.length === 0 && !session) {
     return (
       <ProviderEmptyState
         appId={appId}

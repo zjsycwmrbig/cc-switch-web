@@ -26,23 +26,26 @@ export function AggregationSyncPanel({
   const auth = key ? `-H ${quote(`Authorization: Bearer ${key}`)} ` : "";
   const legacyCommand = `curl -fsSL ${auth}${quote(`${origin}/api/model-catalog/codex/aggregation/install.sh`)} | CC_SWITCH_RESTART_APP_SERVER=1 bash`;
   const command = session ? personalCommand : legacyCommand;
-  const copy = async () => {
-    let toCopy = command;
-    if (session && !toCopy) {
+  const ensureCommand = async () => {
+    if (session && !personalCommand) {
       setBusy(true);
       try {
         const value = await unit<{ command: string }>("/keys", "POST", {
           name: `网页模型同步 ${new Date().toLocaleString()}`,
         });
-        toCopy = value.command;
-        setPersonalCommand(toCopy);
+        setPersonalCommand(value.command);
+        return value.command;
       } catch (e) {
         toast.error(e instanceof Error ? e.message : String(e));
-        return;
+        return "";
       } finally {
         setBusy(false);
       }
     }
+    return command;
+  };
+  const copyText = async (toCopy: string) => {
+    if (!toCopy) return;
     try {
       await navigator.clipboard.writeText(toCopy);
       toast.success(t("aggregationSync.copied"));
@@ -57,6 +60,13 @@ export function AggregationSyncPanel({
       if (copied) toast.success(t("aggregationSync.copied"));
       else toast.error(t("aggregationSync.copyManually"));
     }
+  };
+  const copy = async () => {
+    await copyText(await ensureCommand());
+  };
+  const copyRestore = async () => {
+    const value = await ensureCommand();
+    await copyText(value.replace(/ bash$/, " bash -s -- restore"));
   };
   const download = async () => {
     setBusy(true);
@@ -123,6 +133,17 @@ export function AggregationSyncPanel({
         <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs select-all">
           {command}
         </pre>
+      )}
+      {command && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">
+            已同步配置的固定备份可通过还原命令恢复，并自动重启 Codex。
+          </span>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void copyRestore()}>
+            <Copy className="mr-1 h-4 w-4" />
+            复制还原命令
+          </Button>
+        </div>
       )}
       <p className="text-xs text-muted-foreground">
         {t("aggregationSync.reload")}

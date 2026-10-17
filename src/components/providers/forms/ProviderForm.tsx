@@ -561,7 +561,18 @@ function ProviderFormFull({
       );
     });
   const [codexCatalogEnabled, setCodexCatalogEnabled] = useState(
-    () => codexCatalogCountFromSettings(initialData?.settingsConfig) > 0,
+    () =>
+      codexCatalogCountFromSettings(initialData?.settingsConfig) > 0 ||
+      Boolean(initialData?.unitResource?.models?.length),
+  );
+  const [resourceCatalogModels, setResourceCatalogModels] = useState<
+    CodexCatalogModel[]
+  >(() =>
+    (initialData?.unitResource?.models ?? []).map((model) => ({
+      model: model.slug,
+      displayName: model.display_name,
+      contextWindow: model.context_window,
+    })),
   );
 
   const { configError: codexConfigError, debouncedValidate } =
@@ -1320,6 +1331,15 @@ function ProviderFormFull({
       websiteUrl: values.websiteUrl?.trim() ?? "",
       settingsConfig,
     };
+    if (appId === "codex" && initialData?.unitResource) {
+      payload.resourceModels = resourceCatalogModels.map((model) => ({
+        slug: model.model,
+        ...(model.displayName ? { display_name: model.displayName } : {}),
+        ...(model.contextWindow
+          ? { context_window: Number(model.contextWindow) || undefined }
+          : {}),
+      }));
+    }
 
     if (appId === "opencode") {
       if (isAnyOmoCategory) {
@@ -2138,15 +2158,26 @@ function ProviderFormFull({
                 onCatalogEnabledChange={setCodexCatalogEnabled}
                 apiFormat={localCodexApiFormat}
                 onApiFormatChange={handleCodexApiFormatChange}
-                shouldShowModelField={category !== "official"}
+                shouldShowModelField={
+                  category !== "official" || Boolean(initialData?.unitResource)
+                }
                 modelName={codexModelName}
                 onModelNameChange={handleCodexModelNameChange}
                 codexChatReasoning={codexChatReasoning}
                 onCodexChatReasoningChange={setCodexChatReasoning}
                 promptCacheRouting={promptCacheRouting}
                 onPromptCacheRoutingChange={setPromptCacheRouting}
-                catalogModels={codexCatalogModels}
-                onCatalogModelsChange={setCodexCatalogModels}
+                catalogModels={
+                  initialData?.unitResource
+                    ? resourceCatalogModels
+                    : codexCatalogModels
+                }
+                onCatalogModelsChange={(models) => {
+                  setCodexCatalogModels(models);
+                  if (initialData?.unitResource) {
+                    setResourceCatalogModels(models);
+                  }
+                }}
                 speedTestEndpoints={speedTestEndpoints}
                 customUserAgent={customUserAgent}
                 onCustomUserAgentChange={setCustomUserAgent}
@@ -2454,6 +2485,11 @@ export type ProviderFormValues = ProviderFormData & {
   meta?: ProviderMeta;
   providerKey?: string; // OpenCode/OpenClaw: user-defined provider key
   suggestedDefaults?: OpenClawSuggestedDefaults; // OpenClaw: suggested default model configuration
+  resourceModels?: Array<{
+    slug: string;
+    display_name?: string;
+    context_window?: number;
+  }>;
 };
 
 export function ProviderForm(props: ProviderFormProps) {

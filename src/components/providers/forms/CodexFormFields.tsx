@@ -411,6 +411,12 @@ export function CodexFormFields({
         .then((models) => {
           if (seq !== fetchModelsSeqRef.current) return;
           setFetchedModels(models);
+          onCatalogModelsChange?.(
+            models.map((model) => ({
+              model: model.id,
+              displayName: model.id,
+            })),
+          );
           toast.success(
             t("providerForm.fetchModelsSuccess", { count: models.length }),
           );
@@ -500,6 +506,7 @@ export function CodexFormFields({
     isXaiOauthPreset,
     selectedXaiAccountId,
     resourceId,
+    onCatalogModelsChange,
     t,
   ]);
 
@@ -775,9 +782,15 @@ export function CodexFormFields({
               <div className="space-y-3 border-t border-border-default pt-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="space-y-1">
-                    <FormLabel>{t("codexConfig.modelMappingTitle")}</FormLabel>
+                    <FormLabel>
+                      {resourceId
+                        ? "模型列表"
+                        : t("codexConfig.modelMappingTitle")}
+                    </FormLabel>
                     <p className="text-xs text-muted-foreground">
-                      {t("codexConfig.modelMappingHint")}
+                      {resourceId
+                        ? "菜单显示名用于 /model 列表，实际请求模型填写上游模型 ID。原生 Responses 支持直连使用此目录，无需开启本地路由。修改后需重启 Codex 刷新列表。"
+                        : t("codexConfig.modelMappingHint")}
                     </p>
                   </div>
                   <Button
@@ -813,9 +826,11 @@ export function CodexFormFields({
                           ),
                         )
                       }
-                      placeholder={t(
-                        "codexConfig.catalogDisplayNamePlaceholder",
-                      )}
+                      placeholder={
+                        resourceId
+                          ? "菜单显示名"
+                          : t("codexConfig.catalogDisplayNamePlaceholder")
+                      }
                       aria-label={t("codexConfig.catalogColumnDisplay")}
                     />
                     <div className="flex gap-1">
@@ -830,7 +845,11 @@ export function CodexFormFields({
                             ),
                           )
                         }
-                        placeholder={t("codexConfig.catalogModelPlaceholder")}
+                        placeholder={
+                          resourceId
+                            ? "上游模型 ID"
+                            : t("codexConfig.catalogModelPlaceholder")
+                        }
                         aria-label={t("codexConfig.catalogColumnModel")}
                       />
                       {fetchedModels.length > 0 && (

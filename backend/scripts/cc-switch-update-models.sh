@@ -10,6 +10,10 @@ CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 BASE="${CC_SWITCH_URL%/}"
 CATALOG="$CODEX_DIR/cc-switch-aggregation-models.json"
 CONFIG="$CODEX_DIR/config.toml"
+CATALOG_BACKUP="$CODEX_DIR/cc-switch-aggregation-models.json.ccswitch-backup"
+CONFIG_BACKUP="$CODEX_DIR/config.toml.ccswitch-backup"
+CATALOG_MISSING="$CATALOG_BACKUP.missing"
+CONFIG_MISSING="$CONFIG_BACKUP.missing"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -53,6 +57,56 @@ fi
 ok "curl、python3 已就绪（$(elapsed)）"
 
 mkdir -p "$CODEX_DIR"
+
+if [ "${1:-}" = "restore" ]; then
+  TOTAL=3
+  printf '%s%s==> ccSwitchUint 配置还原%s\n' "$C_BOLD" "$C_STEP" "$C_RESET"
+  detail "配置目录：$CODEX_DIR"
+  step "检查固定备份"
+  if [ ! -f "$CONFIG_BACKUP" ] && [ ! -f "$CONFIG_MISSING" ]; then
+    fail "找不到 config.toml 的固定备份" "先执行一次正常同步，脚本会保存为：$CONFIG_BACKUP"
+  fi
+  if [ ! -f "$CATALOG_BACKUP" ] && [ ! -f "$CATALOG_MISSING" ]; then
+    fail "找不到模型目录的固定备份" "先执行一次正常同步，脚本会保存为：$CATALOG_BACKUP"
+  fi
+  ok "固定备份已找到"
+
+  step "还原 Codex 配置"
+  if [ -f "$CONFIG_BACKUP" ]; then
+    cp -p "$CONFIG_BACKUP" "$CONFIG"
+  else
+    rm -f "$CONFIG"
+  fi
+  if [ -f "$CATALOG_BACKUP" ]; then
+    cp -p "$CATALOG_BACKUP" "$CATALOG"
+  else
+    rm -f "$CATALOG"
+  fi
+  chmod 600 "$CONFIG" "$CATALOG" 2>/dev/null || true
+  ok "已还原固定备份"
+
+  step "重启 Codex app-server"
+  if [ "${CC_SWITCH_RESTART_APP_SERVER:-1}" = "1" ]; then
+    CODEX_BIN="$(command -v codex || true)"
+    if [ -z "$CODEX_BIN" ]; then
+      for candidate in "$HOME/.local/bin/codex" "$HOME"/.nvm/versions/node/*/bin/codex "$HOME"/.vscode-server/extensions/openai.chatgpt-*/bin/linux-*/codex; do
+        if [ -x "$candidate" ]; then CODEX_BIN="$candidate"; break; fi
+      done
+    fi
+    if [ -n "$CODEX_BIN" ] && "$CODEX_BIN" app-server daemon restart; then
+      ok "已通过 codex app-server daemon restart 重启"
+    else
+      warn "自动重启未成功，请手动执行：codex app-server daemon restart"
+    fi
+  else
+    detail "未设置 CC_SWITCH_RESTART_APP_SERVER=1，跳过自动重启"
+  fi
+  printf '\n%s%s✔ 还原完成%s\n' "$C_BOLD" "$C_OK" "$C_RESET"
+  detail "已还原：$CONFIG"
+  detail "已还原：$CATALOG"
+  exit 0
+fi
+
 TMP="$(mktemp "$CODEX_DIR/.cc-switch-models.XXXXXX")"
 CFG_TMP="$(mktemp "$CODEX_DIR/.cc-switch-config.XXXXXX")"
 PY_LOG="$CODEX_DIR/.cc-switch-sync.$$.log"
@@ -145,21 +199,31 @@ MODEL_LINE="$(grep '^模型数量：' "$PY_LOG" | tail -n 1 || true)"
 ok "配置已生成（$(elapsed)）"
 
 step "备份并原子写入配置"
-STAMP="$(date -u +%Y%m%dT%H%M%S)-$$"
-for file in "$CONFIG" "$CATALOG"; do
-  if [ -f "$file" ]; then
-    cp -p "$file" "$file.bak-$STAMP"
-    detail "备份 $(basename "$file") → $(basename "$file").bak-$STAMP"
-  fi
-done
+if [ -f "$CONFIG" ]; then
+  cp -p "$CONFIG" "$CONFIG_BACKUP"
+  rm -f "$CONFIG_MISSING"
+else
+  rm -f "$CONFIG_BACKUP"
+  : > "$CONFIG_MISSING"
+fi
+if [ -f "$CATALOG" ]; then
+  cp -p "$CATALOG" "$CATALOG_BACKUP"
+  rm -f "$CATALOG_MISSING"
+else
+  rm -f "$CATALOG_BACKUP"
+  : > "$CATALOG_MISSING"
+fi
+chmod 600 "$CONFIG_BACKUP" "$CATALOG_BACKUP" "$CONFIG_MISSING" "$CATALOG_MISSING" 2>/dev/null || true
+detail "固定备份 config.toml → $(basename "$CONFIG_BACKUP")"
+detail "固定备份 $(basename "$CATALOG") → $(basename "$CATALOG_BACKUP")"
 # staging 与目标在同一目录，rename 原子替换；第二步失败时还原第一步。
 chmod 600 "$TMP" "$CFG_TMP"
 mv -f "$TMP" "$CATALOG"
 if ! mv -f "$CFG_TMP" "$CONFIG"; then
-  if [ -f "$CATALOG.bak-$STAMP" ]; then cp -p "$CATALOG.bak-$STAMP" "$CATALOG"; else rm -f "$CATALOG"; fi
+  if [ -f "$CATALOG_BACKUP" ]; then cp -p "$CATALOG_BACKUP" "$CATALOG"; else rm -f "$CATALOG"; fi
   fail "写入 config.toml 失败，已还原模型目录" "若目标文件被占用，请关闭 Codex 后重跑同一命令。"
 fi
-ok "已写入 config.toml 与聚合模型目录（备份后缀 .bak-$STAMP，$(elapsed)）"
+ok "已写入 config.toml 与聚合模型目录（固定备份已更新，$(elapsed)）"
 
 step "重启 Codex app-server"
 if [ "${CC_SWITCH_RESTART_APP_SERVER:-0}" = "1" ]; then
@@ -231,6 +295,8 @@ fi
 printf '\n%s%s✔ 同步完成%s（总耗时 %s）\n' "$C_BOLD" "$C_OK" "$C_RESET" "$(elapsed)"
 [ -n "${MODEL_LINE:-}" ] && detail "$MODEL_LINE"
 detail "模型目录：$CATALOG"
+detail "固定备份：$CONFIG_BACKUP、$CATALOG_BACKUP"
 printf '%s下一步：%s\n' "$INDENT" "在 Codex 的模型列表里选择需要的模型即可开始使用。"
 printf '%s%s\n' "$INDENT" "以后在网页改完模型选择，重新执行这条命令即可同步。"
+printf '%s还原命令：%s\n' "$INDENT" "CC_SWITCH_RESTART_APP_SERVER=1 bash cc-switch-update-models.sh restore"
 printf '%s%s\n' "$INDENT" "已有 CLI 会话请退出重进；VS Code 远程窗口执行 Developer: Reload Window。"
