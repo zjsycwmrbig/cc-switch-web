@@ -350,18 +350,17 @@ export function UnitPanel({
   };
   return (
     <div className="unit-content w-full px-3 py-4 md:px-6">
-      {page === "models" && <Models me={me} generation={generation} />}
-      {page === "allocations" && <Allocations generation={generation} />}
-      {page === "profile" && (
-        <Profile
-          me={me}
-          generation={generation}
-          loggedOut={reset}
-        />
-      )}
-      {page === "admin" && me.user.role === "admin" && (
-        <Admin generation={generation} refresh={refresh} />
-      )}
+      {/* 统一给单元页的顶层区块留出间距，避免卡片/面板贴在一起。 */}
+      <div className="flex flex-col gap-5">
+        {page === "models" && <Models me={me} generation={generation} />}
+        {page === "allocations" && <Allocations generation={generation} />}
+        {page === "profile" && (
+          <Profile me={me} generation={generation} loggedOut={reset} />
+        )}
+        {page === "admin" && me.user.role === "admin" && (
+          <Admin generation={generation} refresh={refresh} />
+        )}
+      </div>
     </div>
   );
 }

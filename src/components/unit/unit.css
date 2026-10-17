@@ -860,6 +860,9 @@ button.u-panel-title:hover {
 }
 .u-allocation-main {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 .u-allocation-head {
   display: flex;
