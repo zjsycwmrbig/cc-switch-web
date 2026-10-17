@@ -142,6 +142,51 @@ function Field({
     </label>
   );
 }
+function formatTokenText(value?: number | null) {
+  if (value == null || Number.isNaN(value)) return "";
+  if (value >= 1_000_000) return `${+(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `${+(value / 1_000).toFixed(2)}K`;
+  return String(value);
+}
+
+/** 解析 500K / 10M 这类写法；返回 undefined 表示输入还不完整。 */
+function parseTokenText(text: string): number | null | undefined {
+  const normalized = text.trim().toUpperCase().replace(/,/g, "");
+  if (!normalized) return null;
+  const match = normalized.match(/^(\d+(?:\.\d+)?)([KMG]?)$/);
+  if (!match) return undefined;
+  const scale =
+    match[2] === "G" ? 1_000_000_000 : match[2] === "M" ? 1_000_000 : match[2] === "K" ? 1_000 : 1;
+  return Math.round(Number(match[1]) * scale);
+}
+
+function TokenInput({
+  value,
+  change,
+}: {
+  value?: number | null;
+  change: (value: number | null) => void;
+}) {
+  const [text, setText] = useState(() => formatTokenText(value));
+  useEffect(() => {
+    setText(formatTokenText(value));
+  }, [value]);
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      placeholder="不限，可填 500K / 10M"
+      value={text}
+      onChange={(event) => {
+        setText(event.target.value);
+        const parsed = parseTokenText(event.target.value);
+        if (parsed !== undefined) change(parsed);
+      }}
+      onBlur={() => setText(formatTokenText(value))}
+    />
+  );
+}
+
 function BudgetFields({
   value,
   change,
@@ -158,24 +203,31 @@ function BudgetFields({
         {(
           [
             ["requests", "请求次数"],
-            ["tokens", "Token 数量"],
+            ["tokens", "Token 数量（支持 K / M）"],
             ["credits", "点数"],
           ] as const
         ).map(([key, label]) => (
           <Field key={key} label={label}>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              placeholder="不限"
-              value={value[key] ?? ""}
-              onChange={(e) =>
-                change({
-                  ...value,
-                  [key]: e.target.value === "" ? null : Number(e.target.value),
-                })
-              }
-            />
+            {key === "tokens" ? (
+              <TokenInput
+                value={value.tokens}
+                change={(tokens) => change({ ...value, tokens })}
+              />
+            ) : (
+              <input
+                type="number"
+                min={0}
+                step={1}
+                placeholder="不限"
+                value={value[key] ?? ""}
+                onChange={(e) =>
+                  change({
+                    ...value,
+                    [key]: e.target.value === "" ? null : Number(e.target.value),
+                  })
+                }
+              />
+            )}
           </Field>
         ))}
       </div>
@@ -598,14 +650,9 @@ function Models({ generation }: { me: Me; generation: number }) {
   return (
     <>
       <div className="u-page-lead">
-        <p>三步接入：勾选模型 → 保存选择 → 复制同步命令到远程主机执行。</p>
-        <button
-          className="u-button"
-          disabled={saving || busy}
-          onClick={() => void save()}
-        >
-          {saving ? <Busy /> : "保存选择"}
-        </button>
+        <p>
+          三步接入：勾选模型 → 在“模型与路由”顶部点保存 → 复制同步命令到远程主机执行。
+        </p>
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         {[
@@ -637,6 +684,15 @@ function Models({ generation }: { me: Me; generation: number }) {
           <small>
             已选 {selected.size} / {routes.length} 条
           </small>
+          <span className="u-spacer" />
+          <button
+            className="u-button"
+            type="button"
+            disabled={saving || busy}
+            onClick={() => void save()}
+          >
+            {saving ? <Busy /> : "保存选择"}
+          </button>
         </div>
         <div className="u-panel-body">
           <div className="u-toolbar">
