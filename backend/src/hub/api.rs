@@ -846,7 +846,25 @@ pub(super) fn list_model_routes(
             }))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(rows)
+    // 同一模型只保留一条映射：合并历史重复记录的目标，避免列表里出现重复项。
+    let mut merged: Vec<Value> = vec![];
+    for row in rows {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|item| item["model"] == row["model"])
+        {
+            let mut targets = existing["targets"].as_array().cloned().unwrap_or_default();
+            for target in row["targets"].as_array().cloned().unwrap_or_default() {
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+            existing["targets"] = Value::Array(targets);
+        } else {
+            merged.push(row);
+        }
+    }
+    Ok(merged)
 }
 
 async fn model_routes(
@@ -860,6 +878,12 @@ async fn model_routes(
 /// 首次进入模型页时，把当前可用的「资源 × 模型」补成映射：
 /// 同一模型有多个可用供应商时直接生成自动路由，否则生成单对单映射。
 fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
+    // 清理早期并发初始化留下的重复映射（每个用户每个模型只保留最早一条）。
+    conn(db)?.execute(
+        "DELETE FROM hub_model_routes WHERE rowid NOT IN
+         (SELECT MIN(rowid) FROM hub_model_routes GROUP BY user_id, model)",
+        [],
+    )?;
     let existing = list_model_routes(db, &user.id)?;
     let mut have = existing
         .iter()
