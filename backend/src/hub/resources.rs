@@ -124,7 +124,8 @@ pub fn usable(
     r: &Resource,
     model: &str,
 ) -> Result<Budget> {
-    if !r.published || r.disabled {
+    // 自己的供应商即使没有发布到供应商库，也应当对自己可用。
+    if r.disabled || (!r.published && r.owner_id != user.id) {
         return Err(Error::forbidden());
     }
     if !r

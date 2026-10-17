@@ -146,6 +146,40 @@ fn public_private_and_model_specific_grants_are_enforced() {
         .is_none());
 }
 
+/// 自己的供应商不发布也应当出现在模型与路由里，别人的未发布供应商不能借用。
+#[test]
+fn own_unpublished_resource_feeds_routes_and_catalog() {
+    let db = database();
+    resource(&db, "mine", "alice", "https://example.com/v1", false);
+    resource(&db, "theirs", "bob", "https://example.com/v1", false);
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET published=0 WHERE id IN ('mine','theirs')",
+            [],
+        )
+        .unwrap();
+    let alice = identity("alice");
+    let mine = resources::get(&db, "mine").unwrap();
+    let theirs = resources::get(&db, "theirs").unwrap();
+    assert!(resources::usable(&db, &alice, &mine, "test-model").is_ok());
+    assert!(resources::usable(&db, &alice, &theirs, "test-model").is_err());
+
+    api::seed_model_routes(&db, &alice).unwrap();
+    let routes = api::list_model_routes(&db, "alice").unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0]["targets"], json!(["mine"]));
+
+    let export = catalog::export(&db, &alice, false).unwrap();
+    let slugs = export["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["slug"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    assert_eq!(slugs, vec!["ccs-mine/test-model".to_string()]);
+}
+
 #[test]
 fn share_codes_enforce_lifecycle_and_create_explicit_grants() {
     let db = database();

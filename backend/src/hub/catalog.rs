@@ -267,7 +267,8 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
         std::collections::HashMap::new();
     let pool_key = auth::setting(db, "officialPoolKey", "official");
     for r in resources::all(db)? {
-        if r.app_type != "codex" || !r.published || r.disabled {
+        // 自己未发布的供应商只对自己可用，不会出现在其他用户的目录里。
+        if r.app_type != "codex" || r.disabled || (!r.published && r.owner_id != user.id) {
             continue;
         }
         for raw in &r.models {

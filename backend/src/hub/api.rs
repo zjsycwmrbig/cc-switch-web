@@ -900,7 +900,7 @@ async fn model_routes(
 
 /// 首次进入模型页时，把当前可用的「资源 × 模型」补成映射：
 /// 同一模型有多个可用供应商时直接生成自动路由，否则生成单对单映射。
-fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
+pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
     // 清理早期并发初始化留下的重复映射（每个用户每个模型只保留最早一条）。
     conn(db)?.execute(
         "DELETE FROM hub_model_routes WHERE rowid NOT IN
@@ -915,7 +915,9 @@ fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<
     let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for r in resources::all(db)?
         .into_iter()
-        .filter(|r| r.app_type == "codex" && r.published && !r.disabled)
+        .filter(|r| {
+            r.app_type == "codex" && !r.disabled && (r.published || r.owner_id == user.id)
+        })
     {
         for raw in &r.models {
             let Some(model) = raw["slug"].as_str() else {
@@ -1068,7 +1070,7 @@ async fn detect_model_routes(
     let all = resources::all(&app.db)?;
     let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for r in &all {
-        if r.app_type != "codex" || !r.published || r.disabled {
+        if r.app_type != "codex" || r.disabled || (!r.published && r.owner_id != user.id) {
             continue;
         }
         for raw in &r.models {

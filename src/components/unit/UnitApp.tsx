@@ -539,8 +539,8 @@ function Models({ generation }: { me: Me; generation: number }) {
     const allowed = resourceRows.filter(
       (resource) =>
         resource.appType === "codex" &&
-        resource.published &&
-        !resource.disabled,
+        !resource.disabled &&
+        (resource.published || resource.owned),
     );
     setRoutes(routeRows);
     setResources(allowed);
