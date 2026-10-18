@@ -285,7 +285,7 @@ export function ProviderActions({
           buttonState.disabled ||
           (failoverUnavailable && isAutoFailoverEnabled && !aggregation)
         }
-        className={cn("w-[4.5rem] px-2.5", buttonState.className)}
+        className={cn("w-auto min-w-[4.5rem] whitespace-nowrap px-2.5 text-xs", buttonState.className)}
       >
         {buttonState.icon}
         {buttonState.text}

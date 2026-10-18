@@ -1055,26 +1055,10 @@ export function ProviderList({
                           个
                         </div>
                       </div>
-                      <div className="rounded-lg border border-border-default px-2.5 py-2">
-                        <div className="text-muted-foreground">余额 / 用量</div>
-                        <div className="truncate font-medium text-foreground" title={(() => {
-                          const u = unitUsage[resource.id];
-                          return u?.success
-                            ? (u.data ?? [])
-                                .map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`)
-                                .join(" · ") || "可用"
-                            : "未配置";
-                        })()}>
-                          {(() => {
-                            const u = unitUsage[resource.id];
-                            return u?.success
-                              ? (u.data ?? [])
-                                  .map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`)
-                                  .join(" · ") || "可用"
-                              : "未配置";
-                          })()}
-                        </div>
-                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border-default px-3 py-2 text-xs">
+                      <div className="text-muted-foreground">余额 / 用量</div>
+                      <div className="mt-0.5 whitespace-pre-wrap break-words font-medium text-foreground">{(() => { const u = unitUsage[resource.id]; return u?.success ? ((u.data ?? []).map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`).join(" · ") || "可用") : "未配置"; })()}</div>
                     </div>
                     {(resource.visibleModels?.length ?? 0) > 0 && (
                       <div className="space-y-1.5">
