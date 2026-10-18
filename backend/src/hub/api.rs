@@ -49,6 +49,10 @@ pub fn routes(app: Arc<AppState>) -> Router {
             axum::routing::delete(delete_grant),
         )
         .route(
+            "/api/unit/resources/:id/user-usage",
+            get(resource_user_usage),
+        )
+        .route(
             "/api/unit/applications",
             get(applications).post(create_application),
         )
