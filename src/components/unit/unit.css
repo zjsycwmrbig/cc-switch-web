@@ -1408,3 +1408,29 @@ button.u-panel-title:hover {
     grid-template-columns: 1fr;
   }
 }
+
+.u-usage-summary { margin-top: 20px; }
+.u-visibility-toggle {
+  display: inline-flex;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid var(--u-line);
+  border-radius: 7px;
+  background: var(--u-surface);
+}
+.u-visibility-toggle button {
+  min-width: 88px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--u-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.u-visibility-toggle button.active {
+  background: color-mix(in srgb, var(--u-accent) 14%, transparent);
+  color: var(--u-accent);
+  font-weight: 600;
+}

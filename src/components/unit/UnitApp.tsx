@@ -1718,16 +1718,22 @@ function Allocations({ generation }: { generation: number }) {
                     </div>
                     <form className="u-panel-body" onSubmit={savePolicy}>
                       <Field label="其他用户的可见性">
-                        <select
-                          value={policy.visibility}
-                          onChange={(event) =>
-                            setPolicy({ ...policy, visibility: event.target.value })
-                          }
-                        >
-                          <option value="public">所有用户可见</option>
-                          <option value="selected">仅指定用户可见</option>
-                          <option value="private">仅自己可见</option>
-                        </select>
+                        <div className="u-visibility-toggle">
+                          <button
+                            type="button"
+                            className={policy.visibility === "public" ? "active" : ""}
+                            onClick={() => setPolicy({ ...policy, visibility: "public" })}
+                          >
+                            可见
+                          </button>
+                          <button
+                            type="button"
+                            className={policy.visibility !== "public" ? "active" : ""}
+                            onClick={() => setPolicy({ ...policy, visibility: "private" })}
+                          >
+                            不可见
+                          </button>
+                        </div>
                       </Field>
                       <p className="u-note">
                         额度完全由申请审批或指定授权决定，不再提供默认额度、共享预算或按周期重置。
