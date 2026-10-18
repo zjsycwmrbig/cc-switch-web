@@ -1717,52 +1717,21 @@ function Allocations({ generation }: { generation: number }) {
                       <small>控制这个供应商对其他用户是否可见、可按什么额度使用</small>
                     </div>
                     <form className="u-panel-body" onSubmit={savePolicy}>
-                      <div className="u-grid2">
-                        <Field label="其他用户的可见性">
-                          <select
-                            value={policy.visibility}
-                            onChange={(event) =>
-                              setPolicy({
-                                ...policy,
-                                visibility: event.target.value,
-                              })
-                            }
-                          >
-                            <option value="public">所有用户可见</option>
-                            <option value="selected">仅指定用户可见</option>
-                            <option value="private">仅自己可见</option>
-                          </select>
-                        </Field>
-                        <Field label="额度周期（UTC）">
-                          <select
-                            value={policy.period}
-                            onChange={(event) =>
-                              setPolicy({
-                                ...policy,
-                                period: event.target.value,
-                              })
-                            }
-                          >
-                            <option value="month">每月</option>
-                            <option value="day">每天</option>
-                            <option value="lifetime">累计</option>
-                          </select>
-                        </Field>
-                      </div>
-                      <BudgetFields
-                        title="其他用户的默认额度"
-                        value={policy.defaultBudget}
-                        change={(value) =>
-                          setPolicy({ ...policy, defaultBudget: value })
-                        }
-                      />
-                      <BudgetFields
-                        title="所有共享用户的合计预算"
-                        value={policy.sharedBudget}
-                        change={(value) =>
-                          setPolicy({ ...policy, sharedBudget: value })
-                        }
-                      />
+                      <Field label="其他用户的可见性">
+                        <select
+                          value={policy.visibility}
+                          onChange={(event) =>
+                            setPolicy({ ...policy, visibility: event.target.value })
+                          }
+                        >
+                          <option value="public">所有用户可见</option>
+                          <option value="selected">仅指定用户可见</option>
+                          <option value="private">仅自己可见</option>
+                        </select>
+                      </Field>
+                      <p className="u-note">
+                        额度完全由申请审批或指定授权决定，不再提供默认额度、共享预算或按周期重置。
+                      </p>
                       <Field label="对外可见的模型（留空表示该供应商全部模型）">
                         {modelPicker(policy.models, (value) =>
                           setPolicy({ ...policy, models: value }),

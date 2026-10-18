@@ -172,7 +172,7 @@ pub fn attempt(
         reserve(
             &tx,
             request,
-            &format!("grant:{}:{}:{}", r.id, user.id, period(&r.policy.period)),
+            &format!("grant:{}:{}:lifetime", r.id, user.id),
             &budget,
             estimate,
         )?;

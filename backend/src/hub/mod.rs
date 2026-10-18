@@ -155,7 +155,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             visibility: "private".into(),
-            period: "month".into(),
+            period: "lifetime".into(),
             default_budget: Budget::default(),
             shared_budget: Budget::default(),
             models: vec![],

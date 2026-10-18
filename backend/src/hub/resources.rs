@@ -186,7 +186,13 @@ pub fn grant(
                 "该供应商没有对你开放，请先提交申请",
             ))
         }
-        None if r.policy.visibility == "public" => r.policy.default_budget.clone(),
+        // 公开可见只代表能被看到/申请，不再自动赠送默认额度。
+        None if r.policy.visibility == "public" => {
+            return Err(Error::denied(
+                "not_shared",
+                "该供应商需要申请审批或由提供者单独授权",
+            ))
+        }
         _ => {
             return Err(Error::denied(
                 "not_shared",
