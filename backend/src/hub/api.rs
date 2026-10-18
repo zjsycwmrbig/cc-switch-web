@@ -1214,17 +1214,28 @@ async fn detect_model_routes(
         }
     }
     let existing = list_model_routes(&app.db, &user.id)?;
-    let have = existing
-        .iter()
-        .filter_map(|row| row["model"].as_str())
-        .map(resources::model_group_key)
-        .collect::<std::collections::HashSet<_>>();
+    let mut existing_by_key: std::collections::HashMap<String, (String, String, String, Vec<String>)> =
+        Default::default();
+    for row in &existing {
+        let Some(model) = row["model"].as_str() else { continue };
+        existing_by_key.insert(
+            resources::model_group_key(model),
+            (
+                row["id"].as_str().unwrap_or_default().to_string(),
+                row["displayName"].as_str().unwrap_or(model).to_string(),
+                model.to_string(),
+                row["targets"]
+                    .as_array()
+                    .map(|list| list.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .unwrap_or_default(),
+            ),
+        );
+    }
     let mut candidates = vec![];
     for (key, members) in groups {
-        if members.len() < 2 || have.contains(&key) {
+        if members.len() < 2 {
             continue;
         }
-        // 展示名用组内出现次数最多的原始末段名称。
         let mut counts: std::collections::HashMap<&str, usize> = Default::default();
         for (_, last) in &members {
             *counts.entry(last.as_str()).or_default() += 1;
@@ -1234,19 +1245,38 @@ async fn detect_model_routes(
             .max_by_key(|(name, count)| (*count, std::cmp::Reverse(name.len())))
             .map(|(name, _)| name.to_string())
             .unwrap_or_else(|| key.clone());
-        let targets = members.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
-        candidates.push(json!({
-            "model": display,
-            "displayName": format!("{display}（自动路由）"),
-            "targets": targets,
-        }));
+        let member_ids = members.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        if let Some((id, name, model, mut targets)) = existing_by_key.get(&key).cloned() {
+            let before = targets.len();
+            for member in &member_ids {
+                if !targets.contains(member) {
+                    targets.push(member.clone());
+                }
+            }
+            if targets.len() == before {
+                continue;
+            }
+            candidates.push(json!({
+                "id": id,
+                "model": model,
+                "displayName": name,
+                "targets": targets,
+            }));
+        } else {
+            candidates.push(json!({
+                "model": display,
+                "displayName": format!("{display}（自动路由）"),
+                "targets": member_ids,
+            }));
+        }
     }
     if v.apply {
         for candidate in &candidates {
-            let id = super::id();
+            let id = candidate["id"].as_str().map(str::to_owned).unwrap_or_else(super::id);
             conn(&app.db)?.execute(
                 "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,1,?6,?6)",
+                 VALUES(?1,?2,?3,?4,?5,1,?6,?6)
+                 ON CONFLICT(id) DO UPDATE SET display_name=?3,model=?4,targets=?5,updated_at=?6",
                 params![
                     id,
                     &user.id,
