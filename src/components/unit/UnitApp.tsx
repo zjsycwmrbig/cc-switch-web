@@ -1835,16 +1835,27 @@ function Allocations({ generation }: { generation: number }) {
                                   <th>排名</th>
                                   <th>用户</th>
                                   <th>请求次数</th>
-                                  <th>请求占比</th>
+                                  <th>请求占比（总量）</th>
                                   <th>Token</th>
-                                  <th>Token 占比</th>
+                                  <th>Token 占比（总量）</th>
+                                  <th>Token 额度使用率</th>
                                   <th>成本</th>
-                                  <th>成本占比</th>
+                                  <th>成本占比（总量）</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {rows.map((row, index) => {
                                   const reqPct = pct(row.requests ?? 0, totalReq);
+                                  let tokenLimit: number | null = null;
+                                  try {
+                                    tokenLimit = JSON.parse(row.budget || "{}").tokens ?? null;
+                                  } catch {
+                                    tokenLimit = null;
+                                  }
+                                  const quotaPct =
+                                    tokenLimit && tokenLimit > 0
+                                      ? ((row.tokens ?? 0) / tokenLimit) * 100
+                                      : null;
                                   return (
                                     <tr key={row.user_id}>
                                       <td>{index + 1}</td>
@@ -1860,6 +1871,18 @@ function Allocations({ generation }: { generation: number }) {
                                       </td>
                                       <td>{num(row.tokens ?? 0)}</td>
                                       <td>{pct(row.tokens ?? 0, totalTok).toFixed(1)}%</td>
+                                      <td>
+                                        {quotaPct == null ? (
+                                          "不限"
+                                        ) : (
+                                          <div className="flex items-center gap-2">
+                                            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                                              <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, quotaPct)}%` }} />
+                                            </div>
+                                            <span>{quotaPct.toFixed(1)}%</span>
+                                          </div>
+                                        )}
+                                      </td>
                                       <td>{dollars(row.costCredits ?? 0)}</td>
                                       <td>{pct(row.costCredits ?? 0, totalCost).toFixed(1)}%</td>
                                     </tr>
