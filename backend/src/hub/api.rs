@@ -1115,7 +1115,8 @@ async fn save_model_route(
         return Err(Error::bad("名称需为 1-60 个字符"));
     }
     let model = v.model.trim().to_string();
-    if model.is_empty() || model.len() > 200 || model.contains('/') {
+    // 上游模型 ID 允许包含 "/"（如 deepseek/deepseek-v4-pro）。
+    if model.is_empty() || model.len() > 200 || model.starts_with("ccs-") {
         return Err(Error::bad("基础模型 ID 无效"));
     }
     if v.targets.is_empty() || v.targets.len() > 50 {
