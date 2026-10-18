@@ -1751,11 +1751,14 @@ export async function saveWebCodexEditor(payload: unknown) {
       add: boolean;
       editor?: { base: unknown; onConflict: string };
     };
+    const provider = trimUnitResourceModels(v.provider);
     return requestWithBody<boolean>(
       "/api/unit/ui/providers/codex/save",
       "POST",
       {
-        provider: trimUnitResourceModels(v.provider),
+        provider,
+        // 后端以顶层 models 为准重建目录；不传就会沿用旧列表，删除不会生效。
+        models: provider.unitResource?.models,
         add: v.add,
         baseConfig:
           v.add || v.editor?.onConflict === "keepMine"
@@ -1815,11 +1818,13 @@ export async function saveWebClaudeEditor(payload: unknown) {
       add: boolean;
       editor?: { base: unknown; onConflict: string };
     };
+    const provider = trimUnitResourceModels(v.provider);
     return requestWithBody<boolean>(
       "/api/unit/ui/providers/claude/save",
       "POST",
       {
-        provider: trimUnitResourceModels(v.provider),
+        provider,
+        models: provider.unitResource?.models,
         add: v.add,
         baseConfig:
           v.add || v.editor?.onConflict === "keepMine"

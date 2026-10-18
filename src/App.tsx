@@ -197,21 +197,8 @@ function App() {
     return "claude"; // fallback
   };
 
-  /** 多用户聚合只覆盖 Codex 与 Claude，其他应用的服务器配置仍由管理员维护。 */
-  const sidebarApps = useMemo<VisibleApps>(() => {
-    if (isAdmin) return visibleApps;
-    return {
-      ...visibleApps,
-      "claude-desktop": false,
-      gemini: false,
-      grokbuild: false,
-      opencode: false,
-      openclaw: false,
-      hermes: false,
-      pi: false,
-      mcode: false,
-    };
-  }, [isAdmin, visibleApps]);
+  /** 所有用户都按自己的可见应用设置展示，供应商库对每个应用都可浏览。 */
+  const sidebarApps = useMemo<VisibleApps>(() => visibleApps, [visibleApps]);
 
   useEffect(() => {
     if (!visibleApps[activeApp]) {

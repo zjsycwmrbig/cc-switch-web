@@ -103,6 +103,10 @@ export const useAddProviderMutation = (appId: AppId) => {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers", appId] });
+      // 供应商库卡片（含“N 个可见模型”）也依赖这份数据，修改模型后一起刷新。
+      await queryClient.invalidateQueries({
+        queryKey: ["unit", "providerLibrary", appId],
+      });
 
       if (appId === "opencode") {
         await queryClient.invalidateQueries({

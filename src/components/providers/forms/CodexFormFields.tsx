@@ -888,8 +888,11 @@ export function CodexFormFields({
                       variant="ghost"
                       size="icon"
                       onClick={() =>
-                        setCatalogRows((current) =>
-                          current.filter((_, itemIndex) => itemIndex !== index),
+                        // 必须走 commitCatalogRows：它同步更新引用，否则异步回填会用旧列表把删掉的行写回来。
+                        commitCatalogRows(
+                          catalogRowsRef.current.filter(
+                            (_, itemIndex) => itemIndex !== index,
+                          ),
                         )
                       }
                       title={t("common.delete")}
