@@ -690,6 +690,13 @@ function App() {
                       onAggregationMember={(id, enabled) => {
                         void appMode
                           .change({ kind: "member", id, enabled })
+                          .then(() => {
+                            if (enabled && session) {
+                              toast.success(
+                                "已加入公共供应商，请到「额度分配」调整公开模型与额度",
+                              );
+                            }
+                          })
                           .catch(() => {});
                       }}
                       onAggregationDefault={(id) => {

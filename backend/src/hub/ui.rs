@@ -21,6 +21,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/unit/ui/usage/request-logs", post(request_logs))
         .route("/api/unit/ui/usage/request-logs/:id", get(request_detail))
         .route("/api/unit/ui/usage/:kind", get(usage))
+        .route("/api/unit/ui/library/:app/:id/usage", get(library_usage))
         .route("/api/unit/ui/accounts/:id/models", get(account_models))
 }
 fn visible(db: &crate::database::Database, user: &Identity, r: &resources::Resource) -> bool {
@@ -51,6 +52,34 @@ async fn providers(
     }
     Ok(Json(json!({"providers":rows,"currentProviderId":""})))
 }
+/// 供应商库卡片上的余额/用量查询（官方号是套餐用量，其他供应商是余额）。
+async fn library_usage(
+    State(app): State<Arc<AppState>>,
+    Extension(_user): Extension<Identity>,
+    Path((kind, resource)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    use std::str::FromStr;
+    let r = resources::get(&app.db, &resource)?;
+    if r.app_type != kind || !r.published || r.disabled {
+        return Err(Error::forbidden());
+    }
+    let app_type = crate::app_config::AppType::from_str(&kind)
+        .map_err(|_| Error::bad("未知应用类型"))?;
+    match crate::commands::query_provider_usage_internal(
+        &app,
+        &app.copilot_auth_state,
+        app_type,
+        &r.provider_id,
+    )
+    .await
+    {
+        Ok(result) => Ok(Json(
+            serde_json::to_value(result).unwrap_or_else(|_| json!({"success": false, "error": "用量结果序列化失败"})),
+        )),
+        Err(error) => Ok(Json(json!({"success": false, "error": format!("{error}")}))),
+    }
+}
+
 /// 供应商库：平台上所有用户已发布（上传）的供应商，用于跨用户浏览与识别归属。
 async fn library(
     State(app): State<Arc<AppState>>,

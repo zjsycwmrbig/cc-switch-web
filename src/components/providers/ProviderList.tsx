@@ -291,6 +291,7 @@ export function ProviderList({
   const [unitOwnerFilter, setUnitOwnerFilter] = useState("");
   const [unitModelFilter, setUnitModelFilter] = useState("");
   const [unitApplyOnly, setUnitApplyOnly] = useState(false);
+  const [unitUsage, setUnitUsage] = useState<Record<string, any>>({});
   const [expandedModels, setExpandedModels] = useState<string | null>(null);
   const [modelPage, setModelPage] = useState<Record<string, number>>({});
   const pendingPublicCreate = useRef(false);
@@ -526,6 +527,28 @@ export function ProviderList({
     [unitLibrary],
   );
 
+  // 供应商库卡片上的余额/用量查询（官方号=套餐用量，其他=余额）。
+  useEffect(() => {
+    if (unitTab !== "library") return;
+    const entries = Object.values(unitLibrary?.providers ?? {}).slice(0, 24);
+    if (!entries.length) return;
+    let live = true;
+    void Promise.all(
+      entries.map(async (entry) => {
+        try {
+          return [entry.id, await unit(`/ui/library/${appId}/${entry.id}/usage`)] as const;
+        } catch {
+          return [entry.id, null] as const;
+        }
+      }),
+    ).then((rows) => {
+      if (live) setUnitUsage(Object.fromEntries(rows));
+    });
+    return () => {
+      live = false;
+    };
+  }, [unitTab, appId, unitLibrary]);
+
   // “增加公共供应商”创建完成后自动发布到供应商库。
   useEffect(() => {
     if (!pendingPublicCreate.current) return;
@@ -716,6 +739,8 @@ export function ProviderList({
                     disabled:
                       modePending ||
                       !modeView.eligibleProviderIds.includes(provider.id),
+                    joinLabel: session ? "加入公共供应商" : undefined,
+                    memberLabel: session ? "已在供应商库" : undefined,
                     onToggle: () =>
                       onAggregationMember?.(
                         provider.id,
@@ -1028,6 +1053,26 @@ export function ProviderList({
                             resource.visibleModels?.length ??
                             0}{" "}
                           个
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border-default px-2.5 py-2">
+                        <div className="text-muted-foreground">余额 / 用量</div>
+                        <div className="truncate font-medium text-foreground" title={(() => {
+                          const u = unitUsage[entry.id];
+                          return u?.success
+                            ? (u.data ?? [])
+                                .map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`)
+                                .join(" · ") || "可用"
+                            : "未配置";
+                        })()}>
+                          {(() => {
+                            const u = unitUsage[entry.id];
+                            return u?.success
+                              ? (u.data ?? [])
+                                  .map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`)
+                                  .join(" · ") || "可用"
+                              : "未配置";
+                          })()}
                         </div>
                       </div>
                     </div>

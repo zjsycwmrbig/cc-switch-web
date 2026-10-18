@@ -30,6 +30,8 @@ export interface AggregationActions {
   disabled?: boolean;
   onToggle: () => void;
   onDefault?: () => void;
+  joinLabel?: string;
+  memberLabel?: string;
 }
 
 interface ProviderActionsProps {
@@ -144,13 +146,11 @@ export function ProviderActions({
         ) : (
           <Plus className="h-4 w-4" />
         ),
-        text: t(
-          aggregation.default
-            ? "webMode.default"
-            : aggregation.member
-              ? "webMode.member"
-              : "webMode.join",
-        ),
+        text: aggregation.default
+          ? t("webMode.default")
+          : aggregation.member
+            ? aggregation.memberLabel ?? t("webMode.member")
+            : aggregation.joinLabel ?? t("webMode.join"),
       };
     if (isOmo) {
       if (isCurrent) {
