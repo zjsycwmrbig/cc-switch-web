@@ -247,7 +247,8 @@ import os, re, signal, subprocess, sys, time
 directory, cli = sys.argv[1:]
 socket = str((Path(directory) / 'app-server-control/app-server-control.sock').resolve())
 def owner():
-    lines = subprocess.check_output(['ss', '-xlpn'], text=True).splitlines()
+    # ss 会原样输出抽象 socket 名等非 UTF-8 字节，必须允许替换字符，否则解码会抛 UnicodeDecodeError
+    lines = subprocess.check_output(['ss', '-xlpn'], encoding='utf-8', errors='replace').splitlines()
     for line in lines:
         if socket not in line:
             continue
