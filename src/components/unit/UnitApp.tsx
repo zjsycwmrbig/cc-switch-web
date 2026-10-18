@@ -12,6 +12,7 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  BarChart3,
   Boxes,
   ChevronDown,
   Copy,
@@ -1024,7 +1025,7 @@ function Allocations({ generation }: { generation: number }) {
   const [resources, setResources] = useState<Resource[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [mode, setMode] = useState<
-    "policy" | "grants" | "codes" | "applications"
+    "policy" | "usage" | "grants" | "codes" | "applications"
   >("policy");
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [userUsage, setUserUsage] = useState<any[]>([]);
@@ -1531,11 +1532,6 @@ function Allocations({ generation }: { generation: number }) {
 
   return (
     <>
-      <div className="u-page-lead">
-        <p>
-          分配方管理自己对外提供的供应商与额度；申请方查看自己提交的申请和已获得的授权。
-        </p>
-      </div>
       <div className="u-segmented" role="tablist" style={{ marginBottom: 18 }}>
         <button
           type="button"
@@ -1645,12 +1641,22 @@ function Allocations({ generation }: { generation: number }) {
                 <button
                   type="button"
                   role="tab"
+                  aria-selected={mode === "usage"}
+                  className={mode === "usage" ? "active" : ""}
+                  onClick={() => setMode("usage")}
+                >
+                  <BarChart3 size={15} />
+                  用户用量
+                </button>
+                <button
+                  type="button"
+                  role="tab"
                   aria-selected={mode === "grants"}
                   className={mode === "grants" ? "active" : ""}
                   onClick={() => setMode("grants")}
                 >
                   <Users size={15} />
-                  用户用量
+                  用户权限
                 </button>
                 <button
                   type="button"
@@ -1677,7 +1683,7 @@ function Allocations({ generation }: { generation: number }) {
                 </button>
               </div>
 
-              {(mode === "policy" || mode === "grants") ? (
+              {(mode === "policy" || mode === "usage" || mode === "grants") ? (
                 <>
                   {mode === "policy" && (
                   <section className="u-panel">
@@ -1699,7 +1705,7 @@ function Allocations({ generation }: { generation: number }) {
                             }
                           >
                             <option value="public">所有用户可见</option>
-                            <option value="selected">仅用户用量可见</option>
+                            <option value="selected">仅指定用户可见</option>
                             <option value="private">仅自己可见</option>
                           </select>
                         </Field>
@@ -1749,11 +1755,47 @@ function Allocations({ generation }: { generation: number }) {
                   </section>
                   )}
 
+                  {mode === "usage" && (
+                  <section className="u-panel">
+                    <div className="u-panel-title">
+                      <BarChart3 size={17} />
+                      用户用量
+                      <small>按近 30 天请求次数排行</small>
+                    </div>
+                    <div className="u-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>排名</th>
+                            <th>用户</th>
+                            <th>请求次数</th>
+                            <th>Token</th>
+                            <th>成本</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...userUsage]
+                            .sort((a, b) => (b.requests ?? 0) - (a.requests ?? 0))
+                            .map((row, index) => (
+                              <tr key={row.user_id}>
+                                <td>{index + 1}</td>
+                                <td>{row.username}</td>
+                                <td>{num(row.requests ?? 0)}</td>
+                                <td>{num(row.tokens ?? 0)}</td>
+                                <td>{dollars(row.costCredits ?? 0)}</td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {!userUsage.length && <Empty>这个供应商还没有用户用量。</Empty>}
+                  </section>
+                  )}
                   {mode === "grants" && (
                   <section className="u-panel">
                     <div className="u-panel-title">
                       <UserPlus size={17} />
-                      用户用量
+                      用户权限
                       <small>{grants.length} 个单独分配</small>
                     </div>
                     <div className="u-table-wrap">
@@ -1836,7 +1878,7 @@ function Allocations({ generation }: { generation: number }) {
                     </div>
                     {!userUsage.length && (
                       <Empty>
-                        还没有单独分配。公开或用户用量模式可先使用共享规则。
+                        还没有单独分配。公开或指定用户模式可先使用共享规则。
                       </Empty>
                     )}
                     <form
@@ -1952,7 +1994,7 @@ function Allocations({ generation }: { generation: number }) {
                     <div className="u-panel-title">
                       <KeyRound size={17} />
                       创建分享口令
-                      <small>领取后写入用户用量额度</small>
+                      <small>领取后写入指定用户额度</small>
                     </div>
                     <form className="u-panel-body" onSubmit={createCode}>
                       <p className="u-note">

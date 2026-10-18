@@ -1022,6 +1022,7 @@ export function ProviderList({
                             0}{" "}
                           个可见模型
                           {resource.official ? " · 官方账号" : ""}
+                          {" · 由 "}{resource.ownerName}{" 提供"}
                         </div>
                       </div>
                     </div>
