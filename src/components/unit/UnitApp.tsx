@@ -1806,13 +1806,13 @@ function Allocations({ generation }: { generation: number }) {
                         );
                       return (
                         <>
-                          <div className="u-cards">
+                          <div className="u-cards" style={{ marginBottom: 18 }}>
                             <div className="u-card"><small>近 30 天请求</small><strong>{num(totalReq)}</strong></div>
                             <div className="u-card"><small>近 30 天 Token</small><strong>{num(totalTok)}</strong></div>
                             <div className="u-card"><small>近 30 天成本</small><strong>{dollars(totalCost)}</strong></div>
                             <div className="u-card"><small>活跃用户</small><strong>{userUsage.filter((row) => (row.requests ?? 0) > 0).length}</strong></div>
                           </div>
-                          <div className="u-toolbar" style={{ padding: "0 16px 12px" }}>
+                          <div className="u-toolbar" style={{ padding: "0 16px 18px" }}>
                             <div className="u-search">
                               <Search size={15} />
                               <input
@@ -1832,7 +1832,7 @@ function Allocations({ generation }: { generation: number }) {
                               <option value="cost">按成本排序</option>
                             </select>
                           </div>
-                          <div className="u-table-wrap">
+                          <div className="u-table-wrap" style={{ marginBottom: 18 }}>
                             <table>
                               <thead>
                                 <tr>
@@ -1849,11 +1849,19 @@ function Allocations({ generation }: { generation: number }) {
                               <tbody>
                                 {rows.map((row, index) => {
                                   let tokenLimit: number | null = null;
+                                  let requestLimit: number | null = null;
                                   try {
-                                    tokenLimit = JSON.parse(row.budget || "{}").tokens ?? null;
+                                    const parsedBudget = JSON.parse(row.budget || "{}");
+                                    tokenLimit = parsedBudget.tokens ?? null;
+                                    requestLimit = parsedBudget.requests ?? null;
                                   } catch {
                                     tokenLimit = null;
+                                    requestLimit = null;
                                   }
+                                  const requestPct =
+                                    requestLimit && requestLimit > 0
+                                      ? ((row.requests ?? 0) / requestLimit) * 100
+                                      : null;
                                   const quotaPct =
                                     tokenLimit && tokenLimit > 0
                                       ? ((row.tokens ?? 0) / tokenLimit) * 100
@@ -1863,12 +1871,30 @@ function Allocations({ generation }: { generation: number }) {
                                       <td>{index + 1}</td>
                                       <td>{row.username}</td>
                                       <td>{num(row.requests ?? 0)}</td>
-                                      <td>{quotaPct == null ? "0.0%" : `${quotaPct.toFixed(1)}%`}</td>
+                                      <td>
+                                        {requestPct == null ? (
+                                          <span className="u-unlimited">UNLIMITED</span>
+                                        ) : (
+                                          <div className="flex items-center gap-2">
+                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
+                                              <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, requestPct)}%` }} />
+                                            </div>
+                                            <span>{requestPct.toFixed(1)}%</span>
+                                          </div>
+                                        )}
+                                      </td>
                                       <td>{compactTokens(row.tokens ?? 0)}</td>
                                       <td>
-                                        {tokenLimit == null
-                                          ? "0.0%"
-                                          : `${(((row.tokens ?? 0) / tokenLimit) * 100).toFixed(1)}%`}
+                                        {quotaPct == null ? (
+                                          <span className="u-unlimited">UNLIMITED</span>
+                                        ) : (
+                                          <div className="flex items-center gap-2">
+                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
+                                              <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, quotaPct)}%` }} />
+                                            </div>
+                                            <span>{quotaPct.toFixed(1)}%</span>
+                                          </div>
+                                        )}
                                       </td>
                                       <td>{dollars(row.costCredits ?? 0)}</td>
                                       <td />

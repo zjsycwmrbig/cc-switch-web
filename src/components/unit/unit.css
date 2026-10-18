@@ -1370,3 +1370,19 @@ button.u-panel-title:hover {
   flex: 1 1 220px;
   min-width: 180px;
 }
+
+.u-unlimited {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px dashed var(--u-line);
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--u-muted);
+  background: var(--u-hover);
+}
+.unit-content .u-panel { margin-bottom: 26px; }
+.unit-content .u-cards { gap: 16px; }
+.unit-content .u-table td, .unit-content .u-table th { padding: 12px 14px; }
