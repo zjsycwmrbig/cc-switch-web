@@ -704,6 +704,37 @@ async fn grants(
     let values=query_json(&*conn(&app.db)?,"SELECT g.user_id,u.username,g.allowed,g.budget,g.models,g.expires_at FROM hub_grants g JOIN hub_users u ON u.id=g.user_id WHERE g.resource_id=?1",&[&resource])?;
     Ok(Json(json!(values)))
 }
+/// 某个供应商下所有用户的权限 + 近 30 天用量（按请求次数排行）。
+async fn resource_user_usage(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(resource): Path<String>,
+) -> Result<Json<Value>> {
+    let r = resources::get(&app.db, &resource)?;
+    resources::own(&user, &r)?;
+    let rows = query_json(
+        &*conn(&app.db)?,
+        "SELECT g.user_id, u.username, g.allowed, g.budget, g.models, g.expires_at,
+                COALESCE(x.requests,0) AS requests,
+                COALESCE(x.tokens,0) AS tokens,
+                COALESCE(x.cost_credits,0) AS costCredits
+         FROM hub_grants g
+         JOIN hub_users u ON u.id=g.user_id
+         LEFT JOIN (
+             SELECT user_id, COUNT(*) AS requests,
+                    SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens) AS tokens,
+                    SUM(cost_credits) AS cost_credits
+             FROM hub_requests
+             WHERE resource_id=?1 AND created_at>=?2
+             GROUP BY user_id
+         ) x ON x.user_id=g.user_id
+         WHERE g.resource_id=?1
+         ORDER BY requests DESC, u.username",
+        &[&resource, &(now() - 30 * 86400)],
+    )?;
+    Ok(Json(json!(rows)))
+}
+
 async fn save_grant(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,

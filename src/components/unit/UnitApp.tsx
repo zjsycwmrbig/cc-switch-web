@@ -995,7 +995,6 @@ type GrantRow = {
   models: string;
   expires_at?: number | null;
 };
-type UsageBucket = Record<string, string | number>;
 
 type ModelRoute = {
   id: string;
@@ -1012,7 +1011,7 @@ function Allocations({ generation }: { generation: number }) {
     "grants",
   );
   const [grants, setGrants] = useState<GrantRow[]>([]);
-  const [buckets, setBuckets] = useState<UsageBucket[]>([]);
+  const [userUsage, setUserUsage] = useState<any[]>([]);
   const [codes, setCodes] = useState<ShareCode[]>([]);
   const [applications, setApplications] = useState<{
     mine: ApplicationRow[];
@@ -1105,15 +1104,14 @@ function Allocations({ generation }: { generation: number }) {
   const loadDetails = useCallback(async () => {
     if (!selectedId) {
       setGrants([]);
-      setBuckets([]);
       return;
     }
-    const [grantRows, usageBuckets] = await Promise.all([
+    const [grantRows, usageRows] = await Promise.all([
       unit<GrantRow[]>(`/resources/${selectedId}/grants`),
-      unit<UsageBucket[]>(`/resources/${selectedId}/usage`),
+      unit<any[]>(`/resources/${selectedId}/user-usage`),
     ]);
     setGrants(grantRows);
-    setBuckets(usageBuckets);
+    setUserUsage(usageRows);
   }, [selectedId]);
 
   // 申请记录和「选中哪个供应商」无关：没有自有供应商时也要能看自己的申请。
@@ -1149,7 +1147,6 @@ function Allocations({ generation }: { generation: number }) {
     let live = true;
     if (!selectedId) {
       setGrants([]);
-      setBuckets([]);
       return;
     }
     void loadDetails().catch((error) => {
@@ -1510,15 +1507,7 @@ function Allocations({ generation }: { generation: number }) {
         )}
       </section>
 
-      <section className="u-panel">
-        <div className="u-panel-title">
-          <UserPlus size={17} />
-          我的申请
-          <small>{myApplications.length} 条</small>
-        </div>
-        {myApplicationsTable}
-        {!myApplications.length && <Empty>还没有提交过申请。</Empty>}
-      </section>
+      
     </>
   );
 
@@ -1633,7 +1622,7 @@ function Allocations({ generation }: { generation: number }) {
                   onClick={() => setMode("grants")}
                 >
                   <Users size={15} />
-                  指定用户
+                  用户用量
                 </button>
                 <button
                   type="button"
@@ -1681,7 +1670,7 @@ function Allocations({ generation }: { generation: number }) {
                             }
                           >
                             <option value="public">所有用户可见</option>
-                            <option value="selected">仅指定用户可见</option>
+                            <option value="selected">仅用户用量可见</option>
                             <option value="private">仅自己可见</option>
                           </select>
                         </Field>
@@ -1733,7 +1722,7 @@ function Allocations({ generation }: { generation: number }) {
                   <section className="u-panel">
                     <div className="u-panel-title">
                       <UserPlus size={17} />
-                      指定用户
+                      用户用量
                       <small>{grants.length} 个单独分配</small>
                     </div>
                     <div className="u-table-wrap">
@@ -1745,11 +1734,14 @@ function Allocations({ generation }: { generation: number }) {
                             <th>单独额度</th>
                             <th>模型范围</th>
                             <th>到期时间</th>
+                            <th>近 30 天请求</th>
+                            <th>Token</th>
+                            <th>成本</th>
                             <th />
                           </tr>
                         </thead>
                         <tbody>
-                          {grants.map((row) => {
+                          {userUsage.map((row) => {
                             const rowModels = parseModels(row.models);
                             return (
                               <tr key={row.userId}>
@@ -1770,6 +1762,9 @@ function Allocations({ generation }: { generation: number }) {
                                     : "全部已发布模型"}
                                 </td>
                                 <td>{date(row.expires_at || undefined)}</td>
+                                <td>{num(row.requests ?? 0)}</td>
+                                <td>{num(row.tokens ?? 0)}</td>
+                                <td>{dollars(row.costCredits ?? 0)}</td>
                                 <td>
                                   <button
                                     type="button"
@@ -1808,9 +1803,9 @@ function Allocations({ generation }: { generation: number }) {
                         </tbody>
                       </table>
                     </div>
-                    {!grants.length && (
+                    {!userUsage.length && (
                       <Empty>
-                        还没有单独分配。公开或指定用户模式可先使用共享规则。
+                        还没有单独分配。公开或用户用量模式可先使用共享规则。
                       </Empty>
                     )}
                     <form
@@ -1882,49 +1877,6 @@ function Allocations({ generation }: { generation: number }) {
                       </button>
                     </form>
                   </section>
-
-                  {buckets.length > 0 && (
-                    <section className="u-panel">
-                      <Collapsible defaultOpen={false}>
-                        <CollapsibleTrigger asChild>
-                          <button
-                            type="button"
-                            className="u-panel-title w-full text-left"
-                          >
-                            <ChevronDown className="u-collapsible-icon h-4 w-4" />
-                            <span>额度账本用量</span>
-                            <small>预留与已结算明细</small>
-                          </button>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent>
-                          <div className="u-table-wrap">
-                            <table>
-                              <thead>
-                                <tr>
-                                  <th>范围与账期</th>
-                                  <th>已用请求</th>
-                                  <th>已用 Token</th>
-                                  <th>预留请求</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {buckets.map((bucket) => (
-                                  <tr key={String(bucket.id)}>
-                                    <td>
-                                      <code>{bucket.id}</code>
-                                    </td>
-                                    <td>{bucket.used_requests}</td>
-                                    <td>{bucket.used_tokens}</td>
-                                    <td>{bucket.reserved_requests}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </CollapsibleContent>
-                      </Collapsible>
-                    </section>
-                  )}
                 </>
               ) : mode === "codes" ? (
                 <>
@@ -1968,7 +1920,7 @@ function Allocations({ generation }: { generation: number }) {
                     <div className="u-panel-title">
                       <KeyRound size={17} />
                       创建分享口令
-                      <small>领取后写入指定用户额度</small>
+                      <small>领取后写入用户用量额度</small>
                     </div>
                     <form className="u-panel-body" onSubmit={createCode}>
                       <p className="u-note">
@@ -2404,7 +2356,7 @@ function Allocations({ generation }: { generation: number }) {
                     )}
                   </section>
 
-                  <section className="u-panel">
+                  <section className="u-panel" style={{ display: "none" }}>
                     <div className="u-panel-title">
                       <WalletCards size={17} />
                       我的申请
