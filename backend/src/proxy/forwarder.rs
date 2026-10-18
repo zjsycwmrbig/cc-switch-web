@@ -1178,6 +1178,9 @@ impl RequestForwarder {
                     mapped_body,
                     reasoning_config.as_ref(),
                 )?;
+            if let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) {
+                repair_orphan_tool_calls(messages);
+            }
             super::providers::inject_codex_chat_prompt_cache_key(
                 provider,
                 &mut chat_body,
@@ -3549,5 +3552,48 @@ mod tests {
             ),
             ErrorCategory::NonRetryable
         );
+    }
+}
+
+
+/// 补齐缺失的工具结果：某些客户端历史只回传了部分 function_call_output，
+/// 严格的上游（OpenAI Chat 兼容）会以“tool_calls 后缺少 tool 消息”拒绝整段请求。
+fn repair_orphan_tool_calls(messages: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].get("role").and_then(Value::as_str) != Some("assistant") {
+            i += 1;
+            continue;
+        }
+        let ids = messages[i]
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut found = std::collections::HashSet::new();
+        while j < messages.len() && messages[j].get("role").and_then(Value::as_str) == Some("tool") {
+            if let Some(id) = messages[j].get("tool_call_id").and_then(Value::as_str) {
+                found.insert(id.to_string());
+            }
+            j += 1;
+        }
+        let missing: Vec<String> = ids.into_iter().filter(|id| !found.contains(id)).collect();
+        for (offset, id) in missing.into_iter().enumerate() {
+            messages.insert(
+                i + 1 + offset,
+                serde_json::json!({"role":"tool","tool_call_id":id,"content":"[tool result unavailable]"}),
+            );
+        }
+        i += 1;
     }
 }
