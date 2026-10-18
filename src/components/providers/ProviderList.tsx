@@ -536,9 +536,9 @@ export function ProviderList({
     void Promise.all(
       entries.map(async (entry) => {
         try {
-          return [entry.id, await unit(`/ui/library/${appId}/${entry.id}/usage`)] as const;
+          return [entry.unitResource.id, await unit(`/ui/library/${appId}/${entry.unitResource.id}/usage`)] as const;
         } catch {
-          return [entry.id, null] as const;
+          return [entry.unitResource.id, null] as const;
         }
       }),
     ).then((rows) => {
@@ -1058,7 +1058,7 @@ export function ProviderList({
                       <div className="rounded-lg border border-border-default px-2.5 py-2">
                         <div className="text-muted-foreground">余额 / 用量</div>
                         <div className="truncate font-medium text-foreground" title={(() => {
-                          const u = unitUsage[entry.id];
+                          const u = unitUsage[resource.id];
                           return u?.success
                             ? (u.data ?? [])
                                 .map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`)
@@ -1066,7 +1066,7 @@ export function ProviderList({
                             : "未配置";
                         })()}>
                           {(() => {
-                            const u = unitUsage[entry.id];
+                            const u = unitUsage[resource.id];
                             return u?.success
                               ? (u.data ?? [])
                                   .map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`)
