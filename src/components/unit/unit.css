@@ -881,6 +881,34 @@ button.u-panel-title:hover {
   color: var(--u-muted);
   font-size: 10px;
 }
+/* 有申请待处理的供应商：左侧红色标记 + 淡红底，提醒拥有者处理。 */
+.u-allocation-item.has-requests {
+  background: color-mix(in srgb, hsl(var(--destructive)) 8%, transparent);
+  box-shadow: inset 3px 0 0 hsl(var(--destructive));
+}
+.u-allocation-item.has-requests:hover {
+  background: color-mix(in srgb, hsl(var(--destructive)) 13%, transparent);
+}
+.u-allocation-item .u-allocation-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.u-allocation-item .u-allocation-count {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+  font-size: 10px;
+  font-weight: 600;
+}
 .u-allocation-main {
   min-width: 0;
   display: flex;

@@ -110,16 +110,11 @@ export const WebSidebar = memo(function WebSidebar({
         {label}
       </span>
       {badge ? (
-        railHidden ? (
-          <span
-            aria-hidden
-            className="ml-auto h-2 w-2 shrink-0 rounded-full bg-destructive"
-          />
-        ) : (
-          <span className="ml-auto min-w-5 shrink-0 rounded-full bg-destructive/15 px-1.5 text-center text-xs font-medium text-destructive">
-            {badge > 99 ? "99+" : badge}
-          </span>
-        )
+        <span
+          aria-label={`${badge} 条待处理申请`}
+          title={`${badge} 条待处理申请`}
+          className="ml-auto h-2 w-2 shrink-0 rounded-full bg-destructive"
+        />
       ) : null}
     </button>
   );

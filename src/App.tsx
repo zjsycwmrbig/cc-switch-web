@@ -18,7 +18,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
-import { UnitApplicationNotice } from "@/components/unit/UnitNotices";
 import type { Provider, VisibleApps } from "@/types";
 import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
 import { hermesApi, providersApi, settingsApi, type AppId } from "@/lib/api";
@@ -897,9 +896,6 @@ function App() {
         ref={mainScrollRef}
         className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in"
       >
-        <UnitApplicationNotice
-          onOpen={() => handleViewChange("allocations")}
-        />
         {isOpenClawView && openclawHealthWarnings.length > 0 && (
           <OpenClawHealthBanner warnings={openclawHealthWarnings} />
         )}

@@ -1056,6 +1056,14 @@ function Allocations({ generation }: { generation: number }) {
   const receivedAll = applications.received.filter(
     (application) => application.resourceId === selectedId,
   );
+  // 每个供应商还有多少条待处理申请，用于左侧列表高亮。
+  const pendingByResource: Record<string, number> = {};
+  for (const application of applications.received) {
+    if (application.state === "pending") {
+      pendingByResource[application.resourceId] =
+        (pendingByResource[application.resourceId] ?? 0) + 1;
+    }
+  }
   const myApplications = applications.mine;
 
   const decisionFor = (application: ApplicationRow) =>
@@ -1563,25 +1571,38 @@ function Allocations({ generation }: { generation: number }) {
               <strong>我的供应商</strong>
               <span>{ownedResources.length}</span>
             </div>
-            {ownedResources.map((resource) => (
-              <button
-                key={resource.id}
-                type="button"
-                className={`u-allocation-item ${
-                  resource.id === selectedId ? "active" : ""
-                }`}
-                onClick={() => {
-                  setSelectedId(resource.id);
-                  resetGrantForm();
-                }}
-              >
-                <span>{resource.name}</span>
-                <small>
-                  {resource.appType.toUpperCase()} ·{" "}
-                  {resource.published ? "已发布" : "未发布"}
-                </small>
-              </button>
-            ))}
+            {ownedResources.map((resource) => {
+              const pending = pendingByResource[resource.id] ?? 0;
+              return (
+                <button
+                  key={resource.id}
+                  type="button"
+                  className={`u-allocation-item ${
+                    resource.id === selectedId ? "active" : ""
+                  } ${pending > 0 ? "has-requests" : ""}`}
+                  onClick={() => {
+                    setSelectedId(resource.id);
+                    resetGrantForm();
+                  }}
+                >
+                  <span className="u-allocation-name">
+                    {resource.name}
+                    {pending > 0 && (
+                      <span
+                        className="u-allocation-count"
+                        title={`${pending} 条待处理申请`}
+                      >
+                        {pending > 99 ? "99+" : pending}
+                      </span>
+                    )}
+                  </span>
+                  <small>
+                    {resource.appType.toUpperCase()} ·{" "}
+                    {resource.published ? "已发布" : "未发布"}
+                  </small>
+                </button>
+              );
+            })}
           </aside>
           {selected && (
             <section className="u-allocation-main">
