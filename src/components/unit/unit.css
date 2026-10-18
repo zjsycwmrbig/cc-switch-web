@@ -1320,3 +1320,15 @@ button.u-panel-title:hover {
 .unit-modal .u-quiet:hover {
   background: hsl(var(--accent));
 }
+
+.u-model-auto {
+  border-left: 3px solid var(--u-accent);
+  background: color-mix(in srgb, var(--u-accent) 6%, transparent);
+}
+.u-model-single {
+  border-left: 3px solid var(--u-line);
+}
+.u-auto-tag {
+  border-color: color-mix(in srgb, var(--u-accent) 45%, var(--u-line));
+  color: var(--u-accent);
+}

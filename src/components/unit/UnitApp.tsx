@@ -533,6 +533,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [providerFilter, setProviderFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
   const [displayFilter, setDisplayFilter] = useState<"all" | "shown" | "hidden">("all");
+  const [showAutoRoutes, setShowAutoRoutes] = useState(false);
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
@@ -642,7 +643,12 @@ function Models({ generation }: { me: Me; generation: number }) {
         { apply: true },
       );
       await load();
-      toast.success(`已生成 ${result.candidates.length} 组自动路由映射`);
+      const autoCount = (await unit<ModelRoute[]>("/model-routes")).filter(
+        (route) => route.targets.length >= 2,
+      ).length;
+      toast.success(
+        `本次新增/合并 ${result.candidates.length} 组；当前共 ${autoCount} 组自动路由`,
+      );
     } catch (error) {
       toast.error(errorText(error));
     } finally {
@@ -656,6 +662,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   };
 
   const filtered = routes.filter((route) => {
+    if (!showAutoRoutes && route.targets.length >= 2) return false;
     const keyword = search.trim().toLowerCase();
     const text =
       `${route.displayName} ${route.model} ${route.targets.map(providerLabel).join(" ")}`.toLowerCase();
@@ -763,6 +770,14 @@ function Models({ generation }: { me: Me; generation: number }) {
               <option value="shown">已展示</option>
               <option value="hidden">未展示</option>
             </select>
+            <label className="u-inline">
+              <input
+                type="checkbox"
+                checked={showAutoRoutes}
+                onChange={(event) => setShowAutoRoutes(event.target.checked)}
+              />
+              显示自动路由
+            </label>
             <button
               className="u-quiet"
               type="button"
@@ -835,7 +850,7 @@ function Models({ generation }: { me: Me; generation: number }) {
                 const open = expanded === route.id;
                 return (
                   <div
-                    className="u-model"
+                    className={`u-model ${route.targets.length >= 2 ? "u-model-auto" : "u-model-single"}`}
                     key={route.id}
                     style={{ alignItems: "flex-start" }}
                   >
@@ -866,7 +881,7 @@ function Models({ generation }: { me: Me; generation: number }) {
                             }
                           }}
                         />
-                        <span className="u-tag">
+                        <span className={`u-tag ${route.targets.length >= 2 ? "u-auto-tag" : ""}`}>
                           {route.targets.length >= 2 ? "自动路由" : "单对单"}
                         </span>
                         <code>{route.model}</code>
