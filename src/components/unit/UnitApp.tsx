@@ -533,6 +533,8 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [providerFilter, setProviderFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
   const [displayFilter, setDisplayFilter] = useState<"all" | "shown" | "hidden">("all");
+  const [usageSort, setUsageSort] = useState<"requests" | "tokens" | "cost">("requests");
+  const [usageSearch, setUsageSearch] = useState("");
   const [showAutoRoutes, setShowAutoRoutes] = useState(false);
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -1772,33 +1774,98 @@ function Allocations({ generation }: { generation: number }) {
                       用户用量
                       <small>按近 30 天请求次数排行</small>
                     </div>
-                    <div className="u-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>排名</th>
-                            <th>用户</th>
-                            <th>请求次数</th>
-                            <th>Token</th>
-                            <th>成本</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {[...userUsage]
-                            .sort((a, b) => (b.requests ?? 0) - (a.requests ?? 0))
-                            .map((row, index) => (
-                              <tr key={row.user_id}>
-                                <td>{index + 1}</td>
-                                <td>{row.username}</td>
-                                <td>{num(row.requests ?? 0)}</td>
-                                <td>{num(row.tokens ?? 0)}</td>
-                                <td>{dollars(row.costCredits ?? 0)}</td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {!userUsage.length && <Empty>这个供应商还没有用户用量。</Empty>}
+                    {(() => {
+                      const totalReq = userUsage.reduce((sum, row) => sum + (row.requests ?? 0), 0);
+                      const totalTok = userUsage.reduce((sum, row) => sum + (row.tokens ?? 0), 0);
+                      const totalCost = userUsage.reduce((sum, row) => sum + (row.costCredits ?? 0), 0);
+                      const pct = (value: number, total: number) =>
+                        total > 0 ? (value / total) * 100 : 0;
+                      const keyword = usageSearch.trim().toLowerCase();
+                      const rows = [...userUsage]
+                        .filter((row) =>
+                          keyword
+                            ? String(row.username ?? "").toLowerCase().includes(keyword)
+                            : true,
+                        )
+                        .sort((a, b) =>
+                          usageSort === "tokens"
+                            ? (b.tokens ?? 0) - (a.tokens ?? 0)
+                            : usageSort === "cost"
+                              ? (b.costCredits ?? 0) - (a.costCredits ?? 0)
+                              : (b.requests ?? 0) - (a.requests ?? 0),
+                        );
+                      return (
+                        <>
+                          <div className="u-cards">
+                            <div className="u-card"><small>近 30 天请求</small><strong>{num(totalReq)}</strong></div>
+                            <div className="u-card"><small>近 30 天 Token</small><strong>{num(totalTok)}</strong></div>
+                            <div className="u-card"><small>近 30 天成本</small><strong>{dollars(totalCost)}</strong></div>
+                            <div className="u-card"><small>活跃用户</small><strong>{userUsage.filter((row) => (row.requests ?? 0) > 0).length}</strong></div>
+                          </div>
+                          <div className="u-toolbar" style={{ padding: "0 16px 12px" }}>
+                            <div className="u-search">
+                              <Search size={15} />
+                              <input
+                                placeholder="搜索用户"
+                                value={usageSearch}
+                                onChange={(event) => setUsageSearch(event.target.value)}
+                              />
+                            </div>
+                            <select
+                              value={usageSort}
+                              onChange={(event) =>
+                                setUsageSort(event.target.value as "requests" | "tokens" | "cost")
+                              }
+                            >
+                              <option value="requests">按请求次数排序</option>
+                              <option value="tokens">按 Token 排序</option>
+                              <option value="cost">按成本排序</option>
+                            </select>
+                          </div>
+                          <div className="u-table-wrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>排名</th>
+                                  <th>用户</th>
+                                  <th>请求次数</th>
+                                  <th>请求占比</th>
+                                  <th>Token</th>
+                                  <th>Token 占比</th>
+                                  <th>成本</th>
+                                  <th>成本占比</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {rows.map((row, index) => {
+                                  const reqPct = pct(row.requests ?? 0, totalReq);
+                                  return (
+                                    <tr key={row.user_id}>
+                                      <td>{index + 1}</td>
+                                      <td>{row.username}</td>
+                                      <td>{num(row.requests ?? 0)}</td>
+                                      <td>
+                                        <div className="flex items-center gap-2">
+                                          <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                                            <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, reqPct)}%` }} />
+                                          </div>
+                                          <span>{reqPct.toFixed(1)}%</span>
+                                        </div>
+                                      </td>
+                                      <td>{num(row.tokens ?? 0)}</td>
+                                      <td>{pct(row.tokens ?? 0, totalTok).toFixed(1)}%</td>
+                                      <td>{dollars(row.costCredits ?? 0)}</td>
+                                      <td>{pct(row.costCredits ?? 0, totalCost).toFixed(1)}%</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                          {!rows.length && <Empty>没有匹配的用户。</Empty>}
+                        </>
+                      );
+                    })()}
                   </section>
                   )}
                   {mode === "grants" && (
