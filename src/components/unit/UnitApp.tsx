@@ -1612,11 +1612,6 @@ function Allocations({ generation }: { generation: number }) {
               <div className="u-allocation-head">
                 <div>
                   <h2>{selected.name}</h2>
-                  <p>
-                    {periodName(selected.policy?.period || "month")}结算 ·{" "}
-                    {selected.models.length} 个模型 · 路由{" "}
-                    <code>{selected.routeKey}</code>
-                  </p>
                 </div>
                 <span
                   className={`u-tag ${
