@@ -533,8 +533,6 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [providerFilter, setProviderFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
   const [displayFilter, setDisplayFilter] = useState<"all" | "shown" | "hidden">("all");
-  const [usageSort, setUsageSort] = useState<"requests" | "tokens" | "cost">("requests");
-  const [usageSearch, setUsageSearch] = useState("");
   const [showAutoRoutes, setShowAutoRoutes] = useState(false);
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -1044,6 +1042,8 @@ function Allocations({ generation }: { generation: number }) {
   const [mode, setMode] = useState<
     "policy" | "usage" | "grants" | "codes" | "applications"
   >("policy");
+  const [usageSort, setUsageSort] = useState<"requests" | "tokens" | "cost">("requests");
+  const [usageSearch, setUsageSearch] = useState("");
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [userUsage, setUserUsage] = useState<any[]>([]);
   const [codes, setCodes] = useState<ShareCode[]>([]);
