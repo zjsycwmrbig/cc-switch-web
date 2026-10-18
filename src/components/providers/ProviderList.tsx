@@ -1049,7 +1049,35 @@ export function ProviderList({
                     </div>
                     <div className="rounded-lg border border-border-default px-3 py-2 text-xs">
                       <div className="text-muted-foreground">余额 / 用量</div>
-                      <div className="mt-0.5 whitespace-pre-wrap break-words font-medium text-foreground">{(() => { const u = unitUsage[resource.id]; return u?.success ? ((u.data ?? []).map((d: any) => { const n = typeof d.remaining === "number" ? d.remaining : typeof d.used === "number" ? d.used : null; const v = n == null ? "—" : `${n.toFixed(d.unit === "%" ? 1 : 2)}${d.unit === "%" ? "%" : " " + (d.unit ?? "")}`; return `${d.planName ? d.planName + " " : ""}${v}`; }).join(" · ") || "可用") : "未配置"; })()}</div>
+                      <div className="mt-1.5 space-y-2">
+                        {(() => {
+                          const u = unitUsage[resource.id];
+                          if (!u?.success) {
+                            return <div className="text-xs text-muted-foreground">未配置</div>;
+                          }
+                          const data = (u.data ?? []) as any[];
+                          if (!data.length) return <div className="text-xs text-muted-foreground">可用</div>;
+                          return data.map((d: any, i: number) => {
+                            const n = typeof d.remaining === "number" ? d.remaining : typeof d.used === "number" ? d.used : null;
+                            const pct = d.unit === "%" ? Math.max(0, Math.min(100, n ?? 0)) : null;
+                            return (
+                              <div key={`${d.planName ?? "plan"}-${i}`} className="space-y-1">
+                                <div className="flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="truncate text-muted-foreground">{d.planName || "余额"}</span>
+                                  <span className="font-mono text-foreground">
+                                    {n == null ? "—" : `${n.toFixed(d.unit === "%" ? 1 : 2)}${d.unit === "%" ? "%" : " " + (d.unit ?? "")}`}
+                                  </span>
+                                </div>
+                                {pct != null && (
+                                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                                    <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
                     </div>
                     {(resource.visibleModels?.length ?? 0) > 0 && (
                       <div className="space-y-1.5">

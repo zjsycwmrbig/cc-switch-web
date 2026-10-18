@@ -1008,9 +1008,9 @@ function Allocations({ generation }: { generation: number }) {
   const session = useUnitSession();
   const [resources, setResources] = useState<Resource[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [mode, setMode] = useState<"grants" | "codes" | "applications">(
-    "grants",
-  );
+  const [mode, setMode] = useState<
+    "policy" | "grants" | "codes" | "applications"
+  >("policy");
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [userUsage, setUserUsage] = useState<any[]>([]);
   const [codes, setCodes] = useState<ShareCode[]>([]);
@@ -1620,6 +1620,16 @@ function Allocations({ generation }: { generation: number }) {
                 <button
                   type="button"
                   role="tab"
+                  aria-selected={mode === "policy"}
+                  className={mode === "policy" ? "active" : ""}
+                  onClick={() => setMode("policy")}
+                >
+                  <Users size={15} />
+                  可见性与共享
+                </button>
+                <button
+                  type="button"
+                  role="tab"
                   aria-selected={mode === "grants"}
                   className={mode === "grants" ? "active" : ""}
                   onClick={() => setMode("grants")}
@@ -1652,8 +1662,9 @@ function Allocations({ generation }: { generation: number }) {
                 </button>
               </div>
 
-              {mode === "grants" ? (
+              {(mode === "policy" || mode === "grants") ? (
                 <>
+                  {mode === "policy" && (
                   <section className="u-panel">
                     <div className="u-panel-title">
                       <Users size={17} />
@@ -1721,7 +1732,9 @@ function Allocations({ generation }: { generation: number }) {
                       </button>
                     </form>
                   </section>
+                  )}
 
+                  {mode === "grants" && (
                   <section className="u-panel">
                     <div className="u-panel-title">
                       <UserPlus size={17} />
@@ -1880,6 +1893,7 @@ function Allocations({ generation }: { generation: number }) {
                       </button>
                     </form>
                   </section>
+                  )}
                 </>
               ) : mode === "codes" ? (
                 <>
