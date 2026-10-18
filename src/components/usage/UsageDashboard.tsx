@@ -309,6 +309,7 @@ export function UsageDashboard({
         </Tabs>
       </div>
 
+      {!session && (
       <div className="rounded-xl glass-card px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <ScanSearch className="h-5 w-5 text-sky-500" />
@@ -347,6 +348,8 @@ export function UsageDashboard({
           />
         </div>
       </div>
+
+      )}
 
       {/* Pricing Configuration */}
       <Accordion type="multiple" defaultValue={[]} className="w-full space-y-4">
