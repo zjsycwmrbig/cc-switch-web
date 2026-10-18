@@ -731,8 +731,8 @@ export function ProviderList({
                     disabled:
                       modePending ||
                       !modeView.eligibleProviderIds.includes(provider.id),
-                    joinLabel: session ? "加入公共供应商" : undefined,
-                    memberLabel: session ? "已在供应商库" : undefined,
+                    joinLabel: session ? "上架供应商市场" : undefined,
+                    memberLabel: session ? "已上架" : undefined,
                     onToggle: () =>
                       onAggregationMember?.(
                         provider.id,

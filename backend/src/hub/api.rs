@@ -420,7 +420,7 @@ async fn resources_list(
         .filter(|r| {
             r.owner_id == user.id
                 || user.admin()
-                || (r.published && resources::grant(&app.db, &user, r, None).is_ok())
+                || resources::grant(&app.db, &user, r, None).is_ok()
         })
         .map(|r| resources::safe_view(&app.db, &user, r))
         .collect::<Vec<_>>();
@@ -1034,7 +1034,7 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
     for r in resources::all(db)?
         .into_iter()
         .filter(|r| {
-            r.app_type == "codex" && !r.disabled && (r.published || r.owner_id == user.id)
+            r.app_type == "codex" && !r.disabled
         })
     {
         for raw in &r.models {
@@ -1192,7 +1192,7 @@ async fn detect_model_routes(
         Vec<(String, String)>,
     > = Default::default();
     for r in &all {
-        if r.app_type != "codex" || r.disabled || (!r.published && r.owner_id != user.id) {
+        if r.app_type != "codex" || r.disabled {
             continue;
         }
         for raw in &r.models {
@@ -1730,8 +1730,8 @@ async fn create_share_code(
     }
     let r = resources::get(&app.db, &resource)?;
     resources::own(&user, &r)?;
-    if !r.published || r.disabled {
-        return Err(Error::bad("请先发布并启用供应商，再创建分享口令"));
+    if r.disabled {
+        return Err(Error::bad("供应商已停用，无法创建分享口令"));
     }
     let available = resources::visible_model_slugs(&r)
         .into_iter()

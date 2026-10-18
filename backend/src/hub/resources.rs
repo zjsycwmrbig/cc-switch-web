@@ -215,9 +215,6 @@ pub fn usable(
     if r.disabled {
         return Err(Error::denied("supplier_disabled", "该供应商已被停用"));
     }
-    if !r.published && r.owner_id != user.id {
-        return Err(Error::denied("supplier_unpublished", "该供应商尚未发布或已下架"));
-    }
     let Some(resolved) = match_model_slug(r, model) else {
         return Err(Error::denied(
             "model_not_provided",

@@ -1717,23 +1717,36 @@ function Allocations({ generation }: { generation: number }) {
                       <small>控制这个供应商对其他用户是否可见、可按什么额度使用</small>
                     </div>
                     <form className="u-panel-body" onSubmit={savePolicy}>
-                      <Field label="其他用户的可见性">
+                      <Field label="供应商市场">
                         <div className="u-visibility-toggle">
                           <button
                             type="button"
-                            className={policy.visibility === "public" ? "active" : ""}
-                            onClick={() => setPolicy({ ...policy, visibility: "public" })}
+                            className={selected.published ? "active" : ""}
+                            onClick={async () => {
+                              if (!selected) return;
+                              try {
+                                await unit(`/resources/${selected.id}/publication`, "PUT", {
+                                  published: !selected.published,
+                                });
+                                setResources((current) =>
+                                  current.map((item) =>
+                                    item.id === selected.id
+                                      ? { ...item, published: !selected.published }
+                                      : item,
+                                  ),
+                                );
+                                toast.success(selected.published ? "已下架供应商市场" : "已上架供应商市场");
+                              } catch (error) {
+                                toast.error(errorText(error));
+                              }
+                            }}
                           >
-                            可见
-                          </button>
-                          <button
-                            type="button"
-                            className={policy.visibility !== "public" ? "active" : ""}
-                            onClick={() => setPolicy({ ...policy, visibility: "private" })}
-                          >
-                            不可见
+                            {selected.published ? "已上架（点击下架）" : "未上架（点击上架）"}
                           </button>
                         </div>
+                        <p className="u-note">
+                          上架后会出现在供应商库供其他用户申请；不上架时仍可通过单独授权或分享口令给指定用户使用。
+                        </p>
                       </Field>
                       <p className="u-note">
                         额度完全由申请审批或指定授权决定，不再提供默认额度、共享预算或按周期重置。

@@ -27,7 +27,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 fn visible(db: &crate::database::Database, user: &Identity, r: &resources::Resource) -> bool {
     r.owner_id == user.id
         || user.admin()
-        || (r.published && resources::grant(db, user, r, None).is_ok())
+        || resources::grant(db, user, r, None).is_ok()
 }
 async fn providers(
     State(app): State<Arc<AppState>>,
