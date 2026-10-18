@@ -300,19 +300,8 @@ pub(crate) async fn query_provider_usage_internal(
     }
 
     if template_type == TEMPLATE_TYPE_BALANCE {
-        let env = settings_config.get("env");
-        let base_url = env
-            .and_then(|value| value.get("ANTHROPIC_BASE_URL"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let api_key = env
-            .and_then(|value| {
-                value
-                    .get("ANTHROPIC_AUTH_TOKEN")
-                    .or_else(|| value.get("ANTHROPIC_API_KEY"))
-            })
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
+        // 与通用脚本一致：按应用类型解析凭据，Codex 供应商也能查余额。
+        let (base_url, api_key) = &usage_credentials;
 
         return crate::services::balance::get_balance(base_url, api_key)
             .await

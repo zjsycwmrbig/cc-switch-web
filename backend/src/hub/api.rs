@@ -938,7 +938,47 @@ async fn model_routes(
     Extension(user): Extension<Identity>,
 ) -> Result<Json<Value>> {
     seed_model_routes(&app.db, &user)?;
+    sanitize_model_routes(&app.db, &user)?;
     Ok(Json(json!(list_model_routes(&app.db, &user.id)?)))
+}
+
+/// 清理已经失效的路由目标：供应商下架、共享范围收缩、授权被收回/过期后，
+/// 用户模型页里不应继续出现这些模型；目标全部失效的整条路由直接删除。
+fn sanitize_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
+    let all = resources::all(db)?;
+    for route in list_model_routes(db, &user.id)? {
+        let Some(id) = route["id"].as_str() else {
+            continue;
+        };
+        let model = route["model"].as_str().unwrap_or_default().to_string();
+        let targets = route["targets"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let kept = targets
+            .iter()
+            .filter(|target| {
+                all.iter()
+                    .find(|r| &r.id == *target)
+                    .is_some_and(|r| resources::usable(db, user, r, &model).is_ok())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if kept.is_empty() {
+            conn(db)?.execute("DELETE FROM hub_model_routes WHERE id=?1", [id])?;
+        } else if kept != targets {
+            conn(db)?.execute(
+                "UPDATE hub_model_routes SET targets=?1,updated_at=?2 WHERE id=?3",
+                params![json_text(&kept), now(), id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// 首次进入模型页时，把当前可用的「资源 × 模型」补成映射：

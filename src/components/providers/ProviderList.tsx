@@ -476,11 +476,14 @@ export function ProviderList({
       );
   }, [searchTerm, unitLibrary]);
 
+  // 只在用户还没手动切过 tab 时自动跳到供应商库；否则空 tab（我的供应商 0）会被反复弹回。
+  const unitTabTouched = useRef(false);
   useEffect(() => {
+    if (!session || unitTabTouched.current) return;
     const ownedCount = filteredProviders.filter(
       (provider) => !provider.unitResource || provider.unitResource.owned,
     ).length;
-    if (session && unitTab === "owned" && ownedCount === 0 && unitLibraryEntries.length > 0) {
+    if (unitTab === "owned" && ownedCount === 0 && unitLibraryEntries.length > 0) {
       setUnitTab("library");
       setUnitPage(1);
     }
@@ -829,7 +832,10 @@ export function ProviderList({
         <PageTabs
           aria-label="供应商分类"
           value={unitTab}
-          onValueChange={setUnitTab}
+          onValueChange={(value) => {
+            unitTabTouched.current = true;
+            setUnitTab(value as UnitProviderTab);
+          }}
           items={[
             {
               value: "library",
@@ -1155,18 +1161,19 @@ export function ProviderList({
           if (!open) setApplyTarget(null);
         }}
       >
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-2xl p-6 sm:p-7">
           <DialogHeader>
             <DialogTitle>申请使用供应商</DialogTitle>
           </DialogHeader>
           {applyTarget && (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
+            <div className="space-y-6 py-2">
+              <p className="text-sm leading-6 text-muted-foreground">
                 {applyTarget.unitResource.ownerName} 的 {applyTarget.name}
                 ：提交后由提供者审批，可以按你的条件通过，也可以调整条件后通过；留空表示不限。
               </p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1 text-xs text-muted-foreground">
+              <div className="space-y-5 rounded-xl border border-border-default p-4">
+                <div className="grid grid-cols-1 gap-5">
+                <div className="space-y-2 text-xs text-muted-foreground">
                   请求次数
                   <LimitField
                     kind="requests"
@@ -1176,7 +1183,7 @@ export function ProviderList({
                     }
                   />
                 </div>
-                <div className="space-y-1 text-xs text-muted-foreground">
+                <div className="space-y-2 text-xs text-muted-foreground">
                   Token 数量
                   <LimitField
                     kind="tokens"
@@ -1185,16 +1192,17 @@ export function ProviderList({
                   />
                 </div>
               </div>
-              <label className="block space-y-1 text-xs text-muted-foreground">
-                时间截止（留空表示不限时间）
-                <Input
-                  type="datetime-local"
-                  value={applyExpires}
-                  onChange={(event) => setApplyExpires(event.target.value)}
-                />
-              </label>
+                <label className="block space-y-2 text-xs text-muted-foreground">
+                  时间截止（留空表示不限时间）
+                  <Input
+                    type="datetime-local"
+                    value={applyExpires}
+                    onChange={(event) => setApplyExpires(event.target.value)}
+                  />
+                </label>
+              </div>
               {applyVisibleModels.length > 0 && (
-                <div className="space-y-2 text-xs text-muted-foreground">
+                <div className="space-y-3 rounded-xl border border-border-default p-4 text-xs text-muted-foreground">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span>模型范围（留空表示全部可见模型）</span>
                     <span>
@@ -1301,7 +1309,7 @@ export function ProviderList({
                   )}
                 </div>
               )}
-              <label className="block space-y-1 text-xs text-muted-foreground">
+              <label className="block space-y-2 text-xs text-muted-foreground">
                 申请说明（可选）
                 <Input
                   value={applyMessage}
@@ -1309,7 +1317,7 @@ export function ProviderList({
                   onChange={(event) => setApplyMessage(event.target.value)}
                 />
               </label>
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-3 pt-1">
                 <Button
                   type="button"
                   variant="ghost"

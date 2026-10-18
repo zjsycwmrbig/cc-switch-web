@@ -144,11 +144,15 @@ pub async fn query_usage(
             ));
         }
 
+        // 凭据解析要兼容 Codex（auth + TOML config）与 Claude（env）两种配置形状，
+        // 否则扫码类用量查询会拿到空 baseUrl / apiKey。
+        let (resolved_base_url, resolved_api_key) = provider.resolve_usage_credentials(&app_type);
         // Get credentials: prioritize UsageScript values, fallback to provider config
         let api_key = usage_script
             .api_key
             .clone()
             .filter(|k| !k.is_empty())
+            .or_else(|| (!resolved_api_key.is_empty()).then(|| resolved_api_key.clone()))
             .or_else(|| extract_api_key_from_provider(provider))
             .unwrap_or_default();
 
@@ -156,6 +160,7 @@ pub async fn query_usage(
             .base_url
             .clone()
             .filter(|u| !u.is_empty())
+            .or_else(|| (!resolved_base_url.is_empty()).then(|| resolved_base_url.clone()))
             .or_else(|| extract_base_url_from_provider(provider))
             .unwrap_or_default();
 

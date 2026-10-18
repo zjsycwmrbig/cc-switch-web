@@ -978,12 +978,74 @@ button.u-panel-title:hover {
 
 /* Token 额度：数字 + 单位下拉（K/M/G），内部按绝对值保存。 */
 .u-limit-field {
+  /* 该控件也会出现在普通弹窗里，需要自带一份主题变量。 */
+  --u-ink: hsl(var(--foreground));
+  --u-muted: hsl(var(--muted-foreground));
+  --u-line: hsl(var(--border));
+  --u-accent: hsl(var(--primary));
+  --u-hover: hsl(var(--accent));
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.u-limit-field > select {
-  width: 100%;
+.u-limit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.u-limit-chips > button,
+.u-limit-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 5px 11px;
+  border: 1px solid var(--u-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--u-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.u-limit-chips > button:hover {
+  background: var(--u-hover);
+}
+.u-limit-chips > button.active,
+.u-limit-custom.active {
+  border-color: color-mix(in srgb, var(--u-accent) 55%, var(--u-line));
+  background: color-mix(in srgb, var(--u-accent) 12%, transparent);
+  color: var(--u-accent);
+  font-weight: 600;
+}
+.u-limit-custom {
+  padding: 0 4px 0 0;
+}
+.u-limit-custom > input {
+  width: 92px;
+  border: 0;
+  background: transparent;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 11px;
+  color: inherit;
+  box-shadow: none;
+}
+.u-limit-unit {
+  padding: 0 6px;
+  font-size: 11px;
+  color: inherit;
+  opacity: 0.8;
+}
+.u-limit-hint {
+  font-size: 10px;
+  color: var(--u-muted);
+}
+.u-budget-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
 }
 .u-token-field {
   display: grid;

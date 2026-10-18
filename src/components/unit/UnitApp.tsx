@@ -166,7 +166,7 @@ function BudgetFields({
   return (
     <fieldset className="u-budget">
       <legend>{title}</legend>
-      <div className={hideCredits ? "u-grid2" : "u-grid3"}>
+      <div className="u-budget-grid">
         {fields.map(([key, label]) => (
           <Field key={key} label={label}>
             {key === "tokens" ? (
@@ -574,6 +574,20 @@ function Models({ generation }: { me: Me; generation: number }) {
     setPage(1);
   }, [search, providerFilter, modelFilter]);
 
+  // 供应商目录/共享范围可能被其他用户随时调整：定时与窗口聚焦时刷新，
+  // 服务端会顺手清掉已失效的路由目标。
+  useEffect(() => {
+    const refresh = () => {
+      void load().catch(() => {});
+    };
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [load]);
+
   const save = async () => {
     setSaving(true);
     try {
@@ -740,6 +754,17 @@ function Models({ generation }: { me: Me; generation: number }) {
               onClick={() => void detect()}
             >
               {detectBusy ? "识别中…" : "自动识别映射"}
+            </button>
+            <button
+              className="u-quiet"
+              type="button"
+              onClick={() =>
+                void load()
+                  .then(() => toast.success("已刷新可选模型"))
+                  .catch((error) => toast.error(errorText(error)))
+              }
+            >
+              刷新
             </button>
             <button
               className="u-quiet"

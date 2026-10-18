@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { formatNumber } from "./client";
+import "./unit.css";
 
 const UNITS = [
   { key: "1", label: "无", scale: 1 },
@@ -83,7 +84,7 @@ export function LimitField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
-  const commit = (nextText: string, nextUnit: LimitUnit) => {
+  const commit = (nextText: string) => {
     const trimmed = nextText.trim();
     if (!trimmed) {
       committed.current = null;
@@ -92,7 +93,8 @@ export function LimitField({
     }
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed) || parsed < 0) return;
-    const next = Math.round(parsed * unitScale(nextUnit));
+    // 自定义输入按“绝对值”理解，单位只用于显示（输入 10000000 -> 10M）。
+    const next = Math.round(parsed);
     committed.current = next;
     change(next);
   };
@@ -101,54 +103,50 @@ export function LimitField({
 
   return (
     <div className="u-limit-field">
-      <select
-        value={selectValue}
-        onChange={(event) => {
-          const picked = event.target.value;
-          if (picked === "unlimited") {
+      <div className="u-limit-chips">
+        <button
+          type="button"
+          className={selectValue === "unlimited" ? "active" : ""}
+          onClick={() => {
             setCustom(false);
             committed.current = null;
             change(null);
-            return;
-          }
-          if (picked === "custom") {
-            setCustom(true);
-            if (value == null) {
-              setUnit("1");
-              setText("");
-            } else {
-              const nextUnit = pickUnit(value);
-              setUnit(nextUnit);
-              setText(formatIn(value, nextUnit));
-            }
-            return;
-          }
-          const next = Number(picked);
-          if (!Number.isFinite(next)) return;
-          setCustom(false);
-          committed.current = next;
-          change(next);
-        }}
-      >
-        <option value="unlimited">不限</option>
+          }}
+        >
+          不限
+        </button>
         {presets.map((preset) => (
-          <option key={preset} value={preset}>
+          <button
+            key={preset}
+            type="button"
+            className={selectValue === String(preset) ? "active" : ""}
+            onClick={() => {
+              setCustom(false);
+              committed.current = preset;
+              change(preset);
+            }}
+          >
             {compact(preset)}
-            {kind === "requests" ? " 次" : ""}
-          </option>
+          </button>
         ))}
-        <option value="custom">自定义…</option>
-      </select>
-      {custom && (
-        <div className="u-token-field">
+        <div className={`u-limit-custom ${selectValue === "custom" ? "active" : ""}`}>
           <input
             type="text"
             inputMode="decimal"
-            placeholder="输入数值"
-            value={text}
+            placeholder="自定义"
+            value={custom ? text : ""}
+            onFocus={() => {
+              setCustom(true);
+              if (value != null) {
+                const nextUnit = pickUnit(value);
+                setUnit(nextUnit);
+                setText(String(value));
+              }
+            }}
             onChange={(event) => {
+              setCustom(true);
               setText(event.target.value);
-              commit(event.target.value, unit);
+              commit(event.target.value);
             }}
             onBlur={() => {
               if (value == null) {
@@ -160,31 +158,19 @@ export function LimitField({
               setText(formatIn(value, nextUnit));
             }}
           />
-          <select
-            aria-label="额度单位"
-            value={unit}
-            onChange={(event) => {
-              const nextUnit = event.target.value as LimitUnit;
-              setUnit(nextUnit);
-              if (value == null) {
-                setText("");
-              } else {
-                setText(formatIn(value, nextUnit));
-              }
-            }}
-          >
-            {UNITS.map((item) => (
-              <option key={item.key} value={item.key}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-          <small>
-            {value == null
-              ? "留空表示不限"
-              : `= ${formatNumber(value)}${kind === "requests" ? " 次" : " Token"}`}
-          </small>
+          {text.trim() ? (
+            <span className="u-limit-unit" aria-label="额度单位">
+              {UNITS.find((item) => item.key === unit)?.label ?? "无"}
+            </span>
+          ) : null}
         </div>
+      </div>
+      {custom && (
+        <small className="u-limit-hint">
+          {value == null
+            ? "留空表示不限"
+            : `= ${formatNumber(value)}${kind === "requests" ? " 次" : " Token"}`}
+        </small>
       )}
     </div>
   );
