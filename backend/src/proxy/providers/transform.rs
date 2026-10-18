@@ -210,6 +210,7 @@ pub fn anthropic_to_openai_with_reasoning_content(
         }
     }
 
+    repair_orphan_tool_calls(&mut messages);
     result["messages"] = json!(messages);
 
     // 转换参数 — o-series 模型需要 max_completion_tokens
@@ -339,6 +340,49 @@ fn map_tool_choice_to_chat(tool_choice: &Value) -> Value {
 }
 
 /// 转换单条消息到 OpenAI 格式（可能产生多条消息）
+
+/// 修复孤立的 tool_calls：assistant 声明了工具调用但缺少对应 tool 结果时，
+/// 补一条占位 tool 消息，避免上游以“tool_calls 后缺少 tool 响应”拒绝整段请求。
+pub fn repair_orphan_tool_calls(messages: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].get("role").and_then(Value::as_str) != Some("assistant") {
+            i += 1;
+            continue;
+        }
+        let ids = messages[i]
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| call.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut found = std::collections::HashSet::new();
+        while j < messages.len() && messages[j].get("role").and_then(Value::as_str) == Some("tool") {
+            if let Some(id) = messages[j].get("tool_call_id").and_then(Value::as_str) {
+                found.insert(id.to_string());
+            }
+            j += 1;
+        }
+        let missing: Vec<String> = ids.into_iter().filter(|id| !found.contains(id)).collect();
+        for (offset, id) in missing.into_iter().enumerate() {
+            messages.insert(
+                i + 1 + offset,
+                json!({"role":"tool","tool_call_id":id,"content":"[tool result unavailable]"}),
+            );
+        }
+        i += 1;
+    }
+}
+
 fn convert_message_to_openai(
     role: &str,
     content: Option<&Value>,
