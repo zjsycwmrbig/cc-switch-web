@@ -1005,6 +1005,7 @@ type ModelRoute = {
 };
 
 function Allocations({ generation }: { generation: number }) {
+  const session = useUnitSession();
   const [resources, setResources] = useState<Resource[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [mode, setMode] = useState<"grants" | "codes" | "applications">(
@@ -1025,6 +1026,8 @@ function Allocations({ generation }: { generation: number }) {
     >
   >({});
   const [createdCode, setCreatedCode] = useState<ShareCode | null>(null);
+  const shareInviteText = (url: string) =>
+    `${session?.me.user.username ?? "我"} 分享了「${selected?.name ?? "供应商"}」的访问口令：${url}`;
   const [policy, setPolicy] = useState<Policy>(defaultPolicy());
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1322,7 +1325,7 @@ function Allocations({ generation }: { generation: number }) {
       setCodeModels([]);
       setCodeExpires("");
       setMaxClaims(1);
-      toast.success("分享口令已创建，请在离开前复制链接");
+      toast.success("分享口令已创建，请在离开前复制引导口令");
     } catch (error) {
       toast.error(errorText(error));
     } finally {
@@ -1885,7 +1888,7 @@ function Allocations({ generation }: { generation: number }) {
                       <div>
                         <h2>分享口令已创建</h2>
                         <p>
-                          此链接只显示一次。接收者登录后会自动领取，额度按先到先得结算。
+                          把下面这段发给对方，对方登录后打开链接即可领取额度（仅显示一次，额度先到先得）。
                         </p>
                       </div>
                       <code>{createdCode.url}</code>
@@ -1893,10 +1896,10 @@ function Allocations({ generation }: { generation: number }) {
                         <button
                           type="button"
                           className="u-button"
-                          onClick={() => void copy(createdCode.url!)}
+                          onClick={() => void copy(shareInviteText(createdCode.url!))}
                         >
                           <Link2 size={14} />
-                          复制分享链接
+                          复制引导口令
                         </button>
                         <button
                           type="button"
@@ -2041,7 +2044,7 @@ function Allocations({ generation }: { generation: number }) {
                                         }
                                       >
                                         <Copy size={13} />
-                                        复制链接
+                                        复制引导口令
                                       </button>
                                     )}
                                   {code.active && (
