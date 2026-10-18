@@ -977,6 +977,14 @@ button.u-panel-title:hover {
 }
 
 /* Token 额度：数字 + 单位下拉（K/M/G），内部按绝对值保存。 */
+.u-limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.u-limit-field > select {
+  width: 100%;
+}
 .u-token-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px;

@@ -71,7 +71,7 @@ import {
   dollars,
 } from "./client";
 import "./unit.css";
-import { TokenLimitField } from "./TokenLimitField";
+import { LimitField } from "./LimitField";
 import { UnitSession, useUnitSession } from "./session";
 
 const SwitchApp = lazy(() => import("@/App"));
@@ -170,9 +170,16 @@ function BudgetFields({
         {fields.map(([key, label]) => (
           <Field key={key} label={label}>
             {key === "tokens" ? (
-              <TokenLimitField
+              <LimitField
+                kind="tokens"
                 value={value.tokens}
                 change={(tokens) => change({ ...value, tokens })}
+              />
+            ) : key === "requests" ? (
+              <LimitField
+                kind="requests"
+                value={value.requests}
+                change={(requests) => change({ ...value, requests })}
               />
             ) : (
               <input
@@ -2108,7 +2115,8 @@ function Allocations({ generation }: { generation: number }) {
                           />
                         </Field>
                         <Field label="总 Token 量">
-                          <TokenLimitField
+                          <LimitField
+                            kind="tokens"
                             value={policy.autoApprove?.totalTokens}
                             change={(totalTokens) =>
                               setPolicy({
@@ -2122,7 +2130,8 @@ function Allocations({ generation }: { generation: number }) {
                           />
                         </Field>
                         <Field label="单人最多申请 Token">
-                          <TokenLimitField
+                          <LimitField
+                            kind="tokens"
                             value={policy.autoApprove?.perUserTokens}
                             change={(perUserTokens) =>
                               setPolicy({

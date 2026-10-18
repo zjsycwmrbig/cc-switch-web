@@ -38,8 +38,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { unit, formatDate, type Budget } from "@/components/unit/client";
-import { TokenLimitField } from "@/components/unit/TokenLimitField";
+import {
+  unit,
+  formatDate,
+  formatNumber,
+  type Budget,
+} from "@/components/unit/client";
+import { LimitField } from "@/components/unit/LimitField";
 import {
   useAutoFailoverEnabled,
   useFailoverQueue,
@@ -59,7 +64,12 @@ import { invalidatePiProviderCaches } from "@/lib/query/pi";
 
 type UnitProviderTab = "library" | "owned" | "shared";
 
-const UNIT_PAGE_SIZE = 6;
+/** 供应商库每页 12 个，我的供应商每页 5 个，共享给我的每页 5 个。 */
+const UNIT_PAGE_SIZE: Record<UnitProviderTab, number> = {
+  library: 12,
+  owned: 5,
+  shared: 5,
+};
 
 /** 授权额度是否不限（三个维度都留空）。 */
 function isUnlimitedBudget(budget?: Budget) {
@@ -278,6 +288,9 @@ export function ProviderList({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [unitTab, setUnitTab] = useState<UnitProviderTab>("owned");
   const [unitPage, setUnitPage] = useState(1);
+  useEffect(() => {
+    setUnitPage(1);
+  }, [unitTab]);
   const [applyTarget, setApplyTarget] = useState<UnitLibraryProvider | null>(
     null,
   );
@@ -677,11 +690,12 @@ export function ProviderList({
     total: number,
     currentPage: number,
     totalPages: number,
+    pageSize: number,
   ) =>
-    total > UNIT_PAGE_SIZE ? (
+    total > pageSize ? (
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-border-default bg-background/60 px-4 py-3">
         <span className="text-xs text-muted-foreground">
-          共 {total} 个 · 每页 {UNIT_PAGE_SIZE} 个
+          共 {total} 个 · 每页 {pageSize} 个
         </span>
         <div className="flex items-center gap-2">
           <Button
@@ -711,6 +725,84 @@ export function ProviderList({
       </div>
     ) : null;
 
+  /** 共享给我的供应商：卡片直接展示额度、截止时间与可用的模型范围。 */
+  const renderSharedCards = (list: Provider[]) => (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {list.map((provider) => {
+        const resource = provider.unitResource;
+        if (!resource) return null;
+        const budget = resource.myBudget || {};
+        return (
+          <article
+            key={provider.id}
+            className="glass-card flex flex-col gap-3 rounded-[22px] border border-border-default p-4"
+          >
+            <header className="flex min-w-0 items-start gap-3">
+              <ProviderIcon
+                icon={provider.icon}
+                name={provider.name}
+                size={20}
+                className="mt-0.5 flex-shrink-0"
+              />
+              <div className="min-w-0">
+                <h3 className="truncate text-sm font-semibold text-foreground">
+                  {resource.ownerName} 的 {provider.name}
+                </h3>
+                <p className="truncate text-xs text-muted-foreground">
+                  {resource.appType?.toUpperCase()} · 共享给我
+                </p>
+              </div>
+            </header>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-lg border border-border-default px-2.5 py-2">
+                <div className="text-muted-foreground">请求次数</div>
+                <div className="font-medium text-foreground">
+                  {budget.requests == null
+                    ? "不限"
+                    : `${formatNumber(budget.requests)} 次`}
+                </div>
+              </div>
+              <div className="rounded-lg border border-border-default px-2.5 py-2">
+                <div className="text-muted-foreground">Token 数量</div>
+                <div className="font-medium text-foreground">
+                  {budget.tokens == null
+                    ? "不限"
+                    : `${formatNumber(budget.tokens)} Token`}
+                </div>
+              </div>
+              <div className="rounded-lg border border-border-default px-2.5 py-2">
+                <div className="text-muted-foreground">时间截止</div>
+                <div className="font-medium text-foreground">
+                  {resource.myExpiresAt
+                    ? formatDate(resource.myExpiresAt)
+                    : "不限时间"}
+                </div>
+              </div>
+              <div className="rounded-lg border border-border-default px-2.5 py-2">
+                <div className="text-muted-foreground">可用模型</div>
+                <div className="font-medium text-foreground">
+                  {resource.models.length
+                    ? `${resource.models.length} 个`
+                    : "暂无可用模型"}
+                </div>
+              </div>
+            </div>
+            <footer className="mt-auto flex flex-wrap items-center gap-2">
+              <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
+                {resource.grantSource === "policy"
+                  ? "公开默认额度"
+                  : "单独授权"}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                {resource.health === "ready" ? "就绪" : "可用"}
+              </span>
+            </footer>
+          </article>
+        );
+      })}
+    </div>
+  );
+
   const renderUnitWorkbench = () => {
     const owned = filteredProviders.filter(
       (provider) => !provider.unitResource || provider.unitResource.owned,
@@ -720,15 +812,16 @@ export function ProviderList({
     );
     const items =
       unitTab === "owned" ? owned : unitTab === "shared" ? shared : [];
+    const pageSize = UNIT_PAGE_SIZE[unitTab];
     const total =
       unitTab === "library" ? unitLibraryEntries.length : items.length;
-    const totalPages = Math.max(1, Math.ceil(total / UNIT_PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const currentPage = Math.min(unitPage, totalPages);
-    const offset = (currentPage - 1) * UNIT_PAGE_SIZE;
-    const pageItems = items.slice(offset, offset + UNIT_PAGE_SIZE);
+    const offset = (currentPage - 1) * pageSize;
+    const pageItems = items.slice(offset, offset + pageSize);
     const pageLibraryEntries = unitLibraryEntries.slice(
       offset,
-      offset + UNIT_PAGE_SIZE,
+      offset + pageSize,
     );
 
     return (
@@ -842,7 +935,11 @@ export function ProviderList({
             </div>
           )
         ) : pageItems.length ? (
-          renderProviderCards(pageItems)
+          unitTab === "shared" ? (
+            renderSharedCards(pageItems)
+          ) : (
+            renderProviderCards(pageItems)
+          )
         ) : (
           <div className="rounded-[22px] border border-dashed border-border-default px-4 py-8 text-center text-sm text-muted-foreground">
             {unitTab === "owned"
@@ -851,7 +948,7 @@ export function ProviderList({
           </div>
         )}
 
-        {renderUnitPager(total, currentPage, totalPages)}
+        {renderUnitPager(total, currentPage, totalPages, pageSize)}
       </div>
     );
   };
@@ -1069,31 +1166,24 @@ export function ProviderList({
                 ：提交后由提供者审批，可以按你的条件通过，也可以调整条件后通过；留空表示不限。
               </p>
               <div className="grid grid-cols-2 gap-3">
-                <label className="space-y-1 text-xs text-muted-foreground">
+                <div className="space-y-1 text-xs text-muted-foreground">
                   请求次数
-                  <Input
-                    type="number"
-                    min={0}
-                    placeholder="不限"
-                    value={applyBudget.requests ?? ""}
-                    onChange={(event) =>
-                      setApplyBudget({
-                        ...applyBudget,
-                        requests:
-                          event.target.value === ""
-                            ? null
-                            : Number(event.target.value),
-                      })
+                  <LimitField
+                    kind="requests"
+                    value={applyBudget.requests}
+                    change={(requests) =>
+                      setApplyBudget({ ...applyBudget, requests })
                     }
                   />
-                </label>
-                <label className="space-y-1 text-xs text-muted-foreground">
+                </div>
+                <div className="space-y-1 text-xs text-muted-foreground">
                   Token 数量
-                  <TokenLimitField
+                  <LimitField
+                    kind="tokens"
                     value={applyBudget.tokens}
                     change={(tokens) => setApplyBudget({ ...applyBudget, tokens })}
                   />
-                </label>
+                </div>
               </div>
               <label className="block space-y-1 text-xs text-muted-foreground">
                 时间截止（留空表示不限时间）
