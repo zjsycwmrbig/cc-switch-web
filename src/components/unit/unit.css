@@ -1332,3 +1332,41 @@ button.u-panel-title:hover {
   border-color: color-mix(in srgb, var(--u-accent) 45%, var(--u-line));
   color: var(--u-accent);
 }
+
+.u-route-kinds {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--u-line);
+  border-radius: 7px;
+  background: var(--u-surface);
+}
+.u-route-kinds button {
+  min-width: 48px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--u-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.u-route-kinds button.active {
+  background: color-mix(in srgb, var(--u-accent) 14%, transparent);
+  color: var(--u-accent);
+  font-weight: 600;
+}
+.u-toolbar {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.u-toolbar > * {
+  flex-shrink: 0;
+}
+.u-toolbar .u-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+}

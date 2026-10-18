@@ -532,8 +532,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [resources, setResources] = useState<Resource[]>([]);
   const [providerFilter, setProviderFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
-  const [displayFilter, setDisplayFilter] = useState<"all" | "shown" | "hidden">("all");
-  const [showAutoRoutes, setShowAutoRoutes] = useState(false);
+  const [routeKinds, setRouteKinds] = useState<Set<"direct" | "auto">>(new Set(["direct"]));
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
@@ -662,7 +661,10 @@ function Models({ generation }: { me: Me; generation: number }) {
   };
 
   const filtered = routes.filter((route) => {
-    if (!showAutoRoutes && route.targets.length >= 2) return false;
+    if (routeKinds.size > 0) {
+      const kind = route.targets.length >= 2 ? "auto" : "direct";
+      if (!routeKinds.has(kind)) return false;
+    }
     const keyword = search.trim().toLowerCase();
     const text =
       `${route.displayName} ${route.model} ${route.targets.map(providerLabel).join(" ")}`.toLowerCase();
@@ -670,10 +672,7 @@ function Models({ generation }: { me: Me; generation: number }) {
       (!keyword || text.includes(keyword)) &&
       (!providerFilter || route.targets.includes(providerFilter)) &&
       (!modelFilter || route.model === modelFilter) &&
-      (displayFilter === "all" ||
-        (displayFilter === "shown"
-          ? selected.has(routeSlug(route, resources))
-          : !selected.has(routeSlug(route, resources))))
+
     );
   });
   const totalPages = Math.max(1, Math.ceil(filtered.length / 10));
@@ -760,24 +759,32 @@ function Models({ generation }: { me: Me; generation: number }) {
                 </option>
               ))}
             </select>
-            <select
-              value={displayFilter}
-              onChange={(event) =>
-                setDisplayFilter(event.target.value as "all" | "shown" | "hidden")
-              }
-            >
-              <option value="all">展示状态：全部</option>
-              <option value="shown">已展示</option>
-              <option value="hidden">未展示</option>
-            </select>
-            <label className="u-inline">
-              <input
-                type="checkbox"
-                checked={showAutoRoutes}
-                onChange={(event) => setShowAutoRoutes(event.target.checked)}
-              />
-              显示自动路由
-            </label>
+            <div className="u-route-kinds" role="group" aria-label="路由类型筛选">
+              {([
+                ["auto", "路由"],
+                ["direct", "直连"],
+              ] as const).map(([kind, label]) => {
+                const active = routeKinds.has(kind);
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={active}
+                    className={active ? "active" : ""}
+                    onClick={() =>
+                      setRouteKinds((current) => {
+                        const next = new Set(current);
+                        if (next.has(kind)) next.delete(kind);
+                        else next.add(kind);
+                        return next;
+                      })
+                    }
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
             <button
               className="u-quiet"
               type="button"
