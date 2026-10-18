@@ -1434,3 +1434,14 @@ button.u-panel-title:hover {
   color: var(--u-accent);
   font-weight: 600;
 }
+
+.u-market-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.u-market-hint {
+  margin: 0;
+  flex: 1 1 320px;
+}

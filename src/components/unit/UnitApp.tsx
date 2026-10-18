@@ -1215,6 +1215,21 @@ function Allocations({ generation }: { generation: number }) {
     };
   }, [generation, loadApplications]);
 
+  const changePublication = async (published: boolean) => {
+    if (!selected) return;
+    try {
+      await unit(`/resources/${selected.id}/publication`, "PUT", { published });
+      setResources((current) =>
+        current.map((item) =>
+          item.id === selected.id ? { ...item, published } : item,
+        ),
+      );
+      toast.success(published ? "已上架供应商市场" : "已下架供应商市场");
+    } catch (error) {
+      toast.error(errorText(error));
+    }
+  };
+
   const resetGrantForm = () => {
     setEditingUser("");
     setUsername("");
@@ -1718,35 +1733,29 @@ function Allocations({ generation }: { generation: number }) {
                     </div>
                     <form className="u-panel-body" onSubmit={savePolicy}>
                       <Field label="供应商市场">
-                        <div className="u-visibility-toggle">
-                          <button
-                            type="button"
-                            className={selected.published ? "active" : ""}
-                            onClick={async () => {
-                              if (!selected) return;
-                              try {
-                                await unit(`/resources/${selected.id}/publication`, "PUT", {
-                                  published: !selected.published,
-                                });
-                                setResources((current) =>
-                                  current.map((item) =>
-                                    item.id === selected.id
-                                      ? { ...item, published: !selected.published }
-                                      : item,
-                                  ),
-                                );
-                                toast.success(selected.published ? "已下架供应商市场" : "已上架供应商市场");
-                              } catch (error) {
-                                toast.error(errorText(error));
-                              }
-                            }}
-                          >
-                            {selected.published ? "已上架（点击下架）" : "未上架（点击上架）"}
-                          </button>
+                        <div className="u-market-row">
+                          <div className="u-visibility-toggle">
+                            <button
+                              type="button"
+                              className={selected.published ? "active" : ""}
+                              onClick={() => void changePublication(true)}
+                            >
+                              上架
+                            </button>
+                            <button
+                              type="button"
+                              className={!selected.published ? "active" : ""}
+                              onClick={() => void changePublication(false)}
+                            >
+                              下架
+                            </button>
+                          </div>
+                          <p className="u-note u-market-hint">
+                            {selected.published
+                              ? "已上架：所有用户都能在供应商库看到并提交申请。"
+                              : "已下架：不会出现在供应商库，其他人无法申请，但可通过分享口令私下授权使用。"}
+                          </p>
                         </div>
-                        <p className="u-note">
-                          上架后会出现在供应商库供其他用户申请；不上架时仍可通过单独授权或分享口令给指定用户使用。
-                        </p>
                       </Field>
                       <p className="u-note">
                         额度完全由申请审批或指定授权决定，不再提供默认额度、共享预算或按周期重置。
