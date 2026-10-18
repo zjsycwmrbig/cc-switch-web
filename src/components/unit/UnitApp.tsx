@@ -234,6 +234,12 @@ function parseModels(value: unknown): string[] {
     return [];
   }
 }
+function compactTokens(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}G`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
+  return String(value);
+}
 function budgetText(value: Budget): string {
   return [
     value.requests == null ? null : `${num(value.requests)} 次`,
@@ -1835,12 +1841,11 @@ function Allocations({ generation }: { generation: number }) {
                                   <th>排名</th>
                                   <th>用户</th>
                                   <th>请求次数</th>
-                                  <th>请求占比（总量）</th>
+                                  <th>请求使用率</th>
                                   <th>Token</th>
-                                  <th>Token 占比（总量）</th>
-                                  <th>Token 额度使用率</th>
+                                  <th>Token 使用率</th>
                                   <th>成本</th>
-                                  <th>成本占比（总量）</th>
+                                  <th />
                                 </tr>
                               </thead>
                               <tbody>
@@ -1861,36 +1866,58 @@ function Allocations({ generation }: { generation: number }) {
                                       <td>{index + 1}</td>
                                       <td>{row.username}</td>
                                       <td>{num(row.requests ?? 0)}</td>
+                                      <td>{quotaPct == null ? "0.0%" : `${quotaPct.toFixed(1)}%`}</td>
+                                      <td>{compactTokens(row.tokens ?? 0)}</td>
                                       <td>
-                                        <div className="flex items-center gap-2">
-                                          <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-                                            <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, reqPct)}%` }} />
-                                          </div>
-                                          <span>{reqPct.toFixed(1)}%</span>
-                                        </div>
-                                      </td>
-                                      <td>{num(row.tokens ?? 0)}</td>
-                                      <td>{pct(row.tokens ?? 0, totalTok).toFixed(1)}%</td>
-                                      <td>
-                                        {quotaPct == null ? (
-                                          "不限"
-                                        ) : (
-                                          <div className="flex items-center gap-2">
-                                            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-                                              <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, quotaPct)}%` }} />
-                                            </div>
-                                            <span>{quotaPct.toFixed(1)}%</span>
-                                          </div>
-                                        )}
+                                        {tokenLimit == null
+                                          ? "0.0%"
+                                          : `${(((row.tokens ?? 0) / tokenLimit) * 100).toFixed(1)}%`}
                                       </td>
                                       <td>{dollars(row.costCredits ?? 0)}</td>
-                                      <td>{pct(row.costCredits ?? 0, totalCost).toFixed(1)}%</td>
+                                      <td />
                                     </tr>
                                   );
                                 })}
                               </tbody>
                             </table>
                           </div>
+                          {rows.length > 0 && (
+                            <div className="grid gap-4 px-4 pb-4 md:grid-cols-2">
+                              {([
+                                ["请求占比", "requests", totalReq],
+                                ["Token 占比", "tokens", totalTok],
+                              ] as const).map(([title, key, total]) => {
+                                const colors = ["#6366f1","#22c55e","#f59e0b","#ef4444","#06b6d4","#a855f7","#ec4899","#84cc16"];
+                                let acc = 0;
+                                const stops: string[] = [];
+                                rows.forEach((row, index) => {
+                                  const share = total > 0 ? ((row[key] ?? 0) / total) * 100 : 0;
+                                  stops.push(`${colors[index % colors.length]} ${acc.toFixed(2)}% ${(acc + share).toFixed(2)}%`);
+                                  acc += share;
+                                });
+                                return (
+                                  <div key={key} className="rounded-lg border border-border-default p-4">
+                                    <div className="text-sm font-medium text-foreground">{title}</div>
+                                    <div className="mt-3 flex flex-wrap items-center gap-5">
+                                      <div
+                                        className="h-32 w-32 shrink-0 rounded-full"
+                                        style={{ background: total > 0 ? `conic-gradient(${stops.join(",")})` : "hsl(var(--muted))" }}
+                                      />
+                                      <ul className="space-y-1 text-xs text-muted-foreground">
+                                        {rows.slice(0, 8).map((row, index) => (
+                                          <li key={row.user_id} className="flex items-center gap-2">
+                                            <span className="inline-block h-2 w-2 rounded-full" style={{ background: colors[index % colors.length] }} />
+                                            <span className="text-foreground">{row.username}</span>
+                                            <span>{total > 0 ? (((row[key] ?? 0) / total) * 100).toFixed(1) : "0.0"}%</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                           {!rows.length && <Empty>没有匹配的用户。</Empty>}
                         </>
                       );
