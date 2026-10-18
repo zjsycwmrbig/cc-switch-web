@@ -455,3 +455,17 @@ docker load -i .\release\local-artifacts\docker\cc-switch-web-docker-image.tar.g
    sudo systemctl status cc-switch-web
    sudo journalctl -u cc-switch-web -f
    ```
+
+## この fork について
+
+本リポジトリは zuoliangyu/cc-switch-web の fork で、デスクトップ向けのプロバイダー切り替えを**チーム向けマルチユーザー Web プラットフォーム**へ拡張したものです。
+
+主な機能:
+
+- マルチユーザー: 登録/ログイン、API キー、個人クォータ、同時実行数・レート制限。
+- プロバイダーマーケット: 公開/非公開の切り替え、申請と承認（期限・回数・Token・モデル範囲）。
+- クォータと共有: 既定/共有予算、自動承認、共有コード（案内文付き）。
+- モデルとルーティング: モデルカタログの取得・編集、1:1 マッピング、順序変更可能な自動ルーティング。
+- 公式アカウントセンター: Codex / Copilot / Grok のログイン・紐付け・ローテーション。
+- 利用状況と残高: リクエストログ、ユーザー/プロバイダー/モデル別統計、公式クォータバー、残高照会。
+- 高速なデプロイ: 静的ファイルをディスクから配信（UI 変更時の Rust 再ビルド不要）。

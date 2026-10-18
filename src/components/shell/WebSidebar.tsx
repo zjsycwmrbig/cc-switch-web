@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Layers,
   LogOut,
+  Info,
   Menu,
   PanelLeftClose,
   Share2,
@@ -31,7 +32,8 @@ export type GlobalView =
   | "allocations"
   | "auth"
   | "admin"
-  | "profile";
+  | "profile"
+  | "about";
 
 const APPS_STORAGE_KEY = "cc-switch-web-sidebar-apps";
 
@@ -263,6 +265,7 @@ export const WebSidebar = memo(function WebSidebar({
                 session.me.user.username,
                 <UserRound className="h-4 w-4 shrink-0" />,
               )}
+              {item("about", "关于我们", <Info className="h-4 w-4 shrink-0" />)}
               <button
                 type="button"
                 title="退出登录"

@@ -455,3 +455,17 @@ Recommended steps:
    sudo systemctl status cc-switch-web
    sudo journalctl -u cc-switch-web -f
    ```
+
+## About this fork
+
+This repository is forked from zuoliangyu/cc-switch-web and turns the desktop provider switcher into a **multi-user web platform for teams**.
+
+Highlights:
+
+- Multi-user workspace: registration/login, API keys, personal quotas, concurrency and rate limits.
+- Provider marketplace: publish providers publicly or keep them private; owners approve requests with deadline, request count, tokens and model scope.
+- Quotas and sharing: default/shared budgets, auto-approval rules and share codes with guided copy text.
+- Models and routing: pull/edit provider catalogs, 1:1 mappings and drag-ordered auto-routing across providers.
+- Official account center: Codex / Copilot / Grok accounts, provider binding and rotation.
+- Usage and balance: request logs, per-user/provider/model stats, official quota bars and provider balance queries.
+- Faster delivery: static assets served from disk (no Rust rebuild for UI changes) and a fast dev build script.

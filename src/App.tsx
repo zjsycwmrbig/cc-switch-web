@@ -2,6 +2,7 @@ import { useUnitSession } from "@/components/unit/session";
 import { UnitPanel } from "@/components/unit/UnitApp";
 import { WebSidebar } from "@/components/shell/WebSidebar";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
+import AboutPage from "@/components/about/AboutPage";
 import { APP_DISPLAY_NAME } from "@/config/appMeta";
 import type { ProviderEditorSave } from "@/lib/api/providers";
 import {
@@ -80,6 +81,7 @@ type View =
   | "profile"
   | "admin"
   | "auth"
+  | "about"
   | "usage";
 
 const DRAG_BAR_HEIGHT = 0; // px
@@ -108,6 +110,7 @@ const getInitialApp = (): AppId => {
 
 const VIEW_STORAGE_KEY = "cc-switch-last-view";
 const VALID_VIEWS: View[] = [
+  "about",
   "providers",
   "models",
   "allocations",
@@ -654,6 +657,8 @@ function App() {
               <AuthCenterPanel />
             </div>
           );
+        case "about":
+          return <AboutPage />;
         case "usage":
           return (
             <div className="px-3 md:px-6 py-4">
@@ -856,6 +861,7 @@ function App() {
                     models: "模型与接入",
                     allocations: "额度分配",
                     profile: "个人账号",
+                    about: "关于我们",
                     admin: "用户与额度",
                     usage: t("nav.usage"),
                   } as Record<string, string>)[currentView]}

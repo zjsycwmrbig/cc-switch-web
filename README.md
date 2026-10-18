@@ -477,3 +477,23 @@ docker load -i .\release\local-artifacts\docker\cc-switch-web-docker-image.tar.g
    sudo systemctl status cc-switch-web
    sudo journalctl -u cc-switch-web -f
    ```
+
+## 这个 fork 是什么
+
+本仓库 fork 自 zuoliangyu/cc-switch-web，在原桌面供应商切换能力之上，改造为**面向团队的多用户 Web 平台**。
+
+核心能力：
+
+- 多用户工作空间：账号注册/登录、API Key、个人额度、并发与速率限制，管理员统一管理。
+- 供应商库与申请审批：供应商可发布到公共库或仅自己可见；用户可申请，拥有者按时间截止、请求次数、Token、模型范围审批。
+- 额度与共享：默认额度、共享预算、免审规则、分享口令（带引导文案）。
+- 模型与自动路由：供应商目录拉取/增删改、单对单映射、多供应商自动路由（顺序可拖动）。
+- 官方账号授权中心：Codex / Copilot / Grok 账号统一登录、绑定供应商、按授权范围轮询。
+- 用量与余额：请求日志、按用户/供应商/模型统计、官方套餐配额进度条、供应商余额查询。
+- 部署优化：前端静态资源磁盘托管（UI 改动无需重编 Rust）；backend/scripts/build-dev.sh 快速联调构建。
+
+## 架构
+
+- 后端：Rust（axum）+ SQLite，Web 控制台默认 8890，共享代理网关默认 15721。
+- 前端：React + Vite，生产静态资源位于 /opt/cc-switch-web/dist。
+- 同步脚本：生成 Codex 配置与聚合模型目录，支持固定备份名与 restore 还原。
