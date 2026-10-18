@@ -1806,7 +1806,7 @@ function Allocations({ generation }: { generation: number }) {
                         );
                       return (
                         <>
-                          <div className="u-cards" style={{ marginBottom: 18 }}>
+                          <div className="u-usage-summary">
                             <div className="u-card"><small>近 30 天请求</small><strong>{num(totalReq)}</strong></div>
                             <div className="u-card"><small>近 30 天 Token</small><strong>{num(totalTok)}</strong></div>
                             <div className="u-card"><small>近 30 天成本</small><strong>{dollars(totalCost)}</strong></div>

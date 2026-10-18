@@ -1386,3 +1386,25 @@ button.u-panel-title:hover {
 .unit-content .u-panel { margin-bottom: 26px; }
 .unit-content .u-cards { gap: 16px; }
 .unit-content .u-table td, .unit-content .u-table th { padding: 12px 14px; }
+
+.u-usage-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  padding: 0 16px 20px;
+}
+.u-usage-summary .u-card {
+  margin: 0;
+  padding: 16px 18px;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .u-usage-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .u-usage-summary {
+    grid-template-columns: 1fr;
+  }
+}
