@@ -676,7 +676,7 @@ function App() {
                     transition={{ duration: 0.15 }}
                     className="space-y-4"
                   >
-                    {supportsAppMode(activeApp) && (
+                    {supportsAppMode(activeApp) && !session && (
                       <AppModePanel
                         key={activeApp}
                         app={activeApp}

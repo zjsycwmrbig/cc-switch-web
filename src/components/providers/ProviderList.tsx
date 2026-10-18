@@ -31,7 +31,6 @@ import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PageTabs } from "@/components/ui/page-tabs";
 import {
   Dialog,
   DialogContent,
@@ -291,6 +290,9 @@ export function ProviderList({
   const [unitPage, setUnitPage] = useState(1);
   const [unitOwnerFilter, setUnitOwnerFilter] = useState("");
   const [unitModelFilter, setUnitModelFilter] = useState("");
+  const [unitApplyOnly, setUnitApplyOnly] = useState(false);
+  const [expandedModels, setExpandedModels] = useState<string | null>(null);
+  const [modelPage, setModelPage] = useState<Record<string, number>>({});
   const pendingPublicCreate = useRef(false);
   const knownProviderIds = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -298,6 +300,7 @@ export function ProviderList({
     setSearchTerm("");
     setUnitOwnerFilter("");
     setUnitModelFilter("");
+    setUnitApplyOnly(false);
   }, [unitTab]);
   const [applyTarget, setApplyTarget] = useState<UnitLibraryProvider | null>(
     null,
@@ -471,6 +474,9 @@ export function ProviderList({
     return Object.values(unitLibrary?.providers ?? {})
       .filter((entry) => {
         const resource = entry.unitResource;
+        if (unitApplyOnly && (resource.accessible || resource.myApplication === "pending")) {
+          return false;
+        }
         if (unitOwnerFilter && resource.ownerName !== unitOwnerFilter) {
           return false;
         }
@@ -495,7 +501,7 @@ export function ProviderList({
           "zh-Hans-CN",
         ),
       );
-  }, [searchTerm, unitLibrary, unitOwnerFilter, unitModelFilter]);
+  }, [searchTerm, unitLibrary, unitOwnerFilter, unitModelFilter, unitApplyOnly]);
 
   const unitOwnerOptions = useMemo(
     () =>
@@ -886,25 +892,84 @@ export function ProviderList({
 
     return (
       <div className="space-y-5">
-        <PageTabs
-          aria-label="供应商分类"
-          value={unitTab}
-          onValueChange={(value) => {
-            unitTabTouched.current = true;
-            setUnitTab(value as UnitProviderTab);
-          }}
-          items={[
-            {
-              value: "library",
-              label: `供应商库 ${unitLibraryEntries.length}`,
-            },
-            { value: "owned", label: `我的供应商 ${owned.length}` },
-            {
-              value: "shared",
-              label: `共享给我的供应商 ${shared.length}`,
-            },
-          ]}
-        />
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border-default bg-muted/30 p-1.5">
+          {[
+            ["library", "供应商库", unitLibraryEntries.length],
+            ["owned", "我的供应商", sortedProviders.filter((p) => p.unitResource?.owned).length],
+            ["shared", "共享给我的供应商", sortedProviders.filter((p) => p.unitResource && !p.unitResource.owned).length],
+          ].map(([value, label, count]) => (
+            <button
+              key={String(value)}
+              type="button"
+              onClick={() => {
+                unitTabTouched.current = true;
+                setUnitTab(value as UnitProviderTab);
+              }}
+              className={
+                unitTab === value
+                  ? "rounded-xl bg-background px-4 py-2 text-sm font-semibold text-foreground shadow-sm ring-1 ring-border-default"
+                  : "rounded-xl px-4 py-2 text-sm text-muted-foreground hover:bg-background/60 hover:text-foreground"
+              }
+            >
+              {label} <span className="ml-1 text-xs opacity-70">{count}</span>
+            </button>
+          ))}
+        </div>
+        <div className="glass-card rounded-[24px] border border-border-default p-4 sm:p-5">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="space-y-1.5">
+              <h2 className="text-xl font-semibold text-foreground">
+                {unitTab === "library" ? "供应商库" : unitTab === "owned" ? "我的供应商" : "共享给我的供应商"}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                {unitTab === "library"
+                  ? "浏览所有用户发布的供应商，查看模型与用量后提交申请。"
+                  : unitTab === "owned"
+                    ? "管理自己的供应商：加入公共供应商后可被其他用户申请。"
+                    : "其他用户授权给你的供应商，可查看额度、截止时间与可用模型。"}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {unitTab === "library" && onCreate && (
+                <Button type="button" variant="outline" onClick={() => setUnitApplyOnly((v) => !v)}>
+                  {unitApplyOnly ? "显示全部" : "申请可用供应商"}
+                </Button>
+              )}
+              {unitTab === "owned" && onCreate && (
+                <>
+                  <Button type="button" onClick={() => onCreate("private")}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    新建自己供应商
+                  </Button>
+                </>
+              )}
+              {onCreate && unitTab !== "owned" && (
+                <Button type="button" variant="outline" onClick={() => onCreate("public")}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  增加公共供应商
+                </Button>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-[220px] flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input className="pl-9" placeholder="搜索供应商或用户" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
+            </div>
+            {unitTab === "library" && (
+              <>
+                <select className="h-9 rounded-md border border-border-default bg-background px-2 text-xs" value={unitOwnerFilter} onChange={(event) => setUnitOwnerFilter(event.target.value)}>
+                  <option value="">所有用户</option>
+                  {unitOwnerOptions.map((owner) => <option key={owner} value={owner}>{owner}</option>)}
+                </select>
+                <select className="h-9 max-w-[220px] rounded-md border border-border-default bg-background px-2 text-xs" value={unitModelFilter} onChange={(event) => setUnitModelFilter(event.target.value)}>
+                  <option value="">所有模型</option>
+                  {unitModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </>
+            )}
+          </div>
+        </div>
 
         {unitTab === "library" ? (
           pageLibraryEntries.length ? (
@@ -931,7 +996,7 @@ export function ProviderList({
                       )}
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-foreground">
-                          {resource.ownerName} 的 {entry.name}
+                          {entry.name}
                         </div>
                         <div className="truncate text-xs text-muted-foreground">
                           {resource.visibleModelCount ??
@@ -944,16 +1009,6 @@ export function ProviderList({
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div className="rounded-lg border border-border-default px-2.5 py-2">
-                        <div className="text-muted-foreground">我的额度</div>
-                        <div className="font-medium text-foreground">
-                          {resource.accessible
-                            ? isUnlimitedBudget(resource.myBudget)
-                              ? "不限"
-                              : budgetLabel(resource.myBudget)
-                            : "未授权"}
-                        </div>
-                      </div>
                       <div className="rounded-lg border border-border-default px-2.5 py-2">
                         <div className="text-muted-foreground">近 7 天请求</div>
                         <div className="font-medium text-foreground">
@@ -977,20 +1032,59 @@ export function ProviderList({
                       </div>
                     </div>
                     {(resource.visibleModels?.length ?? 0) > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {resource.visibleModels!.slice(0, 4).map((model) => (
-                          <span
-                            key={model.slug}
-                            className="rounded-full border border-border-default px-2 py-0.5 text-[10px] text-muted-foreground"
-                          >
-                            {model.display_name || model.slug}
-                          </span>
-                        ))}
-                        {(resource.visibleModels?.length ?? 0) > 4 && (
-                          <span className="px-1 py-0.5 text-[10px] text-muted-foreground">
-                            +{(resource.visibleModels?.length ?? 0) - 4}
-                          </span>
-                        )}
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap gap-1.5">
+                          {(() => {
+                            const models = resource.visibleModels ?? [];
+                            const expanded = expandedModels === entry.id;
+                            const perPage = 10;
+                            const pages = Math.max(1, Math.ceil(models.length / perPage));
+                            const page = Math.min(modelPage[entry.id] ?? 1, pages);
+                            const shown = expanded
+                              ? models.slice((page - 1) * perPage, page * perPage)
+                              : models.slice(0, 3);
+                            return (
+                              <>
+                                {shown.map((model) => (
+                                  <span
+                                    key={model.slug}
+                                    className="rounded-full border border-border-default px-2 py-0.5 text-[10px] text-muted-foreground"
+                                  >
+                                    {model.display_name || model.slug}
+                                  </span>
+                                ))}
+                                {models.length > 3 && (
+                                  <button
+                                    type="button"
+                                    className="rounded-full border border-primary/40 px-2 py-0.5 text-[10px] text-primary"
+                                    onClick={() => setExpandedModels(expanded ? null : entry.id)}
+                                  >
+                                    {expanded ? "收起" : `展开全部 ${models.length} 个`}
+                                  </button>
+                                )}
+                                {expanded && pages > 1 && (
+                                  <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                    <button
+                                      type="button"
+                                      disabled={page <= 1}
+                                      onClick={() => setModelPage((old) => ({ ...old, [entry.id]: page - 1 }))}
+                                    >
+                                      上一页
+                                    </button>
+                                    {page}/{pages}
+                                    <button
+                                      type="button"
+                                      disabled={page >= pages}
+                                      onClick={() => setModelPage((old) => ({ ...old, [entry.id]: page + 1 }))}
+                                    >
+                                      下一页
+                                    </button>
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
                       </div>
                     )}
                     <div className="mt-auto flex flex-wrap items-center gap-2">
@@ -1081,136 +1175,6 @@ export function ProviderList({
           </ul>
         </div>
       )}
-      <div className="glass-card rounded-[30px] border border-border-default p-4 sm:p-5">
-        {(() => {
-          const copy = {
-            library: {
-              title: "供应商库",
-              desc: "所有用户发布的供应商：查看额度、近 7 天用量与可用模型，需要时提交申请。",
-              search: "搜索供应商或用户",
-              count: Object.keys(unitLibrary?.providers ?? {}).length,
-            },
-            owned: {
-              title: "我的供应商",
-              desc: "你创建的供应商：发布后会进入供应商库，未发布时仅自己可用。",
-              search: "搜索我的供应商",
-              count: sortedProviders.filter((p) => p.unitResource?.owned).length,
-            },
-            shared: {
-              title: "共享给我的供应商",
-              desc: "其他用户授权给你的供应商，可直接查看额度、截止时间与可用模型。",
-              search: "搜索共享给我的供应商",
-              count: sortedProviders.filter(
-                  (p) => p.unitResource && !p.unitResource.owned,
-                ).length,
-            },
-          }[unitTab];
-          return (
-            <div className="flex flex-col gap-4">
-              <div className="space-y-2">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                  Provider Workspace
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-                    {copy.title}
-                  </h2>
-                  <span className="theme-chip-neutral inline-flex items-center rounded-full px-3 py-1 text-xs font-medium">
-                    {copy.count} 个
-                  </span>
-                  {searchTerm.trim() && (
-                    <span className="theme-chip-primary inline-flex items-center rounded-full px-3 py-1 text-xs font-medium">
-                      筛选中
-                    </span>
-                  )}
-                </div>
-                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                  {copy.desc}
-                </p>
-              </div>
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <div className="relative min-w-[220px] flex-1">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      className="pl-9"
-                      placeholder={copy.search}
-                      value={searchTerm}
-                      onChange={(event) => setSearchTerm(event.target.value)}
-                    />
-                  </div>
-                  {unitTab === "library" && (
-                    <>
-                      <select
-                        className="h-9 rounded-md border border-border-default bg-background px-2 text-xs"
-                        value={unitOwnerFilter}
-                        onChange={(event) => setUnitOwnerFilter(event.target.value)}
-                      >
-                        <option value="">所有用户</option>
-                        {unitOwnerOptions.map((owner) => (
-                          <option key={owner} value={owner}>
-                            {owner}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        className="h-9 max-w-[220px] rounded-md border border-border-default bg-background px-2 text-xs"
-                        value={unitModelFilter}
-                        onChange={(event) => setUnitModelFilter(event.target.value)}
-                      >
-                        <option value="">所有模型</option>
-                        {unitModelOptions.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    </>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {unitTab !== "library" && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => setUnitTab("library")}
-                    >
-                      去申请
-                    </Button>
-                  )}
-                  {onCreate && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        knownProviderIds.current = new Set(
-                          Object.keys(providers),
-                        );
-                        pendingPublicCreate.current = true;
-                        onCreate("public");
-                      }}
-                    >
-                      <Plus className="mr-2 h-4 w-4" />
-                      公共供应商
-                    </Button>
-                  )}
-                  {onCreate && (
-                    <Button
-                      type="button"
-                      className="theme-primary-solid"
-                      onClick={() => onCreate("private")}
-                    >
-                      <Plus className="mr-2 h-4 w-4" />
-                      自己供应商
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-      </div>
-
       <AnimatePresence>
         {isSearchOpen && (
           <motion.div
