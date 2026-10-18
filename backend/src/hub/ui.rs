@@ -73,6 +73,16 @@ async fn library(
         let mut view = resources::safe_view(&app.db, &user, &r);
         // 供应商库里展示的是“对外可见”的模型数量，而不是本人的可用模型。
         view["modelCount"] = json!(resources::visible_models(&r).len());
+        // 近 7 天该供应商的实际用量（所有用户合计），用于市场卡片展示。
+        let (requests, tokens, cost): (i64, i64, i64) = conn(&app.db)?.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0),
+                    COALESCE(SUM(cost_credits),0)
+             FROM hub_requests WHERE resource_id=?1 AND created_at>=?2",
+            params![r.id, now() - 7 * 86400],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        view["usage7d"] = json!({"requests":requests,"tokens":tokens,"costCredits":cost});
         view["accessible"] = json!(visible(&app.db, &user, &r));
         let my_application: Option<String> = conn(&app.db)?
             .query_row(

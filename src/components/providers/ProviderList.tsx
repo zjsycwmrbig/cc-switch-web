@@ -105,6 +105,7 @@ type UnitLibraryProvider = {
     modelCount?: number;
     visibleModels?: Array<{ slug: string; display_name?: string }>;
     visibleModelCount?: number;
+    usage7d?: { requests: number; tokens: number; costCredits: number };
     myApplication?: string | null;
     myBudget?: Budget;
     myExpiresAt?: number | null;
@@ -129,7 +130,7 @@ interface ProviderListProps {
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
   onOpenTerminal?: (provider: Provider) => void;
-  onCreate?: () => void;
+  onCreate?: (mode?: "public" | "private") => void;
   isLoading?: boolean;
   isProxyRunning?: boolean; // 代理服务运行状态
   isProxyTakeover?: boolean; // 代理接管模式（Live配置已被接管）
@@ -288,8 +289,15 @@ export function ProviderList({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [unitTab, setUnitTab] = useState<UnitProviderTab>("owned");
   const [unitPage, setUnitPage] = useState(1);
+  const [unitOwnerFilter, setUnitOwnerFilter] = useState("");
+  const [unitModelFilter, setUnitModelFilter] = useState("");
+  const pendingPublicCreate = useRef(false);
+  const knownProviderIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     setUnitPage(1);
+    setSearchTerm("");
+    setUnitOwnerFilter("");
+    setUnitModelFilter("");
   }, [unitTab]);
   const [applyTarget, setApplyTarget] = useState<UnitLibraryProvider | null>(
     null,
@@ -461,20 +469,69 @@ export function ProviderList({
   const unitLibraryEntries = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     return Object.values(unitLibrary?.providers ?? {})
-      .filter((entry) =>
-        keyword
-          ? `${entry.unitResource.ownerName} 的 ${entry.name}`
-              .toLowerCase()
-              .includes(keyword)
-          : true,
-      )
+      .filter((entry) => {
+        const resource = entry.unitResource;
+        if (unitOwnerFilter && resource.ownerName !== unitOwnerFilter) {
+          return false;
+        }
+        if (
+          unitModelFilter &&
+          !(resource.visibleModels ?? []).some(
+            (model) => model.slug === unitModelFilter,
+          )
+        ) {
+          return false;
+        }
+        return (
+          !keyword ||
+          `${resource.ownerName} 的 ${entry.name}`
+            .toLowerCase()
+            .includes(keyword)
+        );
+      })
       .sort((a, b) =>
         `${a.unitResource.ownerName} 的 ${a.name}`.localeCompare(
           `${b.unitResource.ownerName} 的 ${b.name}`,
           "zh-Hans-CN",
         ),
       );
-  }, [searchTerm, unitLibrary]);
+  }, [searchTerm, unitLibrary, unitOwnerFilter, unitModelFilter]);
+
+  const unitOwnerOptions = useMemo(
+    () =>
+      [
+        ...new Set(
+          Object.values(unitLibrary?.providers ?? {}).map(
+            (entry) => entry.unitResource.ownerName,
+          ),
+        ),
+      ].sort(),
+    [unitLibrary],
+  );
+  const unitModelOptions = useMemo(
+    () =>
+      [
+        ...new Set(
+          Object.values(unitLibrary?.providers ?? {}).flatMap((entry) =>
+            (entry.unitResource.visibleModels ?? []).map((model) => model.slug),
+          ),
+        ),
+      ].sort(),
+    [unitLibrary],
+  );
+
+  // “增加公共供应商”创建完成后自动发布到供应商库。
+  useEffect(() => {
+    if (!pendingPublicCreate.current) return;
+    const created = Object.values(providers).find(
+      (provider) => !knownProviderIds.current.has(provider.id),
+    );
+    if (created?.unitResource) {
+      pendingPublicCreate.current = false;
+      onAggregationMember?.(created.id, true);
+      toast.success(`${created.name} 已发布到供应商库`);
+    }
+  }, [providers, onAggregationMember]);
 
   // 只在用户还没手动切过 tab 时自动跳到供应商库；否则空 tab（我的供应商 0）会被反复弹回。
   const unitTabTouched = useRef(false);
@@ -886,6 +943,56 @@ export function ProviderList({
                         </div>
                       </div>
                     </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-lg border border-border-default px-2.5 py-2">
+                        <div className="text-muted-foreground">我的额度</div>
+                        <div className="font-medium text-foreground">
+                          {resource.accessible
+                            ? isUnlimitedBudget(resource.myBudget)
+                              ? "不限"
+                              : budgetLabel(resource.myBudget)
+                            : "未授权"}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border-default px-2.5 py-2">
+                        <div className="text-muted-foreground">近 7 天请求</div>
+                        <div className="font-medium text-foreground">
+                          {formatNumber(resource.usage7d?.requests ?? 0)} 次
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border-default px-2.5 py-2">
+                        <div className="text-muted-foreground">近 7 天 Token</div>
+                        <div className="font-medium text-foreground">
+                          {formatNumber(resource.usage7d?.tokens ?? 0)}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border-default px-2.5 py-2">
+                        <div className="text-muted-foreground">可用模型</div>
+                        <div className="font-medium text-foreground">
+                          {resource.visibleModelCount ??
+                            resource.visibleModels?.length ??
+                            0}{" "}
+                          个
+                        </div>
+                      </div>
+                    </div>
+                    {(resource.visibleModels?.length ?? 0) > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {resource.visibleModels!.slice(0, 4).map((model) => (
+                          <span
+                            key={model.slug}
+                            className="rounded-full border border-border-default px-2 py-0.5 text-[10px] text-muted-foreground"
+                          >
+                            {model.display_name || model.slug}
+                          </span>
+                        ))}
+                        {(resource.visibleModels?.length ?? 0) > 4 && (
+                          <span className="px-1 py-0.5 text-[10px] text-muted-foreground">
+                            +{(resource.visibleModels?.length ?? 0) - 4}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="mt-auto flex flex-wrap items-center gap-2">
                       <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
                         {resource.owned ? "我上传的" : "其他用户上传"}
@@ -975,97 +1082,133 @@ export function ProviderList({
         </div>
       )}
       <div className="glass-card rounded-[30px] border border-border-default p-4 sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              {t("provider.workspaceLabel", {
-                defaultValue: "Provider Workspace",
-              })}
+        {(() => {
+          const copy = {
+            library: {
+              title: "供应商库",
+              desc: "所有用户发布的供应商：查看额度、近 7 天用量与可用模型，需要时提交申请。",
+              search: "搜索供应商或用户",
+              count: Object.keys(unitLibrary?.providers ?? {}).length,
+            },
+            owned: {
+              title: "我的供应商",
+              desc: "你创建的供应商：发布后会进入供应商库，未发布时仅自己可用。",
+              search: "搜索我的供应商",
+              count: sortedProviders.filter((p) => p.unitResource?.owned).length,
+            },
+            shared: {
+              title: "共享给我的供应商",
+              desc: "其他用户授权给你的供应商，可直接查看额度、截止时间与可用模型。",
+              search: "搜索共享给我的供应商",
+              count: sortedProviders.filter(
+                  (p) => p.unitResource && !p.unitResource.owned,
+                ).length,
+            },
+          }[unitTab];
+          return (
+            <div className="flex flex-col gap-4">
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+                  Provider Workspace
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-2xl font-semibold tracking-tight text-foreground">
+                    {copy.title}
+                  </h2>
+                  <span className="theme-chip-neutral inline-flex items-center rounded-full px-3 py-1 text-xs font-medium">
+                    {copy.count} 个
+                  </span>
+                  {searchTerm.trim() && (
+                    <span className="theme-chip-primary inline-flex items-center rounded-full px-3 py-1 text-xs font-medium">
+                      筛选中
+                    </span>
+                  )}
+                </div>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                  {copy.desc}
+                </p>
+              </div>
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  <div className="relative min-w-[220px] flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      className="pl-9"
+                      placeholder={copy.search}
+                      value={searchTerm}
+                      onChange={(event) => setSearchTerm(event.target.value)}
+                    />
+                  </div>
+                  {unitTab === "library" && (
+                    <>
+                      <select
+                        className="h-9 rounded-md border border-border-default bg-background px-2 text-xs"
+                        value={unitOwnerFilter}
+                        onChange={(event) => setUnitOwnerFilter(event.target.value)}
+                      >
+                        <option value="">所有用户</option>
+                        {unitOwnerOptions.map((owner) => (
+                          <option key={owner} value={owner}>
+                            {owner}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="h-9 max-w-[220px] rounded-md border border-border-default bg-background px-2 text-xs"
+                        value={unitModelFilter}
+                        onChange={(event) => setUnitModelFilter(event.target.value)}
+                      >
+                        <option value="">所有模型</option>
+                        {unitModelOptions.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {unitTab !== "library" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setUnitTab("library")}
+                    >
+                      去申请
+                    </Button>
+                  )}
+                  {onCreate && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        knownProviderIds.current = new Set(
+                          Object.keys(providers),
+                        );
+                        pendingPublicCreate.current = true;
+                        onCreate("public");
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      公共供应商
+                    </Button>
+                  )}
+                  {onCreate && (
+                    <Button
+                      type="button"
+                      className="theme-primary-solid"
+                      onClick={() => onCreate("private")}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      自己供应商
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-                {t("provider.listTitle", {
-                  defaultValue: "供应商工作台",
-                })}
-              </h2>
-              <span className="theme-chip-neutral inline-flex items-center rounded-full px-3 py-1 text-xs font-medium">
-                {t("provider.countSummary", {
-                  count: sortedProviders.length,
-                  defaultValue: "{{count}} 个配置",
-                })}
-              </span>
-              {searchTerm.trim() && (
-                <span className="theme-chip-primary inline-flex items-center rounded-full px-3 py-1 text-xs font-medium">
-                  {t("provider.filteredCount", {
-                    count: filteredProviders.length,
-                    defaultValue: "筛选后 {{count}} 个",
-                  })}
-                </span>
-              )}
-            </div>
-            <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-              {searchTerm.trim()
-                ? t("provider.searchSummary", {
-                    defaultValue:
-                      "正在按名称、备注和 URL 过滤当前应用下的供应商配置。",
-                  })
-                : t("provider.workspaceDescription", {
-                    defaultValue:
-                      "集中查看、筛选和整理当前应用的供应商配置，常用操作可以直接在这里完成。",
-                  })}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant={
-                isSearchOpen || searchTerm.trim() ? "default" : "outline"
-              }
-              className="min-w-[8rem]"
-              onClick={() => setIsSearchOpen(true)}
-            >
-              <Search className="mr-2 h-4 w-4" />
-              {searchTerm.trim()
-                ? t("provider.searching", {
-                    defaultValue: "筛选中",
-                  })
-                : t("provider.search", {
-                    defaultValue: "搜索",
-                  })}
-            </Button>
-            {onCreate && (
-              <Button
-                type="button"
-                className="theme-primary-solid min-w-[8rem]"
-                onClick={onCreate}
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                {t("provider.addProvider")}
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {searchTerm.trim() && (
-          <div className="mt-4 flex flex-col gap-2 rounded-[22px] border border-border-default bg-background/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-muted-foreground">
-              {t("provider.searchActiveHint", {
-                count: filteredProviders.length,
-                defaultValue: "当前显示 {{count}} 个匹配项。",
-              })}
-            </p>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="justify-start sm:justify-center"
-              onClick={() => setSearchTerm("")}
-            >
-              {t("common.clear", { defaultValue: "清空" })}
-            </Button>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       <AnimatePresence>
