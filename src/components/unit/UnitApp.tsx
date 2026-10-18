@@ -531,6 +531,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [resources, setResources] = useState<Resource[]>([]);
   const [providerFilter, setProviderFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
+  const [displayFilter, setDisplayFilter] = useState<"all" | "shown" | "hidden">("all");
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
@@ -660,7 +661,11 @@ function Models({ generation }: { me: Me; generation: number }) {
     return (
       (!keyword || text.includes(keyword)) &&
       (!providerFilter || route.targets.includes(providerFilter)) &&
-      (!modelFilter || route.model === modelFilter)
+      (!modelFilter || route.model === modelFilter) &&
+      (displayFilter === "all" ||
+        (displayFilter === "shown"
+          ? selected.has(routeSlug(route, resources))
+          : !selected.has(routeSlug(route, resources))))
     );
   });
   const totalPages = Math.max(1, Math.ceil(filtered.length / 10));
@@ -746,6 +751,16 @@ function Models({ generation }: { me: Me; generation: number }) {
                   {model}
                 </option>
               ))}
+            </select>
+            <select
+              value={displayFilter}
+              onChange={(event) =>
+                setDisplayFilter(event.target.value as "all" | "shown" | "hidden")
+              }
+            >
+              <option value="all">展示状态：全部</option>
+              <option value="shown">已展示</option>
+              <option value="hidden">未展示</option>
             </select>
             <button
               className="u-quiet"

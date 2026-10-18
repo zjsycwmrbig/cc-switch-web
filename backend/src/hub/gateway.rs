@@ -284,12 +284,14 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     };
     let mut last_error = None;
     for (r, provider, price, cost) in priced {
+        // 同一路由可能匹配不同供应商的不同原始 slug，转发前解析成该供应商的实际模型名。
+        let upstream_model = resources::match_model_slug(&r, &model).unwrap_or_else(|| model.clone());
         let attempt = match metering::attempt(
             &state.db,
             &user,
             &request_id,
             &r,
-            &model,
+            &upstream_model,
             metering::Amount {
                 credits: cost,
                 ..estimate
@@ -308,7 +310,7 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             }
         };
         finish.attempt = Some(attempt.clone());
-        body["model"] = json!(catalog::encode(app.as_str(), &r.route_key, &model));
+        body["model"] = json!(catalog::encode(app.as_str(), &r.route_key, &upstream_model));
         // Server-side response references are tracked per consumer. New requests
         // still send complete history; do not let callers share stored objects.
         if app == AppType::Codex && previous.is_none() {

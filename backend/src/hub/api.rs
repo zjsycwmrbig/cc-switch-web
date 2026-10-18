@@ -1186,7 +1186,11 @@ async fn detect_model_routes(
     Json(v): Json<DetectInput>,
 ) -> Result<Json<Value>> {
     let all = resources::all(&app.db)?;
-    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    // 分组键：最后一个 `/` 之后、转小写、去掉特殊字符。成员保留原始末段用于展示。
+    let mut groups: std::collections::BTreeMap<
+        String,
+        Vec<(String, String)>,
+    > = Default::default();
     for r in &all {
         if r.app_type != "codex" || r.disabled || (!r.published && r.owner_id != user.id) {
             continue;
@@ -1198,26 +1202,42 @@ async fn detect_model_routes(
             if resources::usable(&app.db, &user, r, model).is_err() {
                 continue;
             }
-            groups
-                .entry(model.to_string())
-                .or_default()
-                .push(r.id.clone());
+            let key = resources::model_group_key(model);
+            if key.is_empty() {
+                continue;
+            }
+            let last = model.rsplit('/').next().unwrap_or(model).to_string();
+            let entry = groups.entry(key).or_default();
+            if !entry.iter().any(|(id, _)| id == &r.id) {
+                entry.push((r.id.clone(), last));
+            }
         }
     }
     let existing = list_model_routes(&app.db, &user.id)?;
     let have = existing
         .iter()
-        .filter_map(|row| row["model"].as_str().map(str::to_string))
+        .filter_map(|row| row["model"].as_str())
+        .map(resources::model_group_key)
         .collect::<std::collections::HashSet<_>>();
     let mut candidates = vec![];
-    for (model, mut targets) in groups {
-        targets.dedup();
-        if targets.len() < 2 || have.contains(&model) {
+    for (key, members) in groups {
+        if members.len() < 2 || have.contains(&key) {
             continue;
         }
+        // 展示名用组内出现次数最多的原始末段名称。
+        let mut counts: std::collections::HashMap<&str, usize> = Default::default();
+        for (_, last) in &members {
+            *counts.entry(last.as_str()).or_default() += 1;
+        }
+        let display = counts
+            .into_iter()
+            .max_by_key(|(name, count)| (*count, std::cmp::Reverse(name.len())))
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| key.clone());
+        let targets = members.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
         candidates.push(json!({
-            "model": model,
-            "displayName": format!("{model}（自动路由）"),
+            "model": display,
+            "displayName": format!("{display}（自动路由）"),
             "targets": targets,
         }));
     }

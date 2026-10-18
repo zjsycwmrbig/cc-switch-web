@@ -74,6 +74,31 @@ fn provides_model(r: &Resource, model: &str) -> bool {
         .any(|value| value.get("slug").and_then(Value::as_str) == Some(model))
 }
 
+/// 模型分组键：取最后一个 `/` 之后、转小写、去掉特殊字符。
+pub fn model_group_key(slug: &str) -> String {
+    let last = slug.rsplit('/').next().unwrap_or(slug);
+    last.to_lowercase()
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .collect()
+}
+
+/// 在供应商目录里找到与给定模型等价的实际 slug（先精确，再按分组键匹配）。
+pub fn match_model_slug(r: &Resource, wanted: &str) -> Option<String> {
+    if provides_model(r, wanted) {
+        return Some(wanted.to_string());
+    }
+    let key = model_group_key(wanted);
+    if key.is_empty() {
+        return None;
+    }
+    r.models
+        .iter()
+        .filter_map(|value| value.get("slug").and_then(Value::as_str))
+        .find(|slug| model_group_key(slug) == key)
+        .map(str::to_string)
+}
+
 /// 供应商「对外可见」的模型：由分享设置 `policy.models` 限定，留空表示目录里的全部模型。
 ///
 /// 可见只代表别人能在供应商库里看到并申请，是否能用仍然取决于授权。
@@ -187,13 +212,13 @@ pub fn usable(
     if !r.published && r.owner_id != user.id {
         return Err(Error::denied("supplier_unpublished", "该供应商尚未发布或已下架"));
     }
-    if !provides_model(r, model) {
+    let Some(resolved) = match_model_slug(r, model) else {
         return Err(Error::denied(
             "model_not_provided",
             format!("该供应商未提供模型 {model}"),
         ));
-    }
-    grant(db, user, r, Some(model))
+    };
+    grant(db, user, r, Some(&resolved))
 }
 pub fn safe_view(db: &crate::database::Database, user: &Identity, r: &Resource) -> Value {
     // `models` 是“我有权使用的模型”，`visibleModels` 是供应商对外可见（可被申请）的模型。
