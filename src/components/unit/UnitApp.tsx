@@ -2286,7 +2286,7 @@ function Allocations({ generation }: { generation: number }) {
                     )}
                   </section>
 
-                  <section className="u-panel">
+                  <section className="u-panel hidden">
                     <div className="u-panel-title">
                       <History size={17} />
                       申请记录
