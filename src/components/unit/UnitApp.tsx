@@ -1790,8 +1790,6 @@ function Allocations({ generation }: { generation: number }) {
                       const totalReq = userUsage.reduce((sum, row) => sum + (row.requests ?? 0), 0);
                       const totalTok = userUsage.reduce((sum, row) => sum + (row.tokens ?? 0), 0);
                       const totalCost = userUsage.reduce((sum, row) => sum + (row.costCredits ?? 0), 0);
-                      const pct = (value: number, total: number) =>
-                        total > 0 ? (value / total) * 100 : 0;
                       const keyword = usageSearch.trim().toLowerCase();
                       const rows = [...userUsage]
                         .filter((row) =>
