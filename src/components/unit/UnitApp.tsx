@@ -671,8 +671,7 @@ function Models({ generation }: { me: Me; generation: number }) {
     return (
       (!keyword || text.includes(keyword)) &&
       (!providerFilter || route.targets.includes(providerFilter)) &&
-      (!modelFilter || route.model === modelFilter) &&
-
+      (!modelFilter || route.model === modelFilter)
     );
   });
   const totalPages = Math.max(1, Math.ceil(filtered.length / 10));
