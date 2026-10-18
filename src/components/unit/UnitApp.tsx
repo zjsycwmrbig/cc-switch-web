@@ -3516,7 +3516,7 @@ function UserEditor({
 }) {
   const [budget] = useState<Budget>(JSON.parse(value.budget)),
     [active, setActive] = useState(!!value.active),
-    [period, setPeriod] = useState(value.period),
+    [period] = useState(value.period),
     [rpm, setRpm] = useState(value.rpm),
     [concurrency, setConcurrency] = useState(value.concurrency),
     [password, setPassword] = useState(""),
