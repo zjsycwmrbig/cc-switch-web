@@ -1850,7 +1850,6 @@ function Allocations({ generation }: { generation: number }) {
                               </thead>
                               <tbody>
                                 {rows.map((row, index) => {
-                                  const reqPct = pct(row.requests ?? 0, totalReq);
                                   let tokenLimit: number | null = null;
                                   try {
                                     tokenLimit = JSON.parse(row.budget || "{}").tokens ?? null;
