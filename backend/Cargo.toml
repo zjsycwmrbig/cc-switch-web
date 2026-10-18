@@ -90,6 +90,10 @@ opt-level = "s"
 panic = "unwind"
 strip = "symbols"
 
+# 日常联调构建：去掉完整调试信息，链接更快、占用更小；发布仍用 release。
+[profile.dev]
+debug = 0
+
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"
