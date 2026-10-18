@@ -1025,18 +1025,6 @@ export function ProviderList({
                         </div>
                       </div>
                     </div>
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        title="刷新余额/用量"
-                        className="inline-flex items-center gap-1 rounded-md border border-border-default px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
-                        disabled={usageLoading[resource.id]}
-                        onClick={() => void refreshUnitUsage(resource.id)}
-                      >
-                        <RefreshCw size={12} className={usageLoading[resource.id] ? "animate-spin" : ""} />
-                        刷新余额/用量
-                      </button>
-                    </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg border border-border-default px-2.5 py-2">
                         <div className="text-muted-foreground">近 7 天请求</div>
@@ -1052,7 +1040,19 @@ export function ProviderList({
                       </div>
                     </div>
                     <div className="rounded-lg border border-border-default px-3 py-2 text-xs">
-                      <div className="text-muted-foreground">余额 / 用量</div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-muted-foreground">余额 / 用量</div>
+                        <button
+                          type="button"
+                          title="刷新余额/用量"
+                          aria-label="刷新余额/用量"
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border-default text-muted-foreground hover:text-foreground"
+                          disabled={usageLoading[resource.id]}
+                          onClick={() => void refreshUnitUsage(resource.id)}
+                        >
+                          <RefreshCw size={12} className={usageLoading[resource.id] ? "animate-spin" : ""} />
+                        </button>
+                      </div>
                       <div className="mt-1.5 space-y-2">
                         {(() => {
                           const u = unitUsage[resource.id];
