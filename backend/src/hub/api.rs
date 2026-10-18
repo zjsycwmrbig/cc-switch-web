@@ -2544,8 +2544,8 @@ async fn update_user(
     v.budget.validate()?;
     if (!v.active && uid == user.id)
         || !["day", "month", "lifetime"].contains(&v.period.as_str())
-        || !(1..=10000).contains(&v.rpm)
-        || !(1..=1000).contains(&v.concurrency)
+        || !(0..=10000).contains(&v.rpm)
+        || !(0..=1000).contains(&v.concurrency)
     {
         return Err(Error::bad("请检查用户状态、周期和限流设置"));
     }

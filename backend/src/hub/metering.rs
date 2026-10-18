@@ -125,10 +125,10 @@ pub fn start(
         ));
     }
     let (running,recent):(i64,i64)=tx.query_row("SELECT SUM(CASE WHEN state='reserved' THEN 1 ELSE 0 END),SUM(CASE WHEN created_at>?2 THEN 1 ELSE 0 END) FROM hub_requests WHERE user_id=?1 AND (state='reserved' OR created_at>?2)",params![user.id,now()-60],|r|Ok((r.get::<_,Option<i64>>(0)?.unwrap_or(0),r.get::<_,Option<i64>>(1)?.unwrap_or(0))))?;
-    if running >= concurrency {
+    if concurrency > 0 && running >= concurrency {
         return Err(Error::limited("concurrency_limit", "进行中的请求过多"));
     }
-    if recent >= rpm {
+    if rpm > 0 && recent >= rpm {
         return Err(Error::limited("rate_limit", "请求过于频繁，请稍后再试"));
     }
     let request = id();
@@ -145,8 +145,8 @@ pub fn start(
     reserve(
         &tx,
         &request,
-        &format!("user:{}:{}", user.id, period(&p)),
-        &parse(&budget),
+        &format!("user:{}:lifetime", user.id),
+        &Budget::default(),
         estimate,
     )?;
     tx.commit()?;

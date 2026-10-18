@@ -3514,7 +3514,7 @@ function UserEditor({
   close: () => void;
   saved: () => void;
 }) {
-  const [budget, setBudget] = useState<Budget>(JSON.parse(value.budget)),
+  const [budget] = useState<Budget>(JSON.parse(value.budget)),
     [active, setActive] = useState(!!value.active),
     [period, setPeriod] = useState(value.period),
     [rpm, setRpm] = useState(value.rpm),
@@ -3554,33 +3554,21 @@ function UserEditor({
               <option value="false">停用</option>
             </select>
           </Field>
-          <Field label="额度周期">
-            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              <option value="month">每月</option>
-              <option value="day">每天</option>
-              <option value="lifetime">累计</option>
-            </select>
-          </Field>
         </div>
-        <BudgetFields
-          title="个人平台额度（所有设备合计）"
-          value={budget}
-          change={setBudget}
-        />
         <div className="u-grid2">
-          <Field label="每分钟请求上限">
+          <Field label="每分钟请求上限（0 = 不限）">
             <input
               type="number"
-              min={1}
+              min={0}
               max={10000}
               value={rpm}
               onChange={(e) => setRpm(Number(e.target.value))}
             />
           </Field>
-          <Field label="并发请求上限">
+          <Field label="并发请求上限（0 = 不限）">
             <input
               type="number"
-              min={1}
+              min={0}
               max={1000}
               value={concurrency}
               onChange={(e) => setConcurrency(Number(e.target.value))}

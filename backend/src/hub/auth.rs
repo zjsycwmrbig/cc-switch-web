@@ -143,7 +143,7 @@ pub async fn initialize(app: &crate::store::AppState) -> Result<()> {
             .unwrap_or_else(secret);
         let encoded = password_hash(&password)?;
         let c = conn(&app.db)?;
-        c.execute("INSERT INTO hub_users(id,username,password_hash,role,rpm,concurrency,created_at) VALUES('admin','admin',?1,'admin',600,32,?2)",params![encoded,now()])?;
+        c.execute("INSERT INTO hub_users(id,username,password_hash,role,rpm,concurrency,created_at) VALUES('admin','admin',?1,'admin',0,0,?2)",params![encoded,now()])?;
         drop(c);
         let path = crate::config::get_app_config_dir().join("ccswitchuint-admin-initial.txt");
         {
@@ -252,7 +252,7 @@ pub fn register(db: &crate::database::Database, name: &str, password: &str) -> R
     if exists {
         return Err(Error::bad("用户名不可用"));
     }
-    c.execute("INSERT INTO hub_users(id,username,password_hash,role,budget,created_at) VALUES(?1,?2,?3,'user',?4,?5)",params![id(),name,encoded,r#"{"requests":1000,"tokens":1000000}"#,now()])?;
+    c.execute("INSERT INTO hub_users(id,username,password_hash,role,budget,created_at) VALUES(?1,?2,?3,'user',?4,?5)",params![id(),name,encoded,"{}",now()])?;
     Ok(())
 }
 pub fn login(db: &crate::database::Database, name: &str, password: &str) -> Result<String> {
