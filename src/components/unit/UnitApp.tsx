@@ -1558,7 +1558,7 @@ function Allocations({ generation }: { generation: number }) {
         </Empty>
       ) : (
         <div className="u-allocation-layout">
-          <aside className="u-allocation-list">
+          <div className="u-allocation-list u-allocation-top">
             <div className="u-allocation-list-head">
               <strong>我的供应商</strong>
               <span>{ownedResources.length}</span>
@@ -1595,7 +1595,7 @@ function Allocations({ generation }: { generation: number }) {
                 </button>
               );
             })}
-          </aside>
+          </div>
           {selected && (
             <section className="u-allocation-main">
               <div className="u-allocation-head">
