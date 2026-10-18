@@ -954,6 +954,10 @@ pub(super) fn list_model_routes(
             .iter_mut()
             .find(|item| item["model"] == row["model"])
         {
+            if row["updatedAt"].as_i64().unwrap_or(0) >= existing["updatedAt"].as_i64().unwrap_or(0) {
+                existing["displayName"] = row["displayName"].clone();
+                existing["updatedAt"] = row["updatedAt"].clone();
+            }
             let mut targets = existing["targets"].as_array().cloned().unwrap_or_default();
             for target in row["targets"].as_array().cloned().unwrap_or_default() {
                 if !targets.contains(&target) {
@@ -1030,7 +1034,7 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
         .iter()
         .filter_map(|row| row["model"].as_str().map(str::to_string))
         .collect::<std::collections::HashSet<_>>();
-    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> = Default::default();
     for r in resources::all(db)?
         .into_iter()
         .filter(|r| {
@@ -1050,21 +1054,29 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
             groups
                 .entry(model.to_string())
                 .or_default()
-                .push(r.id.clone());
+                .push((r.id.clone(), r.name.clone()));
         }
     }
     if groups.is_empty() {
         return Ok(());
     }
-    for (model, mut targets) in groups {
-        targets.dedup();
+    for (model, members) in groups {
+        let mut targets = Vec::new();
+        let mut provider_name = String::new();
+        for (id, name) in members {
+            if !targets.contains(&id) {
+                targets.push(id);
+                provider_name = name;
+            }
+        }
         if !have.insert(model.clone()) {
             continue;
         }
-        let (name, _) = if targets.len() >= 2 {
-            (format!("{model}（自动路由）"), ())
+        let last = model.rsplit('/').next().unwrap_or(&model);
+        let name = if targets.len() >= 2 {
+            format!("{last}（自动路由）")
         } else {
-            (model.clone(), ())
+            format!("{last}（{provider_name}）")
         };
         conn(db)?.execute(
             "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
@@ -1134,6 +1146,10 @@ async fn save_model_route(
     if existing.is_some_and(|owner| owner != user.id) {
         return Err(Error::forbidden());
     }
+    conn(&app.db)?.execute(
+        "DELETE FROM hub_model_routes WHERE user_id=?1 AND model=?2 AND id<>?3",
+        params![&user.id, &model, &id],
+    )?;
     conn(&app.db)?.execute(
         "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
          VALUES(?1,?2,?3,?4,?5,1,?6,?6)
