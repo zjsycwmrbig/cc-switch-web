@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Plus,
   Search,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -292,6 +293,18 @@ export function ProviderList({
   const [unitModelFilter, setUnitModelFilter] = useState("");
   const [unitApplyOnly, setUnitApplyOnly] = useState(false);
   const [unitUsage, setUnitUsage] = useState<Record<string, any>>({});
+  const [usageLoading, setUsageLoading] = useState<Record<string, boolean>>({});
+  const refreshUnitUsage = async (resourceId: string) => {
+    setUsageLoading((old) => ({ ...old, [resourceId]: true }));
+    try {
+      const value = await unit(`/ui/library/${appId}/${resourceId}/usage`);
+      setUnitUsage((old) => ({ ...old, [resourceId]: value }));
+    } catch {
+      setUnitUsage((old) => ({ ...old, [resourceId]: null }));
+    } finally {
+      setUsageLoading((old) => ({ ...old, [resourceId]: false }));
+    }
+  };
   const [expandedModels, setExpandedModels] = useState<string | null>(null);
   const [modelPage, setModelPage] = useState<Record<string, number>>({});
   const pendingPublicCreate = useRef(false);
@@ -527,27 +540,6 @@ export function ProviderList({
     [unitLibrary],
   );
 
-  // 供应商库卡片上的余额/用量查询（官方号=套餐用量，其他=余额）。
-  useEffect(() => {
-    if (unitTab !== "library") return;
-    const entries = Object.values(unitLibrary?.providers ?? {}).slice(0, 24);
-    if (!entries.length) return;
-    let live = true;
-    void Promise.all(
-      entries.map(async (entry) => {
-        try {
-          return [entry.unitResource.id, await unit(`/ui/library/${appId}/${entry.unitResource.id}/usage`)] as const;
-        } catch {
-          return [entry.unitResource.id, null] as const;
-        }
-      }),
-    ).then((rows) => {
-      if (live) setUnitUsage(Object.fromEntries(rows));
-    });
-    return () => {
-      live = false;
-    };
-  }, [unitTab, appId, unitLibrary]);
 
   // “增加公共供应商”创建完成后自动发布到供应商库。
   useEffect(() => {
@@ -1033,6 +1025,18 @@ export function ProviderList({
                         </div>
                       </div>
                     </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        title="刷新余额/用量"
+                        className="inline-flex items-center gap-1 rounded-md border border-border-default px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                        disabled={usageLoading[resource.id]}
+                        onClick={() => void refreshUnitUsage(resource.id)}
+                      >
+                        <RefreshCw size={12} className={usageLoading[resource.id] ? "animate-spin" : ""} />
+                        刷新余额/用量
+                      </button>
+                    </div>
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg border border-border-default px-2.5 py-2">
                         <div className="text-muted-foreground">近 7 天请求</div>
@@ -1052,8 +1056,14 @@ export function ProviderList({
                       <div className="mt-1.5 space-y-2">
                         {(() => {
                           const u = unitUsage[resource.id];
-                          if (!u?.success) {
-                            return <div className="text-xs text-muted-foreground">未配置</div>;
+                          if (usageLoading[resource.id]) {
+                            return <div className="text-xs text-muted-foreground">查询中…</div>;
+                          }
+                          if (!u) {
+                            return <div className="text-xs text-muted-foreground">点击刷新余额/用量</div>;
+                          }
+                          if (!u.success) {
+                            return <div className="text-xs text-muted-foreground">{u.error || "未配置"}</div>;
                           }
                           const data = (u.data ?? []) as any[];
                           if (!data.length) return <div className="text-xs text-muted-foreground">可用</div>;

@@ -163,7 +163,7 @@ export const WebSidebar = memo(function WebSidebar({
         >
           <PanelLeftClose className="h-5 w-5 shrink-0" />
           <span className={cn("font-semibold", railHidden && "sr-only")}>
-            CC Switch Web
+            CC Switch Uint
           </span>
         </button>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-hidden">
