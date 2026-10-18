@@ -63,6 +63,44 @@ async fn library_usage(
     if r.app_type != kind || !r.published || r.disabled {
         return Err(Error::forbidden());
     }
+    // 官方账号没有 usage_script，用授权中心的订阅配额（5h/周额度）代替。
+    if r.official {
+        if let Some(account) = r.account_id.clone() {
+            match crate::commands::get_codex_oauth_quota_internal(
+                Some(account),
+                &app.codex_oauth_state,
+            )
+            .await
+            {
+                Ok(quota) if quota.success => {
+                    let data = quota
+                        .tiers
+                        .iter()
+                        .map(|tier| {
+                            json!({
+                                "planName": tier.name,
+                                "used": tier.utilization,
+                                "remaining": (100.0 - tier.utilization).max(0.0),
+                                "total": 100.0,
+                                "unit": "%",
+                                "extra": tier.resets_at,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    return Ok(Json(json!({"success": true, "data": data})));
+                }
+                Ok(quota) => {
+                    return Ok(Json(json!({
+                        "success": false,
+                        "error": quota.error.unwrap_or_else(|| "官方账号用量不可用".into()),
+                    })))
+                }
+                Err(error) => {
+                    return Ok(Json(json!({"success": false, "error": error})))
+                }
+            }
+        }
+    }
     let app_type = crate::app_config::AppType::from_str(&kind)
         .map_err(|_| Error::bad("未知应用类型"))?;
     match crate::commands::query_provider_usage_internal(

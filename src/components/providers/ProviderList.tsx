@@ -1046,22 +1046,16 @@ export function ProviderList({
                           {formatNumber(resource.usage7d?.tokens ?? 0)}
                         </div>
                       </div>
-                      <div className="rounded-lg border border-border-default px-2.5 py-2">
-                        <div className="text-muted-foreground">可用模型</div>
-                        <div className="font-medium text-foreground">
-                          {resource.visibleModelCount ??
-                            resource.visibleModels?.length ??
-                            0}{" "}
-                          个
-                        </div>
-                      </div>
                     </div>
                     <div className="rounded-lg border border-border-default px-3 py-2 text-xs">
                       <div className="text-muted-foreground">余额 / 用量</div>
-                      <div className="mt-0.5 whitespace-pre-wrap break-words font-medium text-foreground">{(() => { const u = unitUsage[resource.id]; return u?.success ? ((u.data ?? []).map((d: any) => `${d.planName ? d.planName + " " : ""}${d.remaining ?? d.used ?? ""}${d.unit ?? ""}`).join(" · ") || "可用") : "未配置"; })()}</div>
+                      <div className="mt-0.5 whitespace-pre-wrap break-words font-medium text-foreground">{(() => { const u = unitUsage[resource.id]; return u?.success ? ((u.data ?? []).map((d: any) => { const n = typeof d.remaining === "number" ? d.remaining : typeof d.used === "number" ? d.used : null; const v = n == null ? "—" : `${n.toFixed(d.unit === "%" ? 1 : 2)}${d.unit === "%" ? "%" : " " + (d.unit ?? "")}`; return `${d.planName ? d.planName + " " : ""}${v}`; }).join(" · ") || "可用") : "未配置"; })()}</div>
                     </div>
                     {(resource.visibleModels?.length ?? 0) > 0 && (
                       <div className="space-y-1.5">
+                        <div className="text-xs text-muted-foreground">
+                          可用模型 {resource.visibleModelCount ?? resource.visibleModels?.length ?? 0} 个：
+                        </div>
                         <div className="flex flex-wrap gap-1.5">
                           {(() => {
                             const models = resource.visibleModels ?? [];
@@ -1117,9 +1111,6 @@ export function ProviderList({
                       </div>
                     )}
                     <div className="mt-auto flex flex-wrap items-center gap-2">
-                      <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
-                        {resource.owned ? "我上传的" : "其他用户上传"}
-                      </span>
                       {resource.disabled && (
                         <span className="theme-chip-neutral inline-flex rounded-full px-2.5 py-1 text-[11px] font-medium">
                           已停用
