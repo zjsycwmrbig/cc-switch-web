@@ -32,6 +32,7 @@ import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { tierLabel } from "@/components/SubscriptionQuotaFooter";
 import {
   Dialog,
   DialogContent,
@@ -164,6 +165,8 @@ export function ProviderList({
   onSetAsDefault,
 }: ProviderListProps) {
   const { t } = useTranslation();
+  /** 官方账号用量的档位名来自后端（`five_hour` 等），已知档位换成本地化写法 */
+  const planLabel = (name?: string | null) => (name ? tierLabel(t, name) : "");
   const session = useUnitSession();
   const { checkProvider, isChecking } = useStreamCheck(appId);
   const sortedProviders = useMemo(
@@ -829,8 +832,12 @@ export function ProviderList({
               />
               <div className="min-w-0">
                 <h3 className="truncate text-sm font-semibold text-foreground">
-                  {resource.ownerName} 的 {provider.name}
+                  {provider.name}
                 </h3>
+                <p className="truncate text-xs text-foreground/90">
+                  {"共享自 "}
+                  <span className="font-medium">{resource.ownerName}</span>
+                </p>
                 <p className="truncate text-xs text-muted-foreground">
                   {resource.appType?.toUpperCase()} · 共享给我
                 </p>
@@ -1015,6 +1022,11 @@ export function ProviderList({
                         <div className="truncate text-sm font-semibold text-foreground">
                           {entry.name}
                         </div>
+                        <div className="truncate text-xs text-foreground/90">
+                          {"由 "}
+                          <span className="font-medium">{resource.ownerName}</span>
+                          {" 提供"}
+                        </div>
                         <div className="truncate text-xs text-muted-foreground">
                           {resource.visibleModelCount ??
                             resource.visibleModels?.length ??
@@ -1022,7 +1034,6 @@ export function ProviderList({
                             0}{" "}
                           个可见模型
                           {resource.official ? " · 官方账号" : ""}
-                          {" · 由 "}{resource.ownerName}{" 提供"}
                         </div>
                       </div>
                     </div>
@@ -1074,7 +1085,7 @@ export function ProviderList({
                             return (
                               <div key={`${d.planName ?? "plan"}-${i}`} className="space-y-1">
                                 <div className="flex items-center justify-between gap-2 text-[11px]">
-                                  <span className="truncate text-muted-foreground">{d.planName || "余额"}</span>
+                                  <span className="truncate text-muted-foreground">{planLabel(d.planName) || "余额"}</span>
                                   <span className="font-mono text-foreground">
                                     {n == null ? "—" : `${n.toFixed(d.unit === "%" ? 1 : 2)}${d.unit === "%" ? "%" : " " + (d.unit ?? "")}`}
                                   </span>

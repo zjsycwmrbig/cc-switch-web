@@ -121,3 +121,18 @@
 - 服务端新增供应商链路经真实请求验证可用：以管理员会话 + CSRF 提交真实形态的 Codex 供应商负载返回 `200 true`，创建后立即删除探针供应商，`hub_resources` 恢复 7 条。
 - 线上前端分块完整：入口 `assets/index-DR4UZB57.js` 引用的 33 个分块全部返回 200，`AddProviderDialog` 分块已不再包含统一供应商页签。
 - 未能在本机复现用户所述的「新增供应商卡死」：Codex 应用下的编辑器视图在多用户模式走本地短路，新增保存走 `/api/unit/ui/providers/:app/save`，服务端与前端路径均正常；上述错误暴露改动用于让真实故障可见。
+
+## 供应商卡片归属与官方用量档位显示
+
+- 供应商库卡片的归属从零散小字改为标题下方的独立一行「由 <用户名> 提供」，用户名加粗并与后缀拉开；可见模型数与官方账号标记留在下面一行。
+- 「共享给我的供应商」卡片标题只保留供应商名，「共享自 <用户名>」进入标题下方一行，用户名加粗，应用类型与来源说明另起一行。
+- 个人页「共享给我的供应商」卡片同步该写法，共享来源放在标题下方一行，用户名加粗。
+- 官方账号卡片的余额/用量把后端原始档位名（`five_hour`、`seven_day` 等）复用 `SubscriptionQuotaFooter` 的 `tierLabel` 映射换成本地化写法，未知档位名保持原样。
+
+### 本轮验证
+
+- `npx --yes pnpm@10.20.0 typecheck`：通过。
+- `npx --yes pnpm@10.20.0 exec vitest run tests/components/ProviderList.test.tsx`：7 项通过。
+- `npx --yes pnpm@10.20.0 build:frontend`：通过，产物 `assets/index-pRt50RuT.js`。
+- 部署方式：前端产物直接落到 `/opt/cc-switch-web/dist`，未重编 Rust、未重启服务；部署前备份 `/root/ccswitchuint-backups/ui-market-card-20261019T160112Z/dist.old`。
+- 线上核对：`/`、入口分块均返回 200，服务端返回的首页哈希与新产物一致，`ProviderList` 分块已包含新的归属文案与 `tierLabel` 映射；公网 `47.93.170.86:8890` 返回 200。

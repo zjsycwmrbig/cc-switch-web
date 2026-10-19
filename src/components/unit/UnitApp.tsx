@@ -3103,11 +3103,15 @@ function Profile({
               <header>
                 <div>
                   <h3>{supplier.name}</h3>
-                  <p>
-                    {supplier.appType.toUpperCase()} ·{" "}
-                    {supplier.owned
-                      ? "我的供应商"
-                      : `共享自 ${supplier.ownerName}`}
+                  <p className="text-foreground/90">
+                    {supplier.owned ? (
+                      <>{supplier.appType.toUpperCase()} · 我的供应商</>
+                    ) : (
+                      <>
+                        {"共享自 "}
+                        <span className="font-medium">{supplier.ownerName}</span>
+                      </>
+                    )}
                   </p>
                 </div>
                 <span className={`u-tag ${supplier.owned ? "u-green" : ""}`}>
