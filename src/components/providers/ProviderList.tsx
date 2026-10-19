@@ -832,12 +832,12 @@ export function ProviderList({
               />
               <div className="min-w-0">
                 <h3 className="truncate text-sm font-semibold text-foreground">
+                  <span className="font-medium text-primary">
+                    {resource.ownerName}
+                  </span>
+                  <span className="font-normal text-muted-foreground"> 的 </span>
                   {provider.name}
                 </h3>
-                <p className="truncate text-xs text-foreground/90">
-                  {"共享自 "}
-                  <span className="font-medium">{resource.ownerName}</span>
-                </p>
                 <p className="truncate text-xs text-muted-foreground">
                   {resource.appType?.toUpperCase()} · 共享给我
                 </p>
@@ -1020,12 +1020,11 @@ export function ProviderList({
                       )}
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-foreground">
+                          <span className="font-medium text-primary">
+                            {resource.ownerName}
+                          </span>
+                          <span className="font-normal text-muted-foreground"> 的 </span>
                           {entry.name}
-                        </div>
-                        <div className="truncate text-xs text-foreground/90">
-                          {"由 "}
-                          <span className="font-medium">{resource.ownerName}</span>
-                          {" 提供"}
                         </div>
                         <div className="truncate text-xs text-muted-foreground">
                           {resource.visibleModelCount ??

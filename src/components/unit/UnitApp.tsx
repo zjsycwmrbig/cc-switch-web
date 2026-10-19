@@ -3102,16 +3102,20 @@ function Profile({
             <article className="u-supplier-card" key={supplier.id}>
               <header>
                 <div>
-                  <h3>{supplier.name}</h3>
-                  <p className="text-foreground/90">
-                    {supplier.owned ? (
-                      <>{supplier.appType.toUpperCase()} · 我的供应商</>
-                    ) : (
+                  <h3>
+                    {!supplier.owned && (
                       <>
-                        {"共享自 "}
-                        <span className="font-medium">{supplier.ownerName}</span>
+                        <span className="font-medium text-primary">
+                          {supplier.ownerName}
+                        </span>
+                        <span className="font-normal text-muted-foreground">{" 的 "}</span>
                       </>
                     )}
+                    {supplier.name}
+                  </h3>
+                  <p>
+                    {supplier.appType.toUpperCase()} ·{" "}
+                    {supplier.owned ? "我的供应商" : "共享给我"}
                   </p>
                 </div>
                 <span className={`u-tag ${supplier.owned ? "u-green" : ""}`}>

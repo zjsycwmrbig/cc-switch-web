@@ -124,15 +124,15 @@
 
 ## 供应商卡片归属与官方用量档位显示
 
-- 供应商库卡片的归属从零散小字改为标题下方的独立一行「由 <用户名> 提供」，用户名加粗并与后缀拉开；可见模型数与官方账号标记留在下面一行。
-- 「共享给我的供应商」卡片标题只保留供应商名，「共享自 <用户名>」进入标题下方一行，用户名加粗，应用类型与来源说明另起一行。
-- 个人页「共享给我的供应商」卡片同步该写法，共享来源放在标题下方一行，用户名加粗。
+- 归属信息不再单独占一行：供应商库卡片标题改为「<用户名> 的 <供应商名>」，用户名用主题色、供应商名用前景色标题字重，可见模型数与官方账号标记留在下面一行。
+- 「共享给我的供应商」卡片标题同样改成「<用户名> 的 <供应商名>」，正文只保留应用类型与「共享给我」。
+- 个人页「共享给我的供应商」卡片同步该写法，自有供应商卡片标题保持供应商名不变。
 - 官方账号卡片的余额/用量把后端原始档位名（`five_hour`、`seven_day` 等）复用 `SubscriptionQuotaFooter` 的 `tierLabel` 映射换成本地化写法，未知档位名保持原样。
 
 ### 本轮验证
 
 - `npx --yes pnpm@10.20.0 typecheck`：通过。
 - `npx --yes pnpm@10.20.0 exec vitest run tests/components/ProviderList.test.tsx`：7 项通过。
-- `npx --yes pnpm@10.20.0 build:frontend`：通过，产物 `assets/index-pRt50RuT.js`。
-- 部署方式：前端产物直接落到 `/opt/cc-switch-web/dist`，未重编 Rust、未重启服务；部署前备份 `/root/ccswitchuint-backups/ui-market-card-20261019T160112Z/dist.old`。
-- 线上核对：`/`、入口分块均返回 200，服务端返回的首页哈希与新产物一致，`ProviderList` 分块已包含新的归属文案与 `tierLabel` 映射；公网 `47.93.170.86:8890` 返回 200。
+- `npx --yes pnpm@10.20.0 build:frontend`：通过，产物 `assets/index-DVTgNq8S.js`。
+- 两轮部署均为前端快路径：产物直接落到 `/opt/cc-switch-web/dist`，未重编 Rust、未重启服务；第一次备份 `/root/ccswitchuint-backups/ui-market-card-20261019T160112Z/dist.old`，标题改版备份 `/root/ccswitchuint-backups/ui-title-owner-20261019T160526Z/dist.old`。
+- 线上核对：`/`、入口分块均返回 200，服务端返回的首页哈希与新产物一致，构建分块已包含「<用户名> 的 <供应商名>」标题结构与 `tierLabel` 档位映射；公网 `47.93.170.86:8890` 返回 200。
