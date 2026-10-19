@@ -291,7 +291,7 @@ impl RequestForwarder {
                 status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
             }
 
-            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
+            // 转发请求（普通重试由客户端控制；响应头前连接中断允许同供应商重连一次）
             let mut forwarded = self
                 .forward(
                     provider,
@@ -303,6 +303,33 @@ impl RequestForwarder {
                     app_type,
                 )
                 .await;
+            if forwarded
+                .as_ref()
+                .is_err_and(is_transient_pre_response_error)
+            {
+                let first_error = forwarded
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                log::warn!(
+                    "[{app_type_str}] [FWD-004] Provider {} 返回响应前连接中断，重新建立连接后重试一次: {}",
+                    provider.name,
+                    first_error
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                forwarded = self
+                    .forward(
+                        provider,
+                        endpoint,
+                        &provider_body,
+                        &headers,
+                        &extensions,
+                        adapter.as_ref(),
+                        app_type,
+                    )
+                    .await;
+            }
             // 同一家原生 Responses 上游明确拒绝历史状态时，最多清理后重试一次。
             // 在统一结果处理前重试，成功/失败仍沿用既有统计与故障转移语义。
             if let Err(error) = &forwarded {
@@ -2052,6 +2079,23 @@ impl RequestForwarder {
     }
 }
 
+fn is_transient_pre_response_error(error: &ProxyError) -> bool {
+    let ProxyError::ForwardFailed(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    [
+        "response parse failed: connection error",
+        "error sending request",
+        "connection closed before message completed",
+        "connection reset by peer",
+        "broken pipe",
+        "unexpected eof",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
 /// 从 ProxyError 中提取错误消息
 fn extract_error_message(error: &ProxyError) -> Option<String> {
     match error {
@@ -3531,6 +3575,25 @@ mod tests {
             .as_deref(),
             Some("overloaded_error: busy")
         );
+    }
+
+    #[test]
+    fn transient_pre_response_connection_errors_are_retryable() {
+        assert!(is_transient_pre_response_error(&ProxyError::ForwardFailed(
+            "Response parse failed: connection error".to_string()
+        )));
+        assert!(is_transient_pre_response_error(&ProxyError::ForwardFailed(
+            "上游连接失败: error sending request".to_string()
+        )));
+        assert!(!is_transient_pre_response_error(
+            &ProxyError::UpstreamError {
+                status: 502,
+                body: None,
+            }
+        ));
+        assert!(!is_transient_pre_response_error(&ProxyError::Timeout(
+            "请求超时".to_string()
+        )));
     }
 
     #[test]
