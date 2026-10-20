@@ -931,7 +931,7 @@ pub(super) fn list_model_routes(
 ) -> Result<Vec<Value>> {
     let c = conn(db)?;
     let mut statement = c.prepare(
-        "SELECT id,display_name,model,targets,enabled,created_at,updated_at FROM hub_model_routes
+        "SELECT id,display_name,model,targets,enabled,auto,created_at,updated_at FROM hub_model_routes
          WHERE user_id=?1 ORDER BY created_at,id",
     )?;
     let rows = statement
@@ -942,20 +942,27 @@ pub(super) fn list_model_routes(
                 "model": row.get::<_, String>(2)?,
                 "targets": parse::<Vec<String>>(&row.get::<_, String>(3)?),
                 "enabled": row.get::<_, bool>(4)?,
-                "createdAt": row.get::<_, i64>(5)?,
-                "updatedAt": row.get::<_, i64>(6)?,
+                "auto": row.get::<_, bool>(5)?,
+                "createdAt": row.get::<_, i64>(6)?,
+                "updatedAt": row.get::<_, i64>(7)?,
             }))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    // 同一模型只保留一条映射：合并历史重复记录的目标，避免列表里出现重复项。
+    // 自动路由按归一化模型合并；单对单映射保持独立，不能覆盖或吞并。
     let mut merged: Vec<Value> = vec![];
     for row in rows {
-        if let Some(existing) = merged
-            .iter_mut()
-            .find(|item| item["model"] == row["model"])
-        {
+        let is_auto = row["auto"].as_bool().unwrap_or(false);
+        if let Some(existing) = is_auto.then(|| {
+            let key = resources::model_group_key(row["model"].as_str().unwrap_or_default());
+            merged.iter_mut().find(|item| {
+                item["auto"].as_bool().unwrap_or(false)
+                    && resources::model_group_key(item["model"].as_str().unwrap_or_default())
+                        == key
+            })
+        }).flatten() {
             if row["updatedAt"].as_i64().unwrap_or(0) >= existing["updatedAt"].as_i64().unwrap_or(0) {
                 existing["displayName"] = row["displayName"].clone();
+                existing["model"] = row["model"].clone();
                 existing["updatedAt"] = row["updatedAt"].clone();
             }
             let mut targets = existing["targets"].as_array().cloned().unwrap_or_default();
@@ -1056,26 +1063,22 @@ fn sanitize_model_routes(db: &crate::database::Database, user: &Identity) -> Res
     Ok(())
 }
 
-/// 首次进入模型页时，把当前可用的「资源 × 模型」补成映射：
-/// 同一模型有多个可用供应商时直接生成自动路由，否则生成单对单映射。
+/// 首次进入模型页时，为当前可用的「资源 × 模型」补单对单映射。
+/// 自动路由由单独的识别流程追加，不能覆盖或合并这里的单对单记录。
 pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
-    // 清理早期并发初始化留下的重复映射（每个用户每个模型只保留最早一条）。
-    conn(db)?.execute(
-        "DELETE FROM hub_model_routes WHERE rowid NOT IN
-         (SELECT MIN(rowid) FROM hub_model_routes GROUP BY user_id, model)",
-        [],
-    )?;
     let existing = list_model_routes(db, &user.id)?;
-    let mut have = existing
-        .iter()
-        .filter_map(|row| {
-            row["model"]
-                .as_str()
-                .map(resources::model_group_key)
-        })
-        .collect::<std::collections::HashSet<_>>();
-    let mut groups: std::collections::BTreeMap<String, Vec<(String, String, String)>> =
-        Default::default();
+    let mut have = std::collections::HashSet::new();
+    for row in existing.iter().filter(|row| !row["auto"].as_bool().unwrap_or(false)) {
+        let Some(model) = row["model"].as_str() else {
+            continue;
+        };
+        let key = resources::model_group_key(model);
+        for target in row["targets"].as_array().into_iter().flatten() {
+            if let Some(target) = target.as_str() {
+                have.insert((target.to_string(), key.clone()));
+            }
+        }
+    }
     for r in resources::all(db)?
         .into_iter()
         .filter(|r| {
@@ -1087,60 +1090,28 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
                 continue;
             };
             let key = resources::model_group_key(model);
-            if key.is_empty() || have.contains(&key) {
+            if key.is_empty() || have.contains(&(r.id.clone(), key.clone())) {
                 continue;
             }
             if resources::usable(db, user, &r, model).is_err() {
                 continue;
             }
-            groups
-                .entry(key)
-                .or_default()
-                .push((r.id.clone(), r.name.clone(), model.to_string()));
+            have.insert((r.id.clone(), key));
+            let last = model.rsplit('/').next().unwrap_or(model);
+            let name = format!("{last}（{}）", r.name);
+            conn(db)?.execute(
+                "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,auto,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,1,0,?6,?6)",
+                params![
+                    super::id(),
+                    &user.id,
+                    name,
+                    model,
+                    json_text(&vec![r.id.clone()]),
+                    now()
+                ],
+            )?;
         }
-    }
-    if groups.is_empty() {
-        return Ok(());
-    }
-    for (key, members) in groups {
-        let mut targets = Vec::new();
-        let mut provider_name = String::new();
-        let mut representative = String::new();
-        for (id, name, model) in members {
-            if !targets.contains(&id) {
-                targets.push(id);
-                provider_name = name;
-                if representative.is_empty() {
-                    representative = model;
-                }
-            }
-        }
-        if !have.insert(key) {
-            continue;
-        }
-        let last = representative.rsplit('/').next().unwrap_or(&representative);
-        let route_model = if targets.len() >= 2 {
-            last.to_string()
-        } else {
-            representative.clone()
-        };
-        let name = if targets.len() >= 2 {
-            format!("{last}[auto]")
-        } else {
-            format!("{last}（{provider_name}）")
-        };
-        conn(db)?.execute(
-            "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,1,?6,?6)",
-            params![
-                super::id(),
-                &user.id,
-                name,
-                route_model,
-                json_text(&targets),
-                now()
-            ],
-        )?;
     }
     Ok(())
 }
@@ -1154,6 +1125,8 @@ struct ModelRouteInput {
     model: String,
     #[serde(default)]
     targets: Vec<String>,
+    #[serde(default)]
+    auto: bool,
 }
 
 async fn save_model_route(
@@ -1199,20 +1172,23 @@ async fn save_model_route(
     if existing.is_some_and(|owner| owner != user.id) {
         return Err(Error::forbidden());
     }
+    if v.auto {
+        conn(&app.db)?.execute(
+            "DELETE FROM hub_model_routes WHERE user_id=?1 AND model=?2 AND auto=1 AND id<>?3",
+            params![&user.id, &model, &id],
+        )?;
+    }
     conn(&app.db)?.execute(
-        "DELETE FROM hub_model_routes WHERE user_id=?1 AND model=?2 AND id<>?3",
-        params![&user.id, &model, &id],
-    )?;
-    conn(&app.db)?.execute(
-        "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,1,?6,?6)
-         ON CONFLICT(id) DO UPDATE SET display_name=?3,model=?4,targets=?5,updated_at=?6",
+        "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,auto,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,1,?6,?7,?7)
+         ON CONFLICT(id) DO UPDATE SET display_name=?3,model=?4,targets=?5,auto=?6,updated_at=?7",
         params![
             id,
             &user.id,
             display_name,
             model,
             json_text(&v.targets),
+            v.auto,
             now()
         ],
     )?;
@@ -1221,7 +1197,7 @@ async fn save_model_route(
         &user.id,
         "modelRoute.save",
         &id,
-        json!({"model":model,"targets":v.targets}),
+        json!({"model":model,"targets":v.targets,"auto":v.auto}),
     )?;
     Ok(Json(json!({"id":id})))
 }
@@ -1297,6 +1273,9 @@ async fn detect_model_routes(
     let mut existing_by_key: std::collections::HashMap<String, (String, String, String, Vec<String>)> =
         Default::default();
     for row in &existing {
+        if !row["auto"].as_bool().unwrap_or(false) {
+            continue;
+        }
         let Some(model) = row["model"].as_str() else { continue };
         existing_by_key.insert(
             resources::model_group_key(model),
@@ -1349,12 +1328,14 @@ async fn detect_model_routes(
                 "model": base_model,
                 "displayName": if generated_name { format!("{base_model}[auto]") } else { name },
                 "targets": targets,
+                "auto": true,
             }));
         } else {
             candidates.push(json!({
                 "model": base_model,
                 "displayName": format!("{base_model}[auto]"),
                 "targets": member_ids,
+                "auto": true,
             }));
         }
     }
@@ -1366,7 +1347,7 @@ async fn detect_model_routes(
             let stale = {
                 let c = conn(&app.db)?;
                 let mut statement =
-                    c.prepare("SELECT id,model FROM hub_model_routes WHERE user_id=?1")?;
+                    c.prepare("SELECT id,model FROM hub_model_routes WHERE user_id=?1 AND auto=1")?;
                 let rows = statement
                     .query_map([&user.id], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1383,9 +1364,9 @@ async fn detect_model_routes(
                 }
             }
             conn(&app.db)?.execute(
-                "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,1,?6,?6)
-                 ON CONFLICT(id) DO UPDATE SET display_name=?3,model=?4,targets=?5,updated_at=?6",
+                "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,auto,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,1,1,?6,?6)
+                 ON CONFLICT(id) DO UPDATE SET display_name=?3,model=?4,targets=?5,auto=1,updated_at=?6",
                 params![
                     id,
                     &user.id,

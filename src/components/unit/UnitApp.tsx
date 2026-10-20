@@ -523,9 +523,7 @@ function SignIn({
   );
 }
 function routeIsAuto(route: ModelRoute) {
-  return (
-    route.targets.length >= 2 || route.displayName.trimEnd().endsWith("[auto]")
-  );
+  return route.auto;
 }
 function routeSlug(route: ModelRoute, resources: Resource[]) {
   if (routeIsAuto(route)) return `ccs-auto/${route.model}`;
@@ -636,6 +634,7 @@ function Models({ generation }: { me: Me; generation: number }) {
       displayName: route.displayName,
       model: route.model,
       targets: route.targets,
+      auto: route.auto,
     });
     setRoutes(await unit<ModelRoute[]>("/model-routes"));
   };
@@ -1128,6 +1127,7 @@ type ModelRoute = {
   displayName: string;
   model: string;
   targets: string[];
+  auto: boolean;
   targetDetails?: {
     id: string;
     name: string;

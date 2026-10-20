@@ -48,7 +48,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS hub_application_pending ON hub_applications(re
 CREATE TABLE IF NOT EXISTS hub_model_routes (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hub_users(id),
  display_name TEXT NOT NULL, model TEXT NOT NULL, targets TEXT NOT NULL DEFAULT '[]',
- enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+ enabled INTEGER NOT NULL DEFAULT 1, auto INTEGER NOT NULL DEFAULT 0,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS hub_model_route_user ON hub_model_routes(user_id,enabled);
 CREATE TABLE IF NOT EXISTS hub_share_codes (
@@ -138,6 +139,20 @@ CREATE TABLE IF NOT EXISTS hub_audit (id TEXT PRIMARY KEY, actor TEXT NOT NULL, 
         "hub_applications",
         "decision_note",
         "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        c,
+        "hub_model_routes",
+        "auto",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // 旧数据没有显式类型：旧自动名称或多目标路由归为自动路由。
+    c.execute(
+        "UPDATE hub_model_routes SET auto=1
+         WHERE display_name LIKE '%[auto]'
+            OR display_name LIKE '%（自动路由）'
+            OR json_array_length(targets)>1",
+        [],
     )?;
     Ok(())
 }

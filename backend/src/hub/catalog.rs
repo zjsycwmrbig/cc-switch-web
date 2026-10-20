@@ -279,7 +279,7 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
                 continue;
             }
             templates
-                .entry(name.to_string())
+                .entry(resources::model_group_key(name))
                 .or_insert_with(|| raw.clone());
             route_keys.insert(r.id.clone(), r.route_key.clone());
             if r.official {
@@ -303,14 +303,34 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
         let Some(name) = route["displayName"].as_str() else {
             continue;
         };
-        let mut row = templates.get(base).cloned().unwrap_or_else(|| {
-            json!({"slug":base,"display_name":base,"visibility":"list"})
-        });
+        let mut row = templates
+            .get(&resources::model_group_key(base))
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "slug":base,
+                    "display_name":base,
+                    "description":base,
+                    "default_reasoning_level":"medium",
+                    "supported_reasoning_levels":[
+                        {"effort":"low","description":"Fast responses with lighter reasoning"},
+                        {"effort":"medium","description":"Balances speed and reasoning depth"},
+                        {"effort":"high","description":"Greater reasoning depth"}
+                    ],
+                    "shell_type":"unified_exec",
+                    "visibility":"list",
+                    "supported_in_api":true,
+                    "priority":1000
+                })
+            });
         let targets = route["targets"]
             .as_array()
             .map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>())
             .unwrap_or_default();
-        let key = if targets.len() >= 2 || name.trim_end().ends_with("[auto]") {
+        let key = if route["auto"].as_bool().unwrap_or(false)
+            || targets.len() >= 2
+            || name.trim_end().ends_with("[auto]")
+        {
             "auto".to_string()
         } else {
             targets

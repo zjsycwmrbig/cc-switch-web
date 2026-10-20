@@ -131,6 +131,7 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             .find(|row| {
                 row["model"].as_str() == Some(model.as_str())
                     && row["enabled"].as_bool().unwrap_or(false)
+                    && row["auto"].as_bool().unwrap_or(false)
             })
             .ok_or_else(|| Error::bad("自动路由映射不存在，请先在“模型与接入”中保存"))?;
         Some(
