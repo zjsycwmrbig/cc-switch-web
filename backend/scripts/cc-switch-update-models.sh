@@ -40,6 +40,91 @@ fail() {
 on_error() { fail "同步中断（脚本第 $1 行）" "原有配置未被破坏，可修正后重跑同一命令。"; }
 trap 'on_error $LINENO' ERR
 
+# Codex 的 daemon restart 在旧控制 socket 仍被占用时可能返回成功，但进程并未
+# 更换。这里以控制 socket 的 PID 是否真正变化为准，必要时只终止当前
+# CODEX_HOME 对应的 app-server，再重新启动。
+restart_codex_app_server() {
+  local cli="$1"
+  local directory="$2"
+  python3 - "$directory" "$cli" <<'PY'
+from pathlib import Path
+import os, re, signal, subprocess, sys, time
+
+directory, cli = sys.argv[1:]
+socket = str((Path(directory) / 'app-server-control/app-server-control.sock').resolve())
+
+def owner():
+    try:
+        lines = subprocess.check_output(
+            ['ss', '-xlpn'], encoding='utf-8', errors='replace'
+        ).splitlines()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    for line in lines:
+        if socket not in line:
+            continue
+        match = re.search(r'pid=(\d+)', line)
+        if not match:
+            continue
+        pid = int(match.group(1))
+        proc = Path('/proc/%d' % pid)
+        if proc.stat().st_uid != os.getuid():
+            raise RuntimeError('拒绝重启其他用户的服务')
+        command = (proc / 'cmdline').read_bytes().replace(b'\0', b' ')
+        if b'codex' not in command or b'app-server --listen unix://' not in command:
+            raise RuntimeError('控制 socket 不属于预期的 Codex app-server')
+        return pid
+    return None
+
+def wait_changed(previous, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        current = owner()
+        if current is not None and current != previous:
+            return current
+        time.sleep(0.15)
+    return owner()
+
+def run_quiet(args, timeout=30):
+    try:
+        subprocess.run(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+try:
+    previous = owner()
+    run_quiet([cli, 'app-server', 'daemon', 'restart'])
+    current = wait_changed(previous, 5)
+    if current is not None and current != previous:
+        print('Codex app-server 已重启（PID %s）。' % current)
+        raise SystemExit(0)
+
+    previous = owner() or previous
+    if previous is not None:
+        os.kill(previous, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and owner() == previous:
+            time.sleep(0.15)
+        if owner() == previous:
+            os.kill(previous, signal.SIGKILL)
+            time.sleep(0.3)
+
+    run_quiet([cli, 'app-server', 'daemon', 'start'])
+    current = wait_changed(previous, 8)
+    if current is None or current == previous:
+        raise RuntimeError('Codex app-server 未产生新的控制 socket，请重新打开 Codex')
+    print('Codex app-server 已强制重启（PID %s）。' % current)
+except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    raise SystemExit(str(error))
+PY
+}
+
 printf '%s%s==> ccSwitchUint 模型同步%s\n' "$C_BOLD" "$C_STEP" "$C_RESET"
 detail "服务地址：$BASE"
 detail "配置目录：$CODEX_DIR"
@@ -93,8 +178,8 @@ if [ "${1:-}" = "restore" ]; then
         if [ -x "$candidate" ]; then CODEX_BIN="$candidate"; break; fi
       done
     fi
-    if [ -n "$CODEX_BIN" ] && "$CODEX_BIN" app-server daemon restart; then
-      ok "已通过 codex app-server daemon restart 重启"
+    if [ -n "$CODEX_BIN" ] && restart_codex_app_server "$CODEX_BIN" "$CODEX_DIR"; then
+      ok "已重启 Codex app-server"
     else
       warn "自动重启未成功，请手动执行：codex app-server daemon restart"
     fi
@@ -235,55 +320,10 @@ if [ "${CC_SWITCH_RESTART_APP_SERVER:-0}" = "1" ]; then
   fi
   if [ -n "$CODEX_BIN" ]; then
     export PATH="$(dirname "$CODEX_BIN"):$PATH"
-    if "$CODEX_BIN" app-server daemon restart; then
-      ok "已通过 codex app-server daemon restart 重启"
+    if restart_codex_app_server "$CODEX_BIN" "$CODEX_DIR"; then
+      ok "已重启 Codex app-server"
     else
-      detail "daemon 命令不可用，改为按控制 socket 重启当前 CODEX_HOME 的服务"
-      # Desktop 启动的服务可能不归 daemon 命令管理。只重启当前 CODEX_HOME
-      # 控制 socket 的同用户 Codex 服务，不触碰其他目录或其他用户的服务。
-      python3 - "$CODEX_DIR" "$CODEX_BIN" <<'PY' && ok "已重启当前 CODEX_HOME 的 app-server" || warn "自动重启未成功，请重新打开 Codex"
-from pathlib import Path
-import os, re, signal, subprocess, sys, time
-directory, cli = sys.argv[1:]
-socket = str((Path(directory) / 'app-server-control/app-server-control.sock').resolve())
-def owner():
-    # ss 会原样输出抽象 socket 名等非 UTF-8 字节，必须允许替换字符，否则解码会抛 UnicodeDecodeError
-    lines = subprocess.check_output(['ss', '-xlpn'], encoding='utf-8', errors='replace').splitlines()
-    for line in lines:
-        if socket not in line:
-            continue
-        match = re.search(r'pid=(\d+)', line)
-        if not match:
-            continue
-        pid = int(match.group(1))
-        proc = Path('/proc/%d' % pid)
-        if proc.stat().st_uid != os.getuid():
-            raise SystemExit('拒绝重启其他用户的服务')
-        command = (proc / 'cmdline').read_bytes().replace(b'\0', b' ')
-        if b'codex' not in command or b'app-server --listen unix://' not in command:
-            raise SystemExit('控制 socket 不属于预期的 Codex app-server')
-        return pid
-    return None
-try:
-    previous = owner()
-    if previous is None:
-        raise RuntimeError('没有找到当前 Codex 控制 socket 的监听进程')
-    os.kill(previous, signal.SIGTERM)
-    print('已停止旧 Codex app-server（PID %s），等待重新启动。' % previous)
-    for _ in range(3):
-        time.sleep(1)
-        current = owner()
-        if current is not None and current != previous:
-            print('Codex app-server 已重新启动（PID %s）。' % current)
-            break
-    else:
-        result = subprocess.run([cli, 'app-server', 'daemon', 'start'], timeout=30)
-        current = owner()
-        if current is None or current == previous:
-            raise RuntimeError('服务尚未重新启动，请重新打开 Codex')
-except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-    raise SystemExit(str(error))
-PY
+      warn "自动重启未成功，请重新打开 Codex"
     fi
   else
     warn "未找到 Codex CLI，已跳过自动重启"
