@@ -1350,6 +1350,11 @@ async fn detect_model_routes(
     if v.apply {
         for candidate in &candidates {
             let id = candidate["id"].as_str().map(str::to_owned).unwrap_or_else(super::id);
+            let model = candidate["model"].as_str().unwrap_or("");
+            conn(&app.db)?.execute(
+                "DELETE FROM hub_model_routes WHERE user_id=?1 AND model=?2 AND id<>?3",
+                params![&user.id, model, &id],
+            )?;
             conn(&app.db)?.execute(
                 "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
                  VALUES(?1,?2,?3,?4,?5,1,?6,?6)
@@ -1358,7 +1363,7 @@ async fn detect_model_routes(
                     id,
                     &user.id,
                     candidate["displayName"].as_str().unwrap_or(""),
-                    candidate["model"].as_str().unwrap_or(""),
+                    model,
                     json_text(&candidate["targets"]),
                     now()
                 ],
