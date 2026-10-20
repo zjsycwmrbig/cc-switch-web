@@ -125,6 +125,11 @@ export function UsageDashboard({
       resolvedRange.endDate * 1000,
     ).toLocaleString(locale)}`;
   }, [locale, range, resolvedRange.endDate, resolvedRange.startDate, t]);
+  const scopeOptions = [
+    { value: "all", label: "全平台", adminOnly: true },
+    { value: "mine", label: "我调用" },
+    { value: "provided", label: "我提供" },
+  ].filter((option) => !option.adminOnly || session?.me.user.role === "admin");
 
   return (
     <motion.div
@@ -135,24 +140,40 @@ export function UsageDashboard({
     >
       {session && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm">
-          <span>统计范围</span>
-          <select
-            className="rounded-md border bg-background px-2 py-1"
-            value={scope}
-            onChange={(e) => {
-              setUsageScope(e.target.value);
-              changeScope(e.target.value);
-              void queryClient.invalidateQueries({ queryKey: usageKeys.all });
-            }}
+          <span className="text-muted-foreground">统计范围</span>
+          <div
+            className="inline-flex items-center gap-1 rounded-lg border border-border bg-muted/30 p-1"
+            role="group"
+            aria-label="统计范围"
           >
-            <option value="mine">我的调用</option>
-            <option value="provided">我提供的资源</option>
-            {session.me.user.role === "admin" && (
-              <option value="all">全平台</option>
-            )}
-          </select>
+            {scopeOptions.map((option) => {
+              const active = scope === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={active}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                  )}
+                  onClick={() => {
+                    setUsageScope(option.value);
+                    changeScope(option.value);
+                    void queryClient.invalidateQueries({
+                      queryKey: usageKeys.all,
+                    });
+                  }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
           <span className="text-muted-foreground">
-            聚合网关账本 · 未定价成本与待核算额度请在“配额与账本”查看。
+            聚合网关账本 · 未定价成本与待核算额度会在明细中单独标记。
           </span>
         </div>
       )}
