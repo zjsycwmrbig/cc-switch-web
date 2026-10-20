@@ -1068,9 +1068,14 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
     let existing = list_model_routes(db, &user.id)?;
     let mut have = existing
         .iter()
-        .filter_map(|row| row["model"].as_str().map(str::to_string))
+        .filter_map(|row| {
+            row["model"]
+                .as_str()
+                .map(resources::model_group_key)
+        })
         .collect::<std::collections::HashSet<_>>();
-    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> = Default::default();
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, String, String)>> =
+        Default::default();
     for r in resources::all(db)?
         .into_iter()
         .filter(|r| {
@@ -1081,38 +1086,43 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
             let Some(model) = raw["slug"].as_str() else {
                 continue;
             };
-            if have.contains(model) {
+            let key = resources::model_group_key(model);
+            if key.is_empty() || have.contains(&key) {
                 continue;
             }
             if resources::usable(db, user, &r, model).is_err() {
                 continue;
             }
             groups
-                .entry(model.to_string())
+                .entry(key)
                 .or_default()
-                .push((r.id.clone(), r.name.clone()));
+                .push((r.id.clone(), r.name.clone(), model.to_string()));
         }
     }
     if groups.is_empty() {
         return Ok(());
     }
-    for (model, members) in groups {
+    for (key, members) in groups {
         let mut targets = Vec::new();
         let mut provider_name = String::new();
-        for (id, name) in members {
+        let mut representative = String::new();
+        for (id, name, model) in members {
             if !targets.contains(&id) {
                 targets.push(id);
                 provider_name = name;
+                if representative.is_empty() {
+                    representative = model;
+                }
             }
         }
-        if !have.insert(model.clone()) {
+        if !have.insert(key) {
             continue;
         }
-        let last = model.rsplit('/').next().unwrap_or(&model);
+        let last = representative.rsplit('/').next().unwrap_or(&representative);
         let route_model = if targets.len() >= 2 {
             last.to_string()
         } else {
-            model.clone()
+            representative.clone()
         };
         let name = if targets.len() >= 2 {
             format!("{last}[auto]")
