@@ -28,6 +28,9 @@ impl Error {
     pub fn bad(message: impl Into<String>) -> Self {
         Self(StatusCode::BAD_REQUEST, "invalid_request", message.into())
     }
+    pub fn bad_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self(StatusCode::BAD_REQUEST, code, message.into())
+    }
     pub fn forbidden() -> Self {
         Self(
             StatusCode::FORBIDDEN,
@@ -46,8 +49,20 @@ impl Error {
             "请登录或提供有效的个人 API Key".into(),
         )
     }
+    pub fn not_found(code: &'static str, message: impl Into<String>) -> Self {
+        Self(StatusCode::NOT_FOUND, code, message.into())
+    }
+    pub fn too_large(code: &'static str, message: impl Into<String>) -> Self {
+        Self(StatusCode::PAYLOAD_TOO_LARGE, code, message.into())
+    }
+    pub fn unavailable(code: &'static str, message: impl Into<String>) -> Self {
+        Self(StatusCode::SERVICE_UNAVAILABLE, code, message.into())
+    }
     pub fn limited(code: &'static str, message: impl Into<String>) -> Self {
         Self(StatusCode::TOO_MANY_REQUESTS, code, message.into())
+    }
+    pub fn internal(code: &'static str, message: impl Into<String>) -> Self {
+        Self(StatusCode::INTERNAL_SERVER_ERROR, code, message.into())
     }
 }
 impl IntoResponse for Error {

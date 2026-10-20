@@ -85,8 +85,12 @@ fn reserve(
             return Err(Error::limited(
                 "quota_exceeded",
                 format!(
-                    "{label}额度不足（含进行中请求的预留），范围：{}",
-                    scope.split(':').next().unwrap_or("user")
+                    "{label}额度不足：上限 {}，已用 {}，进行中预留 {}，本次预估 {}；额度范围：{}",
+                    limit.unwrap_or(0),
+                    used,
+                    held,
+                    requested,
+                    scope
                 ),
             ));
         }
@@ -121,15 +125,30 @@ pub fn start(
     if global_running >= 32 {
         return Err(Error::limited(
             "gateway_concurrency_limit",
-            "网关进行中的请求过多，请稍后重试",
+            format!(
+                "中转网关进行中请求已达上限 32（当前 {}），请稍后重试",
+                global_running
+            ),
         ));
     }
     let (running,recent):(i64,i64)=tx.query_row("SELECT SUM(CASE WHEN state='reserved' THEN 1 ELSE 0 END),SUM(CASE WHEN created_at>?2 THEN 1 ELSE 0 END) FROM hub_requests WHERE user_id=?1 AND (state='reserved' OR created_at>?2)",params![user.id,now()-60],|r|Ok((r.get::<_,Option<i64>>(0)?.unwrap_or(0),r.get::<_,Option<i64>>(1)?.unwrap_or(0))))?;
     if concurrency > 0 && running >= concurrency {
-        return Err(Error::limited("concurrency_limit", "进行中的请求过多"));
+        return Err(Error::limited(
+            "concurrency_limit",
+            format!(
+                "你的并发请求已达上限（当前 {}，上限 {}），请等待已有请求结束后重试",
+                running, concurrency
+            ),
+        ));
     }
     if rpm > 0 && recent >= rpm {
-        return Err(Error::limited("rate_limit", "请求过于频繁，请稍后再试"));
+        return Err(Error::limited(
+            "rate_limit",
+            format!(
+                "最近 60 秒已请求 {} 次，达到每分钟上限 {}，请稍后重试",
+                recent, rpm
+            ),
+        ));
     }
     let request = id();
     let device = if let Some(key) = &user.key_id {
@@ -167,7 +186,12 @@ pub fn attempt(
     if user.id != r.owner_id {
         if (budget.credits.is_some() || r.policy.shared_budget.credits.is_some()) && price.is_none()
         {
-            return Err(Error::bad("该模型尚未配置价格，无法执行点数额度限制"));
+            return Err(Error::bad_code(
+                "pricing_missing",
+                format!(
+                    "模型 {model} 尚未配置价格，无法执行点数额度限制；请管理员在“成本定价”中补齐"
+                ),
+            ));
         }
         reserve(
             &tx,
@@ -408,7 +432,10 @@ pub fn reconcile(
     release_only: bool,
 ) -> Result<()> {
     if !actor.admin() {
-        return Err(Error::forbidden());
+        return Err(Error::denied(
+            "admin_required",
+            "只有管理员可以对账待核算请求",
+        ));
     }
     let state: String = conn(db)?.query_row(
         "SELECT state FROM hub_requests WHERE id=?1",
@@ -416,7 +443,10 @@ pub fn reconcile(
         |r| r.get(0),
     )?;
     if state != "pending_usage" {
-        return Err(Error::bad("仅待核算请求可以对账"));
+        return Err(Error::bad_code(
+            "reconcile_state_invalid",
+            "只有状态为 pending_usage（待核算）的请求可以对账",
+        ));
     }
     let usage = if release_only {
         Usage::default()

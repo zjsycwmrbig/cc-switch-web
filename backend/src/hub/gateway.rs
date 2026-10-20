@@ -25,6 +25,120 @@ pub struct Authenticated {
 #[derive(Clone)]
 pub struct ForcedStack(pub crate::mode::stack::StackTarget);
 
+fn compact_upstream_detail(value: &str) -> Option<String> {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let value = value.trim();
+    if value.is_empty()
+        || value.starts_with('<')
+        || value.to_ascii_lowercase().contains("<!doctype html")
+    {
+        return None;
+    }
+    let mut chars = value.chars();
+    let compact = chars.by_ref().take(240).collect::<String>();
+    Some(if chars.next().is_some() {
+        format!("{compact}…")
+    } else {
+        compact
+    })
+}
+
+fn upstream_error_detail(bytes: &[u8]) -> Option<String> {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        for candidate in [
+            value.pointer("/error/message"),
+            value.get("message"),
+            value.get("detail"),
+            value.pointer("/error/detail"),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        {
+            if let Some(detail) = compact_upstream_detail(candidate) {
+                return Some(detail);
+            }
+        }
+    }
+    compact_upstream_detail(&String::from_utf8_lossy(bytes))
+}
+
+fn upstream_error_code(status: u16, text: &str) -> &'static str {
+    if status == 401 && (text.contains("refresh") || text.contains("重新登录")) {
+        "reauth_required"
+    } else if status == 400
+        && text.contains("model is not supported when using codex with a chatgpt account")
+    {
+        "official_model_not_supported"
+    } else {
+        match status {
+            400 => "upstream_bad_request",
+            401 => "upstream_auth_failed",
+            403 => "model_not_entitled",
+            404 => "upstream_endpoint_not_found",
+            408 | 504 => "upstream_timeout",
+            409 => "upstream_conflict",
+            413 => "upstream_payload_too_large",
+            422 => "upstream_invalid_parameters",
+            429 => "upstream_rate_or_quota_limit",
+            500..=599 => "upstream_server_error",
+            _ => "upstream_error",
+        }
+    }
+}
+
+fn upstream_failure_message(
+    provider: &str,
+    model: &str,
+    status: u16,
+    code: &str,
+    detail: Option<&str>,
+    retry_seconds: i64,
+    request_id: &str,
+) -> String {
+    let suffix = detail
+        .map(|detail| format!("：{detail}"))
+        .unwrap_or_default();
+    match code {
+        "official_model_not_supported" => format!(
+            "官方账号不支持模型 {model}，已暂停该模型 24 小时；请求编号：{request_id}"
+        ),
+        "reauth_required" => format!(
+            "供应商 {provider} 的登录授权已失效，需要账号持有者重新登录；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_auth_failed" => format!(
+            "供应商 {provider} 认证失败（HTTP {status}），请检查 API Key；请求编号：{request_id}{suffix}"
+        ),
+        "model_not_entitled" => format!(
+            "供应商 {provider} 拒绝访问模型 {model}（HTTP 403），请检查账号权限；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_endpoint_not_found" => format!(
+            "供应商 {provider} 不存在对应接口或模型（HTTP 404）；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_timeout" => format!(
+            "供应商 {provider} 响应超时（HTTP {status}）；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_payload_too_large" => format!(
+            "供应商 {provider} 拒绝过大的请求体（HTTP 413）；请压缩上下文；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_invalid_parameters" => format!(
+            "供应商 {provider} 认为请求参数无效（HTTP 422）；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_rate_or_quota_limit" => format!(
+            "供应商 {provider} 触发限流或额度不足（HTTP 429），建议 {retry_seconds} 秒后重试；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_server_error" => format!(
+            "供应商 {provider} 服务异常（HTTP {status}），请稍后重试；请求编号：{request_id}{suffix}"
+        ),
+        "upstream_bad_request" => format!(
+            "供应商 {provider} 拒绝了请求（HTTP 400）；请求编号：{request_id}{suffix}"
+        ),
+        _ => format!(
+            "供应商 {provider} 请求失败（HTTP {status}）；请求编号：{request_id}{suffix}"
+        ),
+    }
+}
+
 pub async fn guard(State(state): State<ProxyState>, request: Request, next: Next) -> Response {
     if !auth::initialized(&state.db) {
         #[cfg(test)]
@@ -60,18 +174,25 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         if path.ends_with("/responses") {
             return Ok((
                 StatusCode::UPGRADE_REQUIRED,
-                Json(json!({"error":{"code":"http_required","message":"请使用 HTTP Responses"}})),
+                Json(json!({"error":{"code":"http_required","message":"共享入口仅接受 HTTP POST Responses 请求；请将 base_url 配置到 /v1 并使用 responses 协议"}})),
             )
                 .into_response());
         }
         return Err(Error::forbidden());
     }
     if request.method() != Method::POST {
-        return Err(Error::bad("不支持的代理请求方法"));
+        return Err(Error::bad(
+            "共享聚合入口只支持 POST；模型列表请使用 GET /v1/models",
+        ));
     }
     let _permit = REQUEST_WORK
         .try_acquire()
-        .map_err(|_| Error::limited("gateway_busy", "网关当前繁忙，请稍后重试"))?;
+        .map_err(|_| {
+            Error::limited(
+                "gateway_busy",
+                "中转网关并发已满（同时最多处理 16 个请求），请稍后重试",
+            )
+        })?;
     let app = if path.ends_with("/messages") {
         AppType::Claude
     } else {
@@ -83,25 +204,38 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         || path.contains("grokbuild")
     {
         return Err(Error::bad(
-            "共享聚合入口支持 Codex 和 Claude；其他客户端请使用对应聚合协议",
+            "当前端点只支持 Codex /v1/responses 和 Claude /v1/messages；Gemini、Claude Desktop、Grok Build 请使用各自协议入口",
         ));
     }
     let (parts, body) = request.into_parts();
     let bytes = to_bytes(body, 32 * 1024 * 1024)
         .await
-        .map_err(|_| Error::bad("请求体超过限制或读取失败"))?;
+        .map_err(|_| {
+            Error::too_large(
+                "request_body_too_large",
+                "请求体超过 32 MiB，或读取过程中连接中断；请压缩历史后重试",
+            )
+        })?;
     let mut body: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::bad("聚合请求必须使用 JSON 格式并包含模型 ID"))?;
+        .map_err(|_| {
+            Error::bad_code(
+                "invalid_json",
+                "请求体不是有效 JSON；请检查 Responses 请求格式",
+            )
+        })?;
     let original = body
         .get("model")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::bad("请求缺少模型 ID"))?
+        .ok_or_else(|| {
+            Error::bad_code("missing_model", "请求缺少字符串类型的 model 字段")
+        })?
         .to_owned();
     let (key, model) = match crate::mode::stack::decode(&app, &original) {
         crate::mode::stack::Decoded::Stack { key, model, .. } => (key.to_owned(), model.to_owned()),
         _ => {
-            return Err(Error::bad(
-                "请选择带 ccs- 供应商标识的聚合模型；服务端没有默认供应商",
+            return Err(Error::bad_code(
+                "invalid_model_id",
+                "model 必须是 ccs-<供应商>/<模型> 或 ccs-auto/<模型> 形式的聚合模型 ID",
             ))
         }
     };
@@ -110,8 +244,9 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         .and_then(Value::as_array)
         .is_some_and(|items| items.iter().any(|i| i["type"] == "item_reference"))
     {
-        return Err(Error::bad(
-            "共享账号请求请发送完整历史，不支持无归属的 item_reference",
+        return Err(Error::bad_code(
+            "item_reference_not_supported",
+            "共享账号请求必须携带完整历史；当前不支持 item_reference，请重新开启会话或发送完整 input",
         ));
     }
     let pooled =
@@ -133,7 +268,14 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                     && row["enabled"].as_bool().unwrap_or(false)
                     && row["auto"].as_bool().unwrap_or(false)
             })
-            .ok_or_else(|| Error::bad("自动路由映射不存在，请先在“模型与接入”中保存"))?;
+            .ok_or_else(|| {
+                Error::not_found(
+                    "auto_route_not_found",
+                    format!(
+                        "未找到模型 {model} 的自动路由映射；请先在“模型与接入”中保存，或同步最新模型目录"
+                    ),
+                )
+            })?;
         Some(
             route["targets"]
                 .as_array()
@@ -218,7 +360,9 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
             "no_eligible_account",
-            "当前没有获授权且可用的账号，请稍后重试或选择其他模型".into(),
+            format!(
+                "模型 {model} 当前没有获授权且可用的账号；请检查供应商状态、共享额度和模型可见范围"
+            ),
         ));
     }
     // Bound the reservation window. It remains an estimate, not a tokenizer.
@@ -236,7 +380,15 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         let provider = state
             .db
             .get_provider_by_id(&r.provider_id, &r.app_type)?
-            .ok_or_else(Error::forbidden)?;
+            .ok_or_else(|| {
+                Error::unavailable(
+                    "provider_config_missing",
+                    format!(
+                        "供应商 {} 的底层配置已删除；请让提供者重新保存该供应商后再试",
+                        r.name
+                    ),
+                )
+            })?;
         let price = metering::Price::load(&state.db, &model, &provider)?;
         let cost = price
             .as_ref()
@@ -264,7 +416,10 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     if parse::<Budget>(&user_budget).credits.is_some()
         && priced.iter().any(|(_, _, p, _)| p.is_none())
     {
-        return Err(Error::bad("该模型缺少定价，无法执行个人点数额度限制"));
+        return Err(Error::bad_code(
+            "pricing_missing",
+            format!("模型 {model} 缺少定价，无法计算个人点数额度；请管理员在“成本定价”中补齐"),
+        ));
     }
     let stream = body["stream"].as_bool().unwrap_or(false);
     let estimate = metering::Amount {
@@ -317,7 +472,12 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         if app == AppType::Codex && previous.is_none() {
             body["store"] = json!(false);
         }
-        let encoded = serde_json::to_vec(&body).map_err(|_| Error::bad("请求序列化失败"))?;
+        let encoded = serde_json::to_vec(&body).map_err(|_| {
+            Error::internal(
+                "serialization_failed",
+                "转换后的上游请求无法序列化；请将请求编号反馈给管理员",
+            )
+        })?;
         let mut req = Request::new(Body::from(encoded));
         *req.method_mut() = parts.method.clone();
         *req.uri_mut() = parts.uri.clone();
@@ -347,7 +507,7 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         req.extensions_mut()
             .insert(ForcedStack(crate::mode::stack::StackTarget {
                 provider,
-                upstream_model: model.clone(),
+                upstream_model: upstream_model.clone(),
                 original_model: original.clone(),
             }));
         let response = tokio::time::timeout(Duration::from_secs(600), next.clone().run(req))
@@ -377,22 +537,8 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                 error_usage.observe(&v);
             }
             let text = String::from_utf8_lossy(&bytes).to_lowercase();
-            let code = if status == 401 && (text.contains("refresh") || text.contains("重新登录"))
-            {
-                "reauth_required"
-            } else if status == 400
-                && text.contains(
-                    "model is not supported when using codex with a chatgpt account",
-                )
-            {
-                "official_model_not_supported"
-            } else if status == 403 {
-                "model_not_entitled"
-            } else if status == 429 {
-                "upstream_rate_or_quota_limit"
-            } else {
-                "upstream_error"
-            };
+            let detail = upstream_error_detail(&bytes);
+            let code = upstream_error_code(status, &text);
             if r.official {
                 let c = conn(&state.db)?;
                 if code == "reauth_required" {
@@ -433,15 +579,15 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             return Err(Error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                 code,
-                if code == "official_model_not_supported" {
-                    format!(
-                        "当前官方账号不支持模型 {model}，已暂停该模型 24 小时；请求编号：{request_id}。"
-                    )
-                } else {
-                    format!(
-                        "上游请求失败；请求编号：{request_id}。账号持有者可在资源页检查状态。"
-                    )
-                },
+                upstream_failure_message(
+                    &r.name,
+                    &upstream_model,
+                    status,
+                    code,
+                    detail.as_deref(),
+                    retry_seconds,
+                    &request_id,
+                ),
             ));
         }
         conn(&state.db)?.execute(
@@ -453,7 +599,12 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         response_parts.headers.remove(header::CONTENT_LENGTH);
         response_parts.headers.insert(
             "x-ccswitch-request-id",
-            HeaderValue::from_str(&request_id).map_err(|_| Error::bad("无效请求编号"))?,
+            HeaderValue::from_str(&request_id).map_err(|_| {
+                Error::internal(
+                    "request_id_invalid",
+                    "服务生成的请求编号无效；请联系管理员检查服务日志",
+                )
+            })?,
         );
         response_parts
             .headers
