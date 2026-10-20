@@ -522,8 +522,13 @@ function SignIn({
     </main>
   );
 }
+function routeIsAuto(route: ModelRoute) {
+  return (
+    route.targets.length >= 2 || route.displayName.trimEnd().endsWith("[auto]")
+  );
+}
 function routeSlug(route: ModelRoute, resources: Resource[]) {
-  if (route.targets.length >= 2) return `ccs-auto/${route.model}`;
+  if (routeIsAuto(route)) return `ccs-auto/${route.model}`;
   const resource = resources.find((item) => item.id === route.targets[0]);
   return `ccs-${resource?.routeKey ?? "auto"}/${route.model}`;
 }
@@ -657,7 +662,7 @@ function Models({ generation }: { me: Me; generation: number }) {
       );
       await load();
       const autoCount = (await unit<ModelRoute[]>("/model-routes")).filter(
-        (route) => route.targets.length >= 2,
+        routeIsAuto,
       ).length;
       toast.success(
         `按${detectAllModels ? "全平台" : "我的可用"}模型识别：变更 ${result.candidates.length} 组；当前共 ${autoCount} 组自动路由`,
@@ -687,7 +692,7 @@ function Models({ generation }: { me: Me; generation: number }) {
 
   const filtered = routes.filter((route) => {
     if (routeKinds.size > 0) {
-      const kind = route.targets.length >= 2 ? "auto" : "direct";
+      const kind = routeIsAuto(route) ? "auto" : "direct";
       if (!routeKinds.has(kind)) return false;
     }
     const keyword = search.trim().toLowerCase();
@@ -911,9 +916,7 @@ function Models({ generation }: { me: Me; generation: number }) {
                 return (
                   <div
                     className={`u-model ${
-                      route.targets.length >= 2
-                        ? "u-model-auto"
-                        : "u-model-single"
+                      routeIsAuto(route) ? "u-model-auto" : "u-model-single"
                     } ${
                       availability.available === 0
                         ? "u-model-unavailable"
@@ -951,8 +954,8 @@ function Models({ generation }: { me: Me; generation: number }) {
                             }
                           }}
                         />
-                        <span className={`u-tag ${route.targets.length >= 2 ? "u-auto-tag" : ""}`}>
-                          {route.targets.length >= 2 ? "自动路由" : "单对单"}
+                        <span className={`u-tag ${routeIsAuto(route) ? "u-auto-tag" : ""}`}>
+                          {routeIsAuto(route) ? "自动路由" : "单对单"}
                         </span>
                         {availability.available === 0 && (
                           <span className="u-tag u-tag-danger">

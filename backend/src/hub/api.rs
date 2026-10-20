@@ -1313,7 +1313,7 @@ async fn detect_model_routes(
     }
     let mut candidates = vec![];
     for (key, members) in groups {
-        if members.len() < 2 {
+        if members.is_empty() {
             continue;
         }
         let mut counts: std::collections::HashMap<&str, usize> = Default::default();

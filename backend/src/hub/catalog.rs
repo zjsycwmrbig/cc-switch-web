@@ -310,7 +310,7 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             .as_array()
             .map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>())
             .unwrap_or_default();
-        let key = if targets.len() >= 2 {
+        let key = if targets.len() >= 2 || name.trim_end().ends_with("[auto]") {
             "auto".to_string()
         } else {
             targets
