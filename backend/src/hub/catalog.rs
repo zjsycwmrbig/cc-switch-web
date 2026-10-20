@@ -292,8 +292,22 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             }
         }
     }
-    // 模型列表以用户映射为唯一来源：单目标保留原供应商 slug，多目标走自动路由。
-    for route in super::api::list_model_routes(db, &user.id)? {
+    // 模型列表以用户映射为唯一来源。自动路由被选中时，同模型的单对单入口视为冗余。
+    let route_rows = super::api::list_model_routes(db, &user.id)?;
+    let mut auto_selected_groups = std::collections::HashSet::new();
+    if let Some(choices) = chosen {
+        for route in &route_rows {
+            let Some(base) = route["model"].as_str() else {
+                continue;
+            };
+            let auto = route["auto"].as_bool().unwrap_or(false);
+            let slug = encode("codex", if auto { "auto" } else { "" }, base);
+            if auto && choices.iter().any(|choice| choice.as_str() == Some(slug.as_str())) {
+                auto_selected_groups.insert(resources::model_group_key(base));
+            }
+        }
+    }
+    for route in route_rows {
         if !route["enabled"].as_bool().unwrap_or(false) {
             continue;
         }
@@ -303,8 +317,14 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
         let Some(name) = route["displayName"].as_str() else {
             continue;
         };
+        let group = resources::model_group_key(base);
+        if !route["auto"].as_bool().unwrap_or(false)
+            && auto_selected_groups.contains(&group)
+        {
+            continue;
+        }
         let mut row = templates
-            .get(&resources::model_group_key(base))
+            .get(&group)
             .cloned()
             .unwrap_or_else(|| {
                 json!({

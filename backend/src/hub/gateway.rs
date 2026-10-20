@@ -380,6 +380,12 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             let code = if status == 401 && (text.contains("refresh") || text.contains("重新登录"))
             {
                 "reauth_required"
+            } else if status == 400
+                && text.contains(
+                    "model is not supported when using codex with a chatgpt account",
+                )
+            {
+                "official_model_not_supported"
             } else if status == 403 {
                 "model_not_entitled"
             } else if status == 429 {
@@ -394,8 +400,13 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                         "UPDATE hub_resources SET health='reauth_required' WHERE id=?1",
                         [&r.id],
                     )?;
-                } else if status == 403 {
-                    c.execute("INSERT OR REPLACE INTO hub_model_health(resource_id,model,until_at,reason) VALUES(?1,?2,?3,?4)",params![r.id,model,now()+3600,code])?;
+                } else if status == 403 || code == "official_model_not_supported" {
+                    let seconds = if code == "official_model_not_supported" {
+                        86400
+                    } else {
+                        3600
+                    };
+                    c.execute("INSERT OR REPLACE INTO hub_model_health(resource_id,model,until_at,reason) VALUES(?1,?2,?3,?4)",params![r.id,model,now()+seconds,code])?;
                 } else if status == 429 || status == 401 {
                     c.execute(
                         "UPDATE hub_resources SET health=?1,cooldown_until=?2 WHERE id=?3",
@@ -422,7 +433,15 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             return Err(Error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                 code,
-                format!("上游请求失败；请求编号：{request_id}。账号持有者可在资源页检查状态。"),
+                if code == "official_model_not_supported" {
+                    format!(
+                        "当前官方账号不支持模型 {model}，已暂停该模型 24 小时；请求编号：{request_id}。"
+                    )
+                } else {
+                    format!(
+                        "上游请求失败；请求编号：{request_id}。账号持有者可在资源页检查状态。"
+                    )
+                },
             ));
         }
         conn(&state.db)?.execute(

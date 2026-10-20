@@ -215,6 +215,19 @@ pub fn usable(
     if r.disabled {
         return Err(Error::denied("supplier_disabled", "该供应商已被停用"));
     }
+    if r.official {
+        let blocked = conn(db)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM hub_model_health WHERE resource_id=?1 AND model=?2 AND until_at>?3)",
+            params![r.id, model, now()],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if blocked {
+            return Err(Error::denied(
+                "official_model_unavailable",
+                format!("官方账号当前不支持模型 {model}，请稍后刷新模型或选择其他供应商"),
+            ));
+        }
+    }
     let Some(resolved) = match_model_slug(r, model) else {
         return Err(Error::denied(
             "model_not_provided",

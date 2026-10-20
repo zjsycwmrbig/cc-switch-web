@@ -537,6 +537,30 @@ function modelGroupKey(slug: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 }
+function collapseSelectedRoutes(
+  routes: ModelRoute[],
+  resources: Resource[],
+  selected: Set<string>,
+) {
+  const next = new Set(selected);
+  const autoGroups = new Set(
+    routes
+      .filter(
+        (route) =>
+          route.auto && next.has(routeSlug(route, resources)),
+      )
+      .map((route) => modelGroupKey(route.model)),
+  );
+  for (const route of routes) {
+    if (
+      !route.auto &&
+      autoGroups.has(modelGroupKey(route.model))
+    ) {
+      next.delete(routeSlug(route, resources));
+    }
+  }
+  return next;
+}
 
 function Models({ generation }: { me: Me; generation: number }) {
   const [prefs, setPrefs] = useState<Preferences>({});
@@ -572,7 +596,13 @@ function Models({ generation }: { me: Me; generation: number }) {
     setResources(allowed);
     setPrefs(p);
     setSelected(
-      new Set(p.models ?? routeRows.map((route) => routeSlug(route, allowed))),
+      collapseSelectedRoutes(
+        routeRows,
+        allowed,
+        new Set(
+          p.models ?? routeRows.map((route) => routeSlug(route, allowed)),
+        ),
+      ),
     );
   }, []);
 
@@ -610,7 +640,9 @@ function Models({ generation }: { me: Me; generation: number }) {
   const save = async () => {
     setSaving(true);
     try {
-      const ids = [...selected].filter((id) =>
+      const ids = [
+        ...collapseSelectedRoutes(routes, resources, selected),
+      ].filter((id) =>
         routes.some((route) => routeSlug(route, resources) === id),
       );
       await unit("/preferences", "PUT", {
@@ -932,8 +964,20 @@ function Models({ generation }: { me: Me; generation: number }) {
                       onChange={() =>
                         setSelected((old) => {
                           const next = new Set(old);
-                          if (next.has(slug)) next.delete(slug);
-                          else next.add(slug);
+                          if (next.has(slug)) {
+                            next.delete(slug);
+                          } else {
+                            next.add(slug);
+                            const group = modelGroupKey(route.model);
+                            for (const other of routes) {
+                              if (
+                                other.auto !== route.auto &&
+                                modelGroupKey(other.model) === group
+                              ) {
+                                next.delete(routeSlug(other, resources));
+                              }
+                            }
+                          }
                           return next;
                         })
                       }
