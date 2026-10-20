@@ -1109,8 +1109,13 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
             continue;
         }
         let last = model.rsplit('/').next().unwrap_or(&model);
+        let route_model = if targets.len() >= 2 {
+            last.to_string()
+        } else {
+            model.clone()
+        };
         let name = if targets.len() >= 2 {
-            format!("{model}[auto]")
+            format!("{last}[auto]")
         } else {
             format!("{last}（{provider_name}）")
         };
@@ -1121,7 +1126,7 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
                 super::id(),
                 &user.id,
                 name,
-                model,
+                route_model,
                 json_text(&targets),
                 now()
             ],
@@ -1310,6 +1315,11 @@ async fn detect_model_routes(
             .max_by_key(|(name, count)| (*count, name.len()))
             .map(|(name, _)| name.to_string())
             .unwrap_or_else(|| key.clone());
+        let base_model = representative
+            .rsplit('/')
+            .next()
+            .unwrap_or(&representative)
+            .to_string();
         let member_ids = members.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
         if let Some((id, name, model, mut targets)) = existing_by_key.get(&key).cloned() {
             let before = targets.len();
@@ -1318,20 +1328,21 @@ async fn detect_model_routes(
                     targets.push(member.clone());
                 }
             }
-            let generated_name = looks_generated_auto_name(&name, &model);
-            if targets.len() == before && !generated_name {
+            let generated_name = looks_generated_auto_name(&name, &base_model);
+            let model_changed = model != base_model;
+            if targets.len() == before && !generated_name && !model_changed {
                 continue;
             }
             candidates.push(json!({
                 "id": id,
-                "model": model,
-                "displayName": if generated_name { format!("{model}[auto]") } else { name },
+                "model": base_model,
+                "displayName": if generated_name { format!("{base_model}[auto]") } else { name },
                 "targets": targets,
             }));
         } else {
             candidates.push(json!({
-                "model": representative,
-                "displayName": format!("{representative}[auto]"),
+                "model": base_model,
+                "displayName": format!("{base_model}[auto]"),
                 "targets": member_ids,
             }));
         }
