@@ -1338,7 +1338,8 @@ async fn detect_model_routes(
                     targets.push(member.clone());
                 }
             }
-            let generated_name = looks_generated_auto_name(&name, &base_model);
+            let generated_name =
+                name == model || looks_generated_auto_name(&name, &base_model);
             let model_changed = model != base_model;
             if targets.len() == before && !generated_name && !model_changed {
                 continue;
