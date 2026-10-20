@@ -1351,10 +1351,26 @@ async fn detect_model_routes(
         for candidate in &candidates {
             let id = candidate["id"].as_str().map(str::to_owned).unwrap_or_else(super::id);
             let model = candidate["model"].as_str().unwrap_or("");
-            conn(&app.db)?.execute(
-                "DELETE FROM hub_model_routes WHERE user_id=?1 AND model=?2 AND id<>?3",
-                params![&user.id, model, &id],
-            )?;
+            let group = resources::model_group_key(model);
+            let stale = {
+                let c = conn(&app.db)?;
+                let mut statement =
+                    c.prepare("SELECT id,model FROM hub_model_routes WHERE user_id=?1")?;
+                let rows = statement
+                    .query_map([&user.id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows
+            };
+            for (stale_id, stale_model) in stale {
+                if stale_id != id && resources::model_group_key(&stale_model) == group {
+                    conn(&app.db)?.execute(
+                        "DELETE FROM hub_model_routes WHERE id=?1 AND user_id=?2",
+                        params![stale_id, &user.id],
+                    )?;
+                }
+            }
             conn(&app.db)?.execute(
                 "INSERT INTO hub_model_routes(id,user_id,display_name,model,targets,enabled,created_at,updated_at)
                  VALUES(?1,?2,?3,?4,?5,1,?6,?6)
