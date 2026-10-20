@@ -527,6 +527,13 @@ function routeSlug(route: ModelRoute, resources: Resource[]) {
   const resource = resources.find((item) => item.id === route.targets[0]);
   return `ccs-${resource?.routeKey ?? "auto"}/${route.model}`;
 }
+function modelGroupKey(slug: string) {
+  return slug
+    .split("/")
+    .pop()!
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
 
 function Models({ generation }: { me: Me; generation: number }) {
   const [prefs, setPrefs] = useState<Preferences>({});
@@ -542,6 +549,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
+  const [detectAllModels, setDetectAllModels] = useState(false);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
 
   const load = useCallback(async () => {
@@ -645,14 +653,14 @@ function Models({ generation }: { me: Me; generation: number }) {
       const result = await unit<{ candidates: unknown[] }>(
         "/model-routes/detect",
         "POST",
-        { apply: true },
+        { apply: true, includeAllModels: detectAllModels },
       );
       await load();
       const autoCount = (await unit<ModelRoute[]>("/model-routes")).filter(
         (route) => route.targets.length >= 2,
       ).length;
       toast.success(
-        `本次新增/合并 ${result.candidates.length} 组；当前共 ${autoCount} 组自动路由`,
+        `按${detectAllModels ? "全平台" : "我的可用"}模型识别：变更 ${result.candidates.length} 组；当前共 ${autoCount} 组自动路由`,
       );
     } catch (error) {
       toast.error(errorText(error));
@@ -661,9 +669,20 @@ function Models({ generation }: { me: Me; generation: number }) {
     }
   };
 
-  const providerLabel = (id: string) => {
+  const providerLabel = (route: ModelRoute, id: string) => {
+    const detail = route.targetDetails?.find((item) => item.id === id);
+    if (detail) {
+      return detail.ownerName
+        ? `${detail.ownerName} 的 ${detail.name}`
+        : detail.name;
+    }
     const resource = resources.find((item) => item.id === id);
     return resource ? `${resource.ownerName} 的 ${resource.name}` : id;
+  };
+  const routeAvailability = (route: ModelRoute) => {
+    const total = route.targets.length;
+    const available = route.availableTargetCount ?? total;
+    return { available, total, partial: available > 0 && available < total };
   };
 
   const filtered = routes.filter((route) => {
@@ -673,7 +692,7 @@ function Models({ generation }: { me: Me; generation: number }) {
     }
     const keyword = search.trim().toLowerCase();
     const text =
-      `${route.displayName} ${route.model} ${route.targets.map(providerLabel).join(" ")}`.toLowerCase();
+      `${route.displayName} ${route.model} ${route.targets.map((id) => providerLabel(route, id)).join(" ")}`.toLowerCase();
     return (
       (!keyword || text.includes(keyword)) &&
       (!providerFilter || route.targets.includes(providerFilter)) &&
@@ -790,6 +809,31 @@ function Models({ generation }: { me: Me; generation: number }) {
                 );
               })}
             </div>
+            <div className="u-inline">
+              <span>识别范围</span>
+              <div
+                className="u-route-kinds"
+                role="group"
+                aria-label="自动识别范围"
+              >
+                <button
+                  type="button"
+                  aria-pressed={!detectAllModels}
+                  className={!detectAllModels ? "active" : ""}
+                  onClick={() => setDetectAllModels(false)}
+                >
+                  我的可用
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={detectAllModels}
+                  className={detectAllModels ? "active" : ""}
+                  onClick={() => setDetectAllModels(true)}
+                >
+                  全平台
+                </button>
+              </div>
+            </div>
             <button
               className="u-quiet"
               type="button"
@@ -851,6 +895,9 @@ function Models({ generation }: { me: Me; generation: number }) {
               </select>
             </label>
           </div>
+          <p className="u-note" style={{ margin: "10px 0 14px" }}>
+            路由目标和顺序保存后立即生效；同步命令只更新 Codex 的模型列表。
+          </p>
           {busy ? (
             <Empty>
               <Busy />
@@ -860,9 +907,20 @@ function Models({ generation }: { me: Me; generation: number }) {
               {visible.map((route) => {
                 const slug = routeSlug(route, resources);
                 const open = expanded === route.id;
+                const availability = routeAvailability(route);
                 return (
                   <div
-                    className={`u-model ${route.targets.length >= 2 ? "u-model-auto" : "u-model-single"}`}
+                    className={`u-model ${
+                      route.targets.length >= 2
+                        ? "u-model-auto"
+                        : "u-model-single"
+                    } ${
+                      availability.available === 0
+                        ? "u-model-unavailable"
+                        : availability.partial
+                          ? "u-model-partial"
+                          : ""
+                    }`}
                     key={route.id}
                     style={{ alignItems: "flex-start" }}
                   >
@@ -896,6 +954,17 @@ function Models({ generation }: { me: Me; generation: number }) {
                         <span className={`u-tag ${route.targets.length >= 2 ? "u-auto-tag" : ""}`}>
                           {route.targets.length >= 2 ? "自动路由" : "单对单"}
                         </span>
+                        {availability.available === 0 && (
+                          <span className="u-tag u-tag-danger">
+                            无可用目标
+                          </span>
+                        )}
+                        {availability.partial && (
+                          <span className="u-tag u-tag-warning">
+                            可用 {availability.available}/
+                            {availability.total}
+                          </span>
+                        )}
                         <code>{route.model}</code>
                       </div>
                       <div
@@ -903,7 +972,10 @@ function Models({ generation }: { me: Me; generation: number }) {
                         style={{ color: "var(--u-muted)" }}
                       >
                         {route.targets
-                          .map((id, index) => `${index + 1}. ${providerLabel(id)}`)
+                          .map(
+                            (id, index) =>
+                              `${index + 1}. ${providerLabel(route, id)}`,
+                          )
                           .join(" · ")}
                       </div>
                       {open && (
@@ -924,7 +996,14 @@ function Models({ generation }: { me: Me; generation: number }) {
                             >
                               <span className="cursor-move">⋮⋮</span>
                               <span className="flex-1">
-                                {index + 1}. {providerLabel(id)}
+                                {index + 1}. {providerLabel(route, id)}
+                                {route.targetDetails?.find(
+                                  (item) => item.id === id,
+                                )?.usable === false && (
+                                  <small className="u-target-unavailable">
+                                    不可用
+                                  </small>
+                                )}
                               </span>
                               <button
                                 className="u-quiet"
@@ -971,7 +1050,9 @@ function Models({ generation }: { me: Me; generation: number }) {
                               .filter(
                                 (resource) =>
                                   resource.models.some(
-                                    (model) => model.slug === route.model,
+                                    (model) =>
+                                      modelGroupKey(model.slug) ===
+                                      modelGroupKey(route.model),
                                   ) &&
                                   !route.targets.includes(resource.id),
                               )
@@ -1044,6 +1125,14 @@ type ModelRoute = {
   displayName: string;
   model: string;
   targets: string[];
+  targetDetails?: {
+    id: string;
+    name: string;
+    ownerName: string;
+    routeKey: string;
+    usable: boolean;
+  }[];
+  availableTargetCount?: number;
   enabled: boolean;
 };
 

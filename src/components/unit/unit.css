@@ -1325,12 +1325,39 @@ button.u-panel-title:hover {
   border-left: 3px solid var(--u-accent);
   background: color-mix(in srgb, var(--u-accent) 6%, transparent);
 }
+.u-model-unavailable {
+  border-left-color: hsl(var(--destructive));
+  background: color-mix(in srgb, hsl(var(--destructive)) 7%, transparent);
+}
+.u-model-partial {
+  border-left-color: hsl(var(--chart-4, 38 92% 50%));
+  background: color-mix(
+    in srgb,
+    hsl(var(--chart-4, 38 92% 50%)) 6%,
+    transparent
+  );
+}
 .u-model-single {
   border-left: 3px solid var(--u-line);
 }
 .u-auto-tag {
   border-color: color-mix(in srgb, var(--u-accent) 45%, var(--u-line));
   color: var(--u-accent);
+}
+.u-tag-danger {
+  border-color: hsl(var(--destructive) / 0.4);
+  background: hsl(var(--destructive) / 0.1);
+  color: hsl(var(--destructive));
+}
+.u-tag-warning {
+  border-color: hsl(var(--chart-4, 38 92% 50%) / 0.45);
+  background: hsl(var(--chart-4, 38 92% 50%) / 0.1);
+  color: hsl(var(--chart-4, 38 92% 50%));
+}
+.u-target-unavailable {
+  margin-left: 7px;
+  color: hsl(var(--destructive));
+  font-size: 10px;
 }
 
 .u-route-kinds {

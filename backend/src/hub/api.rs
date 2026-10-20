@@ -978,7 +978,42 @@ async fn model_routes(
 ) -> Result<Json<Value>> {
     seed_model_routes(&app.db, &user)?;
     sanitize_model_routes(&app.db, &user)?;
-    Ok(Json(json!(list_model_routes(&app.db, &user.id)?)))
+    let all = resources::all(&app.db)?;
+    let mut routes = list_model_routes(&app.db, &user.id)?;
+    for route in &mut routes {
+        let model = route["model"].as_str().unwrap_or_default();
+        let mut available = 0usize;
+        let mut details = Vec::new();
+        for target in route["targets"].as_array().into_iter().flatten() {
+            let Some(id) = target.as_str() else {
+                continue;
+            };
+            let Some(resource) = all.iter().find(|resource| resource.id == id) else {
+                details.push(json!({
+                    "id":id,
+                    "name":"已删除的供应商",
+                    "ownerName":"",
+                    "routeKey":"",
+                    "usable":false
+                }));
+                continue;
+            };
+            let usable = resources::usable(&app.db, &user, resource, model).is_ok();
+            if usable {
+                available += 1;
+            }
+            details.push(json!({
+                "id":resource.id,
+                "name":resource.name,
+                "ownerName":resource.owner_name,
+                "routeKey":resource.route_key,
+                "usable":usable
+            }));
+        }
+        route["targetDetails"] = Value::Array(details);
+        route["availableTargetCount"] = json!(available);
+    }
+    Ok(Json(json!(routes)))
 }
 
 /// 清理已经失效的路由目标：供应商下架、共享范围收缩、授权被收回/过期后，
@@ -1074,7 +1109,7 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
         }
         let last = model.rsplit('/').next().unwrap_or(&model);
         let name = if targets.len() >= 2 {
-            format!("{last}（自动路由）")
+            format!("{model}[auto]")
         } else {
             format!("{last}（{provider_name}）")
         };
@@ -1132,8 +1167,9 @@ async fn save_model_route(
             .iter()
             .find(|r| &r.id == target)
             .ok_or_else(|| Error::bad("目标供应商不存在"))?;
-        if resources::usable(&app.db, &user, r, &model).is_err() {
-            return Err(Error::bad("包含未授权或暂不可用的供应商目标"));
+        // 全平台自动识别允许保留当前用户不可用的目标，是否可路由由请求时鉴权决定。
+        if resources::match_model_slug(r, &model).is_none() {
+            return Err(Error::bad("包含不提供此模型的供应商目标"));
         }
     }
     let id = v.id.clone().unwrap_or_else(super::id);
@@ -1194,20 +1230,32 @@ async fn delete_model_route(
 struct DetectInput {
     #[serde(default)]
     apply: bool,
+    #[serde(default)]
+    include_all_models: bool,
 }
 
-/// 自动识别映射：把同一模型出现在多个可用供应商的情形整理成候选自动路由组。
+fn looks_generated_auto_name(name: &str, model: &str) -> bool {
+    let last = model.rsplit('/').next().unwrap_or(model);
+    name == model
+        || name == last
+        || name.ends_with("[auto]")
+        || name.ends_with("（自动路由）")
+        || name
+            .strip_prefix(last)
+            .is_some_and(|suffix| suffix.starts_with('（') && suffix.ends_with('）'))
+}
+
+/// 自动识别映射：把同一模型出现在多个供应商的情形整理成候选自动路由组。
 async fn detect_model_routes(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,
     Json(v): Json<DetectInput>,
 ) -> Result<Json<Value>> {
     let all = resources::all(&app.db)?;
-    // 分组键：最后一个 `/` 之后、转小写、去掉特殊字符。成员保留原始末段用于展示。
-    let mut groups: std::collections::BTreeMap<
-        String,
-        Vec<(String, String)>,
-    > = Default::default();
+    // 分组键：最后一个 `/` 之后、转小写、去掉特殊字符。
+    // 成员保留完整原始模型 ID，用于还原自动路由的基础模型名。
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        Default::default();
     for r in &all {
         if r.app_type != "codex" || r.disabled {
             continue;
@@ -1216,17 +1264,16 @@ async fn detect_model_routes(
             let Some(model) = raw["slug"].as_str() else {
                 continue;
             };
-            if resources::usable(&app.db, &user, r, model).is_err() {
+            if !v.include_all_models && resources::usable(&app.db, &user, r, model).is_err() {
                 continue;
             }
             let key = resources::model_group_key(model);
             if key.is_empty() {
                 continue;
             }
-            let last = model.rsplit('/').next().unwrap_or(model).to_string();
             let entry = groups.entry(key).or_default();
             if !entry.iter().any(|(id, _)| id == &r.id) {
-                entry.push((r.id.clone(), last));
+                entry.push((r.id.clone(), model.to_string()));
             }
         }
     }
@@ -1254,12 +1301,12 @@ async fn detect_model_routes(
             continue;
         }
         let mut counts: std::collections::HashMap<&str, usize> = Default::default();
-        for (_, last) in &members {
-            *counts.entry(last.as_str()).or_default() += 1;
+        for (_, model) in &members {
+            *counts.entry(model.as_str()).or_default() += 1;
         }
-        let display = counts
+        let representative = counts
             .into_iter()
-            .max_by_key(|(name, count)| (*count, std::cmp::Reverse(name.len())))
+            .max_by_key(|(name, count)| (*count, name.len()))
             .map(|(name, _)| name.to_string())
             .unwrap_or_else(|| key.clone());
         let member_ids = members.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
@@ -1270,19 +1317,20 @@ async fn detect_model_routes(
                     targets.push(member.clone());
                 }
             }
-            if targets.len() == before {
+            let generated_name = looks_generated_auto_name(&name, &model);
+            if targets.len() == before && !generated_name {
                 continue;
             }
             candidates.push(json!({
                 "id": id,
                 "model": model,
-                "displayName": name,
+                "displayName": if generated_name { format!("{model}[auto]") } else { name },
                 "targets": targets,
             }));
         } else {
             candidates.push(json!({
-                "model": display,
-                "displayName": format!("{display}（自动路由）"),
+                "model": representative,
+                "displayName": format!("{representative}[auto]"),
                 "targets": member_ids,
             }));
         }
@@ -1314,9 +1362,13 @@ async fn detect_model_routes(
             "modelRoute.detect"
         },
         "",
-        json!({"count":candidates.len()}),
+        json!({"count":candidates.len(),"includeAllModels":v.include_all_models}),
     )?;
-    Ok(Json(json!({"candidates":candidates,"applied":v.apply})))
+    Ok(Json(json!({
+        "candidates":candidates,
+        "applied":v.apply,
+        "includeAllModels":v.include_all_models
+    })))
 }
 
 async fn create_application(
