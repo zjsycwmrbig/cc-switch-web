@@ -181,7 +181,8 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         return Err(Error::forbidden());
     }
     if request.method() != Method::POST {
-        return Err(Error::bad(
+        return Err(Error::bad_code(
+            "unsupported_method",
             "共享聚合入口只支持 POST；模型列表请使用 GET /v1/models",
         ));
     }
@@ -203,7 +204,8 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         || path.contains("claude-desktop")
         || path.contains("grokbuild")
     {
-        return Err(Error::bad(
+        return Err(Error::bad_code(
+            "unsupported_endpoint",
             "当前端点只支持 Codex /v1/responses 和 Claude /v1/messages；Gemini、Claude Desktop、Grok Build 请使用各自协议入口",
         ));
     }

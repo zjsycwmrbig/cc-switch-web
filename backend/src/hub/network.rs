@@ -34,12 +34,27 @@ pub async fn resolve(host: &str, port: u16) -> Result<Vec<SocketAddr>> {
         tokio::net::lookup_host((host, port)),
     )
     .await
-    .map_err(|_| Error::bad("供应商域名解析超时"))?
-    .map_err(|_| Error::bad("供应商域名解析失败"))?
+    .map_err(|_| {
+        Error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "upstream_dns_timeout",
+            format!("供应商域名 {host} 解析超时（10 秒），请检查 DNS 或稍后重试"),
+        )
+    })?
+    .map_err(|_| {
+        Error(
+            StatusCode::BAD_GATEWAY,
+            "upstream_dns_failed",
+            format!("供应商域名 {host} 解析失败，请检查供应商地址或 DNS 配置"),
+        )
+    })?
     .collect::<Vec<_>>();
     if addresses.is_empty() || addresses.iter().any(|a| !is_public(a.ip())) {
-        return Err(Error::bad(
-            "普通用户供应商只能访问公网地址；服务器私网资源由管理员管理",
+        return Err(Error::denied(
+            "private_upstream_forbidden",
+            format!(
+                "供应商域名 {host} 解析到了非公网地址；普通用户供应商只允许访问公网，私网资源需由管理员配置"
+            ),
         ));
     }
     Ok(addresses)
