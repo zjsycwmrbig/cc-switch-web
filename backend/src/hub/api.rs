@@ -1016,8 +1016,9 @@ async fn model_routes(
     Ok(Json(json!(routes)))
 }
 
-/// 清理已经失效的路由目标：供应商下架、共享范围收缩、授权被收回/过期后，
-/// 用户模型页里不应继续出现这些模型；目标全部失效的整条路由直接删除。
+/// 清理已经失效的路由目标：只删除供应商已删除或不再提供该模型的目标。
+/// 当前用户暂时无权限的目标保留并标记为不可用，由请求时鉴权决定是否可路由，
+/// 这样全平台自动识别得到的“有映射但本人暂无可用供应商”也能持续展示。
 fn sanitize_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
     let all = resources::all(db)?;
     for route in list_model_routes(db, &user.id)? {
@@ -1039,7 +1040,7 @@ fn sanitize_model_routes(db: &crate::database::Database, user: &Identity) -> Res
             .filter(|target| {
                 all.iter()
                     .find(|r| &r.id == *target)
-                    .is_some_and(|r| resources::usable(db, user, r, &model).is_ok())
+                    .is_some_and(|r| resources::match_model_slug(r, &model).is_some())
             })
             .cloned()
             .collect::<Vec<_>>();
