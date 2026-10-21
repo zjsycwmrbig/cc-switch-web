@@ -1,11 +1,12 @@
 import { renderWithQueryClient as render } from "../utils/testQueryClient";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { CodexFormFields } from "@/components/providers/forms/CodexFormFields";
 import { http, HttpResponse } from "msw";
 import { server } from "../msw/server";
 import { MODELS_DEV_API_URL } from "@/lib/modelsDev";
+import type { CodexCatalogModel } from "@/types";
 
 const fetchXaiOauthModelsMock = vi.hoisted(() => vi.fn());
 const fetchModelsForConfigMock = vi.hoisted(() => vi.fn());
@@ -86,6 +87,69 @@ function renderXaiOauthFields() {
       localProxyBodyOverride=""
       onLocalProxyBodyOverrideChange={vi.fn()}
     />,
+  );
+}
+
+function CatalogSyncHarness({
+  onCatalogModelsChange,
+}: {
+  onCatalogModelsChange: (models: CodexCatalogModel[]) => void;
+}) {
+  const [models, setModels] = useState<CodexCatalogModel[]>([]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() =>
+          setModels([
+            {
+              model: "preset-model",
+              displayName: "Preset Model",
+              contextWindow: 128000,
+            },
+          ])
+        }
+      >
+        apply-preset
+      </button>
+      <CodexFormFields
+        codexApiKey=""
+        onApiKeyChange={vi.fn()}
+        category="third_party"
+        shouldShowApiKeyLink={false}
+        websiteUrl="https://example.com"
+        shouldShowSpeedTest={false}
+        codexBaseUrl=""
+        onBaseUrlChange={vi.fn()}
+        isFullUrl={false}
+        onFullUrlChange={vi.fn()}
+        isEndpointModalOpen={false}
+        onEndpointModalToggle={vi.fn()}
+        autoSelect={false}
+        onAutoSelectChange={vi.fn()}
+        catalogEnabled
+        onCatalogEnabledChange={vi.fn()}
+        apiFormat="openai_responses"
+        onApiFormatChange={vi.fn()}
+        promptCacheRouting="auto"
+        onPromptCacheRoutingChange={vi.fn()}
+        modelName="preset-model"
+        onModelNameChange={vi.fn()}
+        catalogModels={models}
+        onCatalogModelsChange={(next) => {
+          onCatalogModelsChange(next);
+          setModels(next);
+        }}
+        speedTestEndpoints={[]}
+        customUserAgent=""
+        onCustomUserAgentChange={vi.fn()}
+        localProxyHeadersOverride=""
+        onLocalProxyHeadersOverrideChange={vi.fn()}
+        localProxyBodyOverride=""
+        onLocalProxyBodyOverrideChange={vi.fn()}
+      />
+    </>
   );
 }
 
@@ -173,6 +237,22 @@ describe("CodexFormFields", () => {
         }),
       ]),
     );
+  });
+
+  it("预设目录同步到表单时不会回写父级形成渲染循环", async () => {
+    const onCatalogModelsChange = vi.fn();
+    render(
+      <CatalogSyncHarness
+        onCatalogModelsChange={onCatalogModelsChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "apply-preset" }));
+
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("preset-model")).toBeInTheDocument(),
+    );
+    expect(onCatalogModelsChange).not.toHaveBeenCalled();
   });
 
   it("默认模型合并目录与远端建议，并可加入模型映射", async () => {

@@ -224,6 +224,7 @@ export function CodexFormFields({
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((model) => createCatalogRow(model)),
   );
+  const lastReceivedModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
   const isChatFormat = apiFormat === "openai_chat";
   const isGrokBuild = appId === "grokbuild";
@@ -269,21 +270,28 @@ export function CodexFormFields({
   ]);
 
   useEffect(() => {
+    if (catalogRowsMatchModels(catalogModels, lastReceivedModelsRef.current)) {
+      return;
+    }
+    lastReceivedModelsRef.current = catalogModels;
     setCatalogRows((current) =>
       catalogRowsMatchModels(current, catalogModels)
         ? current
         : catalogModels.map((model) => createCatalogRow(model)),
     );
-    lastSentModelsRef.current = catalogModels;
   }, [catalogModels]);
 
   useEffect(() => {
     if (!onCatalogModelsChange) return;
     const next = catalogRows.map(({ rowId: _rowId, ...model }) => model);
+    if (catalogRowsMatchModels(next, catalogModels)) {
+      lastReceivedModelsRef.current = catalogModels;
+      return;
+    }
     if (catalogRowsMatchModels(catalogRows, lastSentModelsRef.current)) return;
     lastSentModelsRef.current = next;
     onCatalogModelsChange(next);
-  }, [catalogRows, onCatalogModelsChange]);
+  }, [catalogModels, catalogRows, onCatalogModelsChange]);
 
   const modelSuggestions = useMemo<FetchedModel[]>(() => {
     const seen = new Set<string>();
