@@ -37,24 +37,43 @@ try:
     with tempfile.TemporaryDirectory() as temp:
         home = Path(temp)
         config = home / "config.toml"
-        config.write_text('model = "old-model"\nmodel_provider = "old"\n[mcp_servers.example]\ncommand = "keep-me"\n[model_providers.old]\nname = "old"\nbase_url = "https://old.example/v1"\n')
+        config.write_text(
+            'model = "old-model"\n'
+            'model_provider = "custom"\n'
+            '[mcp_servers.example]\n'
+            'command = "keep-me"\n'
+            '[model_providers.custom]\n'
+            'name = "custom"\n'
+            'base_url = "http://127.0.0.1:15721/v1"\n'
+            'wire_api = "responses"\n'
+            'requires_openai_auth = false\n'
+            'experimental_bearer_token = "JohnnyBoy"\n'
+            '[model_providers.old]\n'
+            'name = "old"\n'
+            'base_url = "https://old.example/v1"\n'
+        )
         script = REPO / "backend/scripts/cc-switch-update-models.sh"
         env = {**os.environ, "CODEX_HOME": str(home), "CC_SWITCH_URL": "http://127.0.0.1:%d" % server.server_port,
-               "CC_SWITCH_ACCESS_KEY": "installer-test-key", "CC_SWITCH_PROXY_URL": "https://gateway.example/v1",
+               "CC_SWITCH_ACCESS_KEY": "installer-test-key", "CC_SWITCH_PROXY_URL": "http://127.0.0.1:15721/v1",
                "CC_SWITCH_CONFIGURE_ROUTE": "1", "CC_SWITCH_RESTART_APP_SERVER": "0"}
         subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True)
         text = config.read_text()
         assert 'model_provider = "ccswitch"' in text
         assert text.count("[model_providers.ccswitch]") == 1
         assert 'experimental_bearer_token = "installer-test-key"' in text
-        assert 'base_url = "https://gateway.example/v1"' in text
+        assert 'base_url = "http://127.0.0.1:15721/v1"' in text
         assert 'command = "keep-me"' in text
-        assert list(home.glob("config.toml.bak-*")), "original config was not backed up"
+        route = lambda value, provider="ccswitch": re.search(
+            r'(?ms)^\[model_providers\.' + provider + r'\]\n(.*?)(?=^\[|\Z)',
+            value,
+        ).group(1).strip()
+        assert route(text, "custom").find('experimental_bearer_token = "installer-test-key"') >= 0
+        assert 'JohnnyBoy' not in text, "legacy CC Switch token was not migrated"
+        assert (home / "config.toml.ccswitch-backup").exists(), "original config was not backed up"
         assert json.loads((home / "cc-switch-aggregation-models.json").read_text())["models"][0]["slug"] == model["slug"]
         env["CC_SWITCH_CONFIGURE_ROUTE"] = "0"
         subprocess.run(["bash", str(script)], env=env, check=True, capture_output=True)
         after = config.read_text()
-        route = lambda value: re.search(r'(?ms)^\[model_providers.ccswitch\]\n(.*?)(?=^\[|\Z)', value).group(1).strip()
         assert route(after) == route(text), "a normal model sync changed the route"
         assert 'model_provider = "ccswitch"' in after
         env["CC_SWITCH_CONFIGURE_ROUTE"] = "1"

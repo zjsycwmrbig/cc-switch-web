@@ -215,6 +215,7 @@ step "生成 Codex 配置（模型目录 + 路由）"
 if ! python3 - "$TMP" "$CONFIG" "$CFG_TMP" "$CATALOG" "$CC_SWITCH_PROXY_URL" "$CC_SWITCH_ACCESS_KEY" "${CC_SWITCH_CONFIGURE_ROUTE:-0}" >"$PY_LOG" 2>&1 <<'PY'
 import json, re, sys
 from pathlib import Path
+from urllib.parse import urlparse
 catalog_path, config_path, staged_path, target, proxy_url, api_key, configure = sys.argv[1:]
 catalog = json.loads(Path(catalog_path).read_text())
 for warning in catalog.get('warnings', []):
@@ -242,12 +243,46 @@ if selected not in ids:
 keys = 'model_catalog_json|model|model_context_window|model_auto_compact_token_limit'
 if configure == '1':
     keys += '|model_provider'
-    kept, skipping = [], False
+    proxy_port = urlparse(proxy_url).port
+
+    def provider_id(line):
+        match = re.match(
+            r'^\s*\[\s*model_providers\s*\.\s*"?([^".\]]+)"?(?:\.[^\]]+)?\s*\]',
+            line,
+        )
+        return match.group(1) if match else None
+
+    blocks, current = [], []
     for line in tables:
-        if line.lstrip().startswith('['):
-            skipping = bool(re.match(r'^\s*\[\s*model_providers\s*\.\s*"?ccswitch"?(?:\s*\]|\s*\.)', line))
-        if not skipping:
-            kept.append(line)
+        if line.lstrip().startswith('[') and current:
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+
+    def is_legacy_ccswitch(block):
+        block_text = ''.join(block)
+        name = re.search(r'(?m)^\s*name\s*=\s*"([^"]*)"', block_text)
+        if name and 'ccswitch' in name.group(1).lower():
+            return True
+        base = re.search(r'(?m)^\s*base_url\s*=\s*"([^"]*)"', block_text)
+        if not base:
+            return False
+        parsed = urlparse(base.group(1))
+        return (
+            parsed.hostname in ('127.0.0.1', 'localhost', '::1')
+            and parsed.port == proxy_port
+        )
+
+    kept, legacy_ids = [], set()
+    for block in blocks:
+        current_id = provider_id(block[0])
+        if current_id in ('custom', 'ccswitch') and is_legacy_ccswitch(block):
+            legacy_ids.add(current_id)
+            continue
+        kept.extend(block)
     tables = kept
 owned = re.compile(r'^\s*"?(?:' + keys + r')"?\s*=')
 output = 'model_catalog_json = ' + json.dumps(target) + '\nmodel = ' + json.dumps(selected) + '\n'
@@ -256,8 +291,18 @@ if configure == '1':
     if not proxy_url.startswith(('http://', 'https://')) or not api_key:
         raise SystemExit('接入取消：缺少代理地址或设备密钥')
     output = 'model_provider = "ccswitch"\n' + output
-    output += '\n[model_providers.ccswitch]\nname = "ccSwitchUint"\nbase_url = ' + json.dumps(proxy_url)
-    output += '\nwire_api = "responses"\nrequires_openai_auth = false\nexperimental_bearer_token = ' + json.dumps(api_key) + '\n'
+    def route_table(provider_id, name):
+        return (
+            '\n[model_providers.' + provider_id + ']\nname = ' + json.dumps(name)
+            + '\nbase_url = ' + json.dumps(proxy_url)
+            + '\nwire_api = "responses"\nrequires_openai_auth = false'
+            + '\nexperimental_bearer_token = ' + json.dumps(api_key) + '\n'
+        )
+    if 'custom' in legacy_ids:
+        # Older sync versions used the generic `custom` provider id. Keep that
+        # table valid so an already-open Codex thread cannot retain a legacy key.
+        output += route_table('custom', 'ccSwitchUint (legacy)')
+    output += route_table('ccswitch', 'ccSwitchUint')
 try:
     import tomllib
 except ImportError:
