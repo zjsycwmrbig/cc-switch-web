@@ -73,6 +73,14 @@ import {
 } from "./client";
 import "./unit.css";
 import { LimitField } from "./LimitField";
+import {
+  clearFilteredRoutes,
+  collapseSelectedRoutes,
+  modelGroupKey,
+  routeSlug,
+  selectFilteredRoutes,
+  usableRouteTargets,
+} from "./modelSelection";
 import { UnitSession, useUnitSession } from "./session";
 
 const SwitchApp = lazy(() => import("@/App"));
@@ -192,7 +200,8 @@ function BudgetFields({
                 onChange={(e) =>
                   change({
                     ...value,
-                    [key]: e.target.value === "" ? null : Number(e.target.value),
+                    [key]:
+                      e.target.value === "" ? null : Number(e.target.value),
                   })
                 }
               />
@@ -241,13 +250,15 @@ function compactTokens(value: number): string {
   return String(value);
 }
 function budgetText(value: Budget): string {
-  return [
-    value.requests == null ? null : `${num(value.requests)} 次`,
-    value.tokens == null ? null : `${num(value.tokens)} Token`,
-    value.credits == null ? null : `${num(value.credits)} 点`,
-  ]
-    .filter(Boolean)
-    .join(" / ") || "不限";
+  return (
+    [
+      value.requests == null ? null : `${num(value.requests)} 次`,
+      value.tokens == null ? null : `${num(value.tokens)} Token`,
+      value.credits == null ? null : `${num(value.credits)} 点`,
+    ]
+      .filter(Boolean)
+      .join(" / ") || "不限"
+  );
 }
 
 /** 时间截止的展示：空值统一按“不限时间”处理。 */
@@ -292,10 +303,7 @@ function remainingBudget(budget: Budget, usage: UsageNumbers): Budget {
     limit: number | null | undefined,
     used: number | undefined,
     held: number | undefined,
-  ) =>
-    limit == null
-      ? null
-      : Math.max(0, limit - (used || 0) - (held || 0));
+  ) => (limit == null ? null : Math.max(0, limit - (used || 0) - (held || 0)));
   return {
     requests: left(budget.requests, usage.requests, usage.reservedRequests),
     tokens: left(budget.tokens, usage.tokens, usage.reservedTokens),
@@ -352,7 +360,11 @@ export default function UnitApp() {
     claimAttempted.current = true;
     const url = new URL(window.location.href);
     url.searchParams.delete("claim");
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.replaceState(
+      {},
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
     void unit<{ resourceName: string }>("/share-claims", "POST", {
       token: claim,
     })
@@ -525,42 +537,6 @@ function SignIn({
 function routeIsAuto(route: ModelRoute) {
   return route.auto;
 }
-function routeSlug(route: ModelRoute, resources: Resource[]) {
-  if (routeIsAuto(route)) return `ccs-auto/${route.model}`;
-  const resource = resources.find((item) => item.id === route.targets[0]);
-  return `ccs-${resource?.routeKey ?? "auto"}/${route.model}`;
-}
-function modelGroupKey(slug: string) {
-  return slug
-    .split("/")
-    .pop()!
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-function collapseSelectedRoutes(
-  routes: ModelRoute[],
-  resources: Resource[],
-  selected: Set<string>,
-) {
-  const next = new Set(selected);
-  const autoGroups = new Set(
-    routes
-      .filter(
-        (route) =>
-          route.auto && next.has(routeSlug(route, resources)),
-      )
-      .map((route) => modelGroupKey(route.model)),
-  );
-  for (const route of routes) {
-    if (
-      !route.auto &&
-      autoGroups.has(modelGroupKey(route.model))
-    ) {
-      next.delete(routeSlug(route, resources));
-    }
-  }
-  return next;
-}
 
 function Models({ generation }: { me: Me; generation: number }) {
   const [prefs, setPrefs] = useState<Preferences>({});
@@ -572,12 +548,15 @@ function Models({ generation }: { me: Me; generation: number }) {
   const [resources, setResources] = useState<Resource[]>([]);
   const [providerFilter, setProviderFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
-  const [routeKinds, setRouteKinds] = useState<Set<"direct" | "auto">>(new Set(["direct"]));
+  const [routeKinds, setRouteKinds] = useState<Set<"direct" | "auto">>(
+    new Set(["direct"]),
+  );
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [detectBusy, setDetectBusy] = useState(false);
   const [detectAllModels, setDetectAllModels] = useState(false);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [catalogRevision, setCatalogRevision] = useState(0);
 
   const load = useCallback(async () => {
     // 先取映射（首次会由服务端初始化），再按映射生成目录。
@@ -637,27 +616,47 @@ function Models({ generation }: { me: Me; generation: number }) {
     };
   }, [load]);
 
-  const save = async () => {
+  const persistSelection = async (
+    selection: Set<string>,
+    successMessage: string,
+  ) => {
     setSaving(true);
     try {
       const ids = [
-        ...collapseSelectedRoutes(routes, resources, selected),
+        ...collapseSelectedRoutes(routes, resources, selection),
       ].filter((id) =>
         routes.some((route) => routeSlug(route, resources) === id),
       );
-      await unit("/preferences", "PUT", {
+      const next = {
         ...prefs,
         models: ids,
         startupModel: ids.includes(prefs.startupModel || "")
           ? prefs.startupModel
           : ids[0],
-      });
-      toast.success("已保存选择；按“同步聚合模型”里的命令更新设备即可");
+      };
+      await unit("/preferences", "PUT", next);
+      setPrefs(next);
+      setSelected(new Set(ids));
+      setCatalogRevision((value) => value + 1);
+      toast.success(successMessage);
     } catch (error) {
       toast.error(errorText(error));
     } finally {
       setSaving(false);
     }
+  };
+  const save = () =>
+    persistSelection(
+      selected,
+      "已保存路由与同步展示；实际请求仍按映射路由处理",
+    );
+  const addRouteToSync = (route: ModelRoute) => {
+    const next = new Set(selected);
+    next.add(routeSlug(route, resources));
+    return persistSelection(
+      collapseSelectedRoutes(routes, resources, next),
+      `已将“${route.displayName}”加入 Codex 同步展示`,
+    );
   };
 
   const persist = async (route: ModelRoute) => {
@@ -669,6 +668,7 @@ function Models({ generation }: { me: Me; generation: number }) {
       auto: route.auto,
     });
     setRoutes(await unit<ModelRoute[]>("/model-routes"));
+    setCatalogRevision((value) => value + 1);
   };
 
   const moveTarget = async (route: ModelRoute, from: number, to: number) => {
@@ -692,6 +692,7 @@ function Models({ generation }: { me: Me; generation: number }) {
         { apply: true, includeAllModels: detectAllModels },
       );
       await load();
+      setCatalogRevision((value) => value + 1);
       const autoCount = (await unit<ModelRoute[]>("/model-routes")).filter(
         routeIsAuto,
       ).length;
@@ -717,7 +718,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   };
   const routeAvailability = (route: ModelRoute) => {
     const total = route.targets.length;
-    const available = route.availableTargetCount ?? total;
+    const available = usableRouteTargets(route).length;
     return { available, total, partial: available > 0 && available < total };
   };
 
@@ -727,11 +728,12 @@ function Models({ generation }: { me: Me; generation: number }) {
       if (!routeKinds.has(kind)) return false;
     }
     const keyword = search.trim().toLowerCase();
+    const usableTargetIds = usableRouteTargets(route).map((item) => item.id);
     const text =
-      `${route.displayName} ${route.model} ${route.targets.map((id) => providerLabel(route, id)).join(" ")}`.toLowerCase();
+      `${route.displayName} ${route.model} ${usableTargetIds.map((id) => providerLabel(route, id)).join(" ")}`.toLowerCase();
     return (
       (!keyword || text.includes(keyword)) &&
-      (!providerFilter || route.targets.includes(providerFilter)) &&
+      (!providerFilter || usableTargetIds.includes(providerFilter)) &&
       (!modelFilter || route.model === modelFilter)
     );
   });
@@ -744,14 +746,27 @@ function Models({ generation }: { me: Me; generation: number }) {
     <>
       <div className="u-page-lead">
         <p>
-          三步接入：勾选模型 → 在“模型与路由”顶部点保存 → 复制同步命令到远程主机执行。
+          请求路由始终按映射处理；勾选与加入同步只决定 Codex
+          模型菜单中显示哪些模型。
         </p>
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         {[
-          ["1", "选择模型", "勾选要用的模型；点“映射”可把多个供应商合并成自动路由。"],
-          ["2", "保存选择", "点右上角“保存选择”，服务端按你的选择生成模型目录。"],
-          ["3", "复制命令到主机", "在“同步聚合模型”里复制命令，到目标机器执行即可完成接入。"],
+          [
+            "1",
+            "配置映射",
+            "点“映射”调整供应商目标与顺序；可用之后会立即参与请求路由。",
+          ],
+          [
+            "2",
+            "加入同步展示",
+            "可单条加入，也可勾选后批量加入；这里只控制 Codex 中显示哪些模型。",
+          ],
+          [
+            "3",
+            "复制命令到主机",
+            "在“同步聚合模型”里复制命令，到目标机器执行即可完成接入。",
+          ],
         ].map(([step, title, description]) => (
           <div
             key={step}
@@ -769,13 +784,19 @@ function Models({ generation }: { me: Me; generation: number }) {
           </div>
         ))}
       </div>
-      <AggregationSyncPanel />
+      <AggregationSyncPanel
+        refreshKey={catalogRevision}
+        onPreferencesSaved={(next) => {
+          setPrefs(next);
+          setSelected(new Set(next.models ?? []));
+        }}
+      />
       <div className="u-panel">
         <div className="u-panel-title">
           <Route size={17} />
           模型与路由
           <small>
-            已选 {selected.size} / {routes.length} 条
+            同步展示 {selected.size} / {routes.length} 条
           </small>
           <span className="u-spacer" />
           <button
@@ -784,7 +805,7 @@ function Models({ generation }: { me: Me; generation: number }) {
             disabled={saving || busy}
             onClick={() => void save()}
           >
-            {saving ? <Busy /> : "保存选择"}
+            {saving ? <Busy /> : "保存路由"}
           </button>
         </div>
         <div className="u-panel-body">
@@ -819,11 +840,17 @@ function Models({ generation }: { me: Me; generation: number }) {
                 </option>
               ))}
             </select>
-            <div className="u-route-kinds" role="group" aria-label="路由类型筛选">
-              {([
-                ["auto", "路由"],
-                ["direct", "直连"],
-              ] as const).map(([kind, label]) => {
+            <div
+              className="u-route-kinds"
+              role="group"
+              aria-label="路由类型筛选"
+            >
+              {(
+                [
+                  ["auto", "路由"],
+                  ["direct", "直连"],
+                ] as const
+              ).map(([kind, label]) => {
                 const active = routeKinds.has(kind);
                 return (
                   <button
@@ -893,8 +920,8 @@ function Models({ generation }: { me: Me; generation: number }) {
               className="u-quiet"
               type="button"
               onClick={() =>
-                setSelected(
-                  new Set(routes.map((route) => routeSlug(route, resources))),
+                setSelected((current) =>
+                  selectFilteredRoutes(routes, filtered, resources, current),
                 )
               }
             >
@@ -903,9 +930,21 @@ function Models({ generation }: { me: Me; generation: number }) {
             <button
               className="u-quiet"
               type="button"
-              onClick={() => setSelected(new Set())}
+              onClick={() =>
+                setSelected((current) =>
+                  clearFilteredRoutes(filtered, resources, current),
+                )
+              }
             >
               清空
+            </button>
+            <button
+              className="u-quiet"
+              type="button"
+              disabled={saving || !selected.size}
+              onClick={() => void save()}
+            >
+              {saving ? "保存中…" : `批量加入同步 (${selected.size})`}
             </button>
             <label className="u-inline">
               启动模型
@@ -917,14 +956,9 @@ function Models({ generation }: { me: Me; generation: number }) {
               >
                 <option value="">第一个已选模型</option>
                 {routes
-                  .filter((route) =>
-                    selected.has(routeSlug(route, resources)),
-                  )
+                  .filter((route) => selected.has(routeSlug(route, resources)))
                   .map((route) => (
-                    <option
-                      key={route.id}
-                      value={routeSlug(route, resources)}
-                    >
+                    <option key={route.id} value={routeSlug(route, resources)}>
                       {route.displayName}
                     </option>
                   ))}
@@ -932,7 +966,8 @@ function Models({ generation }: { me: Me; generation: number }) {
             </label>
           </div>
           <p className="u-note" style={{ margin: "10px 0 14px" }}>
-            路由目标和顺序保存后立即生效；同步命令只更新 Codex 的模型列表。
+            供应商映射与顺序会立即参与所有 ccs 请求路由；同步展示选择只影响
+            Codex 模型列表。
           </p>
           {busy ? (
             <Empty>
@@ -944,6 +979,7 @@ function Models({ generation }: { me: Me; generation: number }) {
                 const slug = routeSlug(route, resources);
                 const open = expanded === route.id;
                 const availability = routeAvailability(route);
+                const targetEntries = usableRouteTargets(route);
                 return (
                   <div
                     className={`u-model ${
@@ -960,6 +996,7 @@ function Models({ generation }: { me: Me; generation: number }) {
                   >
                     <input
                       type="checkbox"
+                      aria-label={`选择 ${route.displayName} 加入同步展示`}
                       checked={selected.has(slug)}
                       onChange={() =>
                         setSelected((old) => {
@@ -991,24 +1028,26 @@ function Models({ generation }: { me: Me; generation: number }) {
                           onBlur={(event) => {
                             const name = event.target.value.trim();
                             if (name && name !== route.displayName) {
-                              void persist({ ...route, displayName: name }).catch(
-                                (error) => toast.error(errorText(error)),
+                              void persist({
+                                ...route,
+                                displayName: name,
+                              }).catch((error) =>
+                                toast.error(errorText(error)),
                               );
                             }
                           }}
                         />
-                        <span className={`u-tag ${routeIsAuto(route) ? "u-auto-tag" : ""}`}>
+                        <span
+                          className={`u-tag ${routeIsAuto(route) ? "u-auto-tag" : ""}`}
+                        >
                           {routeIsAuto(route) ? "自动路由" : "单对单"}
                         </span>
                         {availability.available === 0 && (
-                          <span className="u-tag u-tag-danger">
-                            无可用目标
-                          </span>
+                          <span className="u-tag u-tag-danger">无可用目标</span>
                         )}
                         {availability.partial && (
                           <span className="u-tag u-tag-warning">
-                            可用 {availability.available}/
-                            {availability.total}
+                            可用 {availability.available}/{availability.total}
                           </span>
                         )}
                         <code>{route.model}</code>
@@ -1017,18 +1056,20 @@ function Models({ generation }: { me: Me; generation: number }) {
                         className="mt-1 text-xs"
                         style={{ color: "var(--u-muted)" }}
                       >
-                        {route.targets
-                          .map(
-                            (id, index) =>
-                              `${index + 1}. ${providerLabel(route, id)}`,
-                          )
-                          .join(" · ")}
+                        {targetEntries.length
+                          ? targetEntries
+                              .map(
+                                ({ id, index }) =>
+                                  `${index + 1}. ${providerLabel(route, id)}`,
+                              )
+                              .join(" · ")
+                          : "暂无可用供应商目标"}
                       </div>
                       {open && (
                         <div className="mt-2 space-y-1">
-                          {route.targets.map((id, index) => (
+                          {targetEntries.map(({ id, index }, visibleIndex) => (
                             <div
-                              key={id}
+                              key={`${id}-${index}`}
                               draggable
                               onDragStart={() => setDragFrom(index)}
                               onDragOver={(event) => event.preventDefault()}
@@ -1043,27 +1084,34 @@ function Models({ generation }: { me: Me; generation: number }) {
                               <span className="cursor-move">⋮⋮</span>
                               <span className="flex-1">
                                 {index + 1}. {providerLabel(route, id)}
-                                {route.targetDetails?.find(
-                                  (item) => item.id === id,
-                                )?.usable === false && (
-                                  <small className="u-target-unavailable">
-                                    不可用
-                                  </small>
-                                )}
                               </span>
                               <button
                                 className="u-quiet"
                                 type="button"
-                                disabled={index === 0}
-                                onClick={() => void moveTarget(route, index, index - 1)}
+                                disabled={visibleIndex === 0}
+                                onClick={() =>
+                                  void moveTarget(
+                                    route,
+                                    index,
+                                    targetEntries[visibleIndex - 1].index,
+                                  )
+                                }
                               >
                                 上移
                               </button>
                               <button
                                 className="u-quiet"
                                 type="button"
-                                disabled={index === route.targets.length - 1}
-                                onClick={() => void moveTarget(route, index, index + 1)}
+                                disabled={
+                                  visibleIndex === targetEntries.length - 1
+                                }
+                                onClick={() =>
+                                  void moveTarget(
+                                    route,
+                                    index,
+                                    targetEntries[visibleIndex + 1].index,
+                                  )
+                                }
                               >
                                 下移
                               </button>
@@ -1073,14 +1121,23 @@ function Models({ generation }: { me: Me; generation: number }) {
                                 onClick={() =>
                                   void persist({
                                     ...route,
-                                    targets: route.targets.filter((item) => item !== id),
-                                  }).catch((error) => toast.error(errorText(error)))
+                                    targets: route.targets.filter(
+                                      (_item, itemIndex) => itemIndex !== index,
+                                    ),
+                                  }).catch((error) =>
+                                    toast.error(errorText(error)),
+                                  )
                                 }
                               >
                                 移除
                               </button>
                             </div>
                           ))}
+                          {!targetEntries.length && (
+                            <div className="u-empty py-3">
+                              当前没有可用供应商目标
+                            </div>
+                          )}
                           <select
                             value=""
                             onChange={(event) => {
@@ -1088,7 +1145,9 @@ function Models({ generation }: { me: Me; generation: number }) {
                               void persist({
                                 ...route,
                                 targets: [...route.targets, event.target.value],
-                              }).catch((error) => toast.error(errorText(error)));
+                              }).catch((error) =>
+                                toast.error(errorText(error)),
+                              );
                             }}
                           >
                             <option value="">+ 添加供应商目标</option>
@@ -1099,8 +1158,7 @@ function Models({ generation }: { me: Me; generation: number }) {
                                     (model) =>
                                       modelGroupKey(model.slug) ===
                                       modelGroupKey(route.model),
-                                  ) &&
-                                  !route.targets.includes(resource.id),
+                                  ) && !route.targets.includes(resource.id),
                               )
                               .map((resource) => (
                                 <option key={resource.id} value={resource.id}>
@@ -1111,6 +1169,16 @@ function Models({ generation }: { me: Me; generation: number }) {
                         </div>
                       )}
                     </div>
+                    <button
+                      className={`u-quiet ${
+                        selected.has(slug) ? "" : "u-sync-add"
+                      }`}
+                      type="button"
+                      disabled={saving || selected.has(slug)}
+                      onClick={() => void addRouteToSync(route)}
+                    >
+                      {selected.has(slug) ? "已加入" : "加入同步"}
+                    </button>
                     <button
                       className="u-quiet"
                       type="button"
@@ -1126,9 +1194,7 @@ function Models({ generation }: { me: Me; generation: number }) {
             <Empty>没有匹配的模型。</Empty>
           )}
           <div className="u-pagination">
-            <span>
-              共 {filtered.length} 条 · 每页 10 条
-            </span>
+            <span>共 {filtered.length} 条 · 每页 10 条</span>
             <button
               className="u-quiet"
               type="button"
@@ -1155,7 +1221,6 @@ function Models({ generation }: { me: Me; generation: number }) {
     </>
   );
 }
-
 
 type GrantRow = {
   userId: string;
@@ -1190,7 +1255,9 @@ function Allocations({ generation }: { generation: number }) {
   const [mode, setMode] = useState<
     "policy" | "usage" | "grants" | "codes" | "applications"
   >("policy");
-  const [usageSort, setUsageSort] = useState<"requests" | "tokens" | "cost">("requests");
+  const [usageSort, setUsageSort] = useState<"requests" | "tokens" | "cost">(
+    "requests",
+  );
   const [usageSearch, setUsageSearch] = useState("");
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [userUsage, setUserUsage] = useState<any[]>([]);
@@ -1275,7 +1342,9 @@ function Allocations({ generation }: { generation: number }) {
       unit<Resource[]>("/resources"),
       unit<ShareCode[]>("/share-codes"),
     ]);
-    const owned = all.filter((resource) => resource.owned && !resource.disabled);
+    const owned = all.filter(
+      (resource) => resource.owned && !resource.disabled,
+    );
     setResources(all);
     setCodes(shareCodes);
     setSelectedId((current) =>
@@ -1683,7 +1752,9 @@ function Allocations({ generation }: { generation: number }) {
                     </td>
                     <td>{deadlineText(resource.myExpiresAt)}</td>
                     <td>
-                      {resource.models.length ? `${resource.models.length} 个` : "—"}
+                      {resource.models.length
+                        ? `${resource.models.length} 个`
+                        : "—"}
                     </td>
                     <td>
                       <span
@@ -1705,8 +1776,6 @@ function Allocations({ generation }: { generation: number }) {
           </Empty>
         )}
       </section>
-
-      
     </>
   );
 
@@ -1858,387 +1927,507 @@ function Allocations({ generation }: { generation: number }) {
                 </button>
               </div>
 
-              {(mode === "policy" || mode === "usage" || mode === "grants") ? (
+              {mode === "policy" || mode === "usage" || mode === "grants" ? (
                 <>
                   {mode === "policy" && (
-                  <section className="u-panel">
-                    <div className="u-panel-title">
-                      <Users size={17} />
-                      可见性与共享
-                      <small>控制这个供应商对其他用户是否可见、可按什么额度使用</small>
-                    </div>
-                    <form className="u-panel-body" onSubmit={savePolicy}>
-                      <Field label="供应商市场">
-                        <div className="u-market-row">
-                          <div className="u-visibility-toggle">
-                            <button
-                              type="button"
-                              className={selected.published ? "active" : ""}
-                              onClick={() => void changePublication(true)}
-                            >
-                              上架
-                            </button>
-                            <button
-                              type="button"
-                              className={!selected.published ? "active" : ""}
-                              onClick={() => void changePublication(false)}
-                            >
-                              下架
-                            </button>
+                    <section className="u-panel">
+                      <div className="u-panel-title">
+                        <Users size={17} />
+                        可见性与共享
+                        <small>
+                          控制这个供应商对其他用户是否可见、可按什么额度使用
+                        </small>
+                      </div>
+                      <form className="u-panel-body" onSubmit={savePolicy}>
+                        <Field label="供应商市场">
+                          <div className="u-market-row">
+                            <div className="u-visibility-toggle">
+                              <button
+                                type="button"
+                                className={selected.published ? "active" : ""}
+                                onClick={() => void changePublication(true)}
+                              >
+                                上架
+                              </button>
+                              <button
+                                type="button"
+                                className={!selected.published ? "active" : ""}
+                                onClick={() => void changePublication(false)}
+                              >
+                                下架
+                              </button>
+                            </div>
+                            <p className="u-note u-market-hint">
+                              {selected.published
+                                ? "已上架：所有用户都能在供应商库看到并提交申请。"
+                                : "已下架：不会出现在供应商库，其他人无法申请，但可通过分享口令私下授权使用。"}
+                            </p>
                           </div>
-                          <p className="u-note u-market-hint">
-                            {selected.published
-                              ? "已上架：所有用户都能在供应商库看到并提交申请。"
-                              : "已下架：不会出现在供应商库，其他人无法申请，但可通过分享口令私下授权使用。"}
-                          </p>
-                        </div>
-                      </Field>
-                      <p className="u-note">
-                        额度完全由申请审批或指定授权决定，不再提供默认额度、共享预算或按周期重置。
-                      </p>
-                      <Field label="对外可见的模型（留空表示该供应商全部模型）">
-                        {modelPicker(policy.models, (value) =>
-                          setPolicy({ ...policy, models: value }),
-                        )}
-                      </Field>
-                      <button
-                        className="u-button"
-                        disabled={saving}
-                        type="submit"
-                      >
-                        {saving ? <Busy /> : "保存可见性与共享设置"}
-                      </button>
-                    </form>
-                  </section>
+                        </Field>
+                        <p className="u-note">
+                          额度完全由申请审批或指定授权决定，不再提供默认额度、共享预算或按周期重置。
+                        </p>
+                        <Field label="对外可见的模型（留空表示该供应商全部模型）">
+                          {modelPicker(policy.models, (value) =>
+                            setPolicy({ ...policy, models: value }),
+                          )}
+                        </Field>
+                        <button
+                          className="u-button"
+                          disabled={saving}
+                          type="submit"
+                        >
+                          {saving ? <Busy /> : "保存可见性与共享设置"}
+                        </button>
+                      </form>
+                    </section>
                   )}
 
                   {mode === "usage" && (
-                  <section className="u-panel">
-                    <div className="u-panel-title">
-                      <BarChart3 size={17} />
-                      用户用量
-                      <small>按近 30 天请求次数排行</small>
-                    </div>
-                    {(() => {
-                      const totalReq = userUsage.reduce((sum, row) => sum + (row.requests ?? 0), 0);
-                      const totalTok = userUsage.reduce((sum, row) => sum + (row.tokens ?? 0), 0);
-                      const totalCost = userUsage.reduce((sum, row) => sum + (row.costCredits ?? 0), 0);
-                      const keyword = usageSearch.trim().toLowerCase();
-                      const rows = [...userUsage]
-                        .filter((row) =>
-                          keyword
-                            ? String(row.username ?? "").toLowerCase().includes(keyword)
-                            : true,
-                        )
-                        .sort((a, b) =>
-                          usageSort === "tokens"
-                            ? (b.tokens ?? 0) - (a.tokens ?? 0)
-                            : usageSort === "cost"
-                              ? (b.costCredits ?? 0) - (a.costCredits ?? 0)
-                              : (b.requests ?? 0) - (a.requests ?? 0),
+                    <section className="u-panel">
+                      <div className="u-panel-title">
+                        <BarChart3 size={17} />
+                        用户用量
+                        <small>按近 30 天请求次数排行</small>
+                      </div>
+                      {(() => {
+                        const totalReq = userUsage.reduce(
+                          (sum, row) => sum + (row.requests ?? 0),
+                          0,
                         );
-                      return (
-                        <>
-                          <div className="u-usage-summary">
-                            <div className="u-card"><small>近 30 天请求</small><strong>{num(totalReq)}</strong></div>
-                            <div className="u-card"><small>近 30 天 Token</small><strong>{num(totalTok)}</strong></div>
-                            <div className="u-card"><small>近 30 天成本</small><strong>{dollars(totalCost)}</strong></div>
-                            <div className="u-card"><small>活跃用户</small><strong>{userUsage.filter((row) => (row.requests ?? 0) > 0).length}</strong></div>
-                          </div>
-                          <div className="u-toolbar" style={{ padding: "0 16px 18px" }}>
-                            <div className="u-search">
-                              <Search size={15} />
-                              <input
-                                placeholder="搜索用户"
-                                value={usageSearch}
-                                onChange={(event) => setUsageSearch(event.target.value)}
-                              />
-                            </div>
-                            <select
-                              value={usageSort}
-                              onChange={(event) =>
-                                setUsageSort(event.target.value as "requests" | "tokens" | "cost")
-                              }
-                            >
-                              <option value="requests">按请求次数排序</option>
-                              <option value="tokens">按 Token 排序</option>
-                              <option value="cost">按成本排序</option>
-                            </select>
-                          </div>
-                          <div className="u-table-wrap" style={{ marginBottom: 18 }}>
-                            <table>
-                              <thead>
-                                <tr>
-                                  <th>排名</th>
-                                  <th>用户</th>
-                                  <th>请求次数</th>
-                                  <th>请求使用率</th>
-                                  <th>Token</th>
-                                  <th>Token 使用率</th>
-                                  <th>成本</th>
-                                  <th />
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {rows.map((row, index) => {
-                                  let tokenLimit: number | null = null;
-                                  let requestLimit: number | null = null;
-                                  try {
-                                    const parsedBudget = JSON.parse(row.budget || "{}");
-                                    tokenLimit = parsedBudget.tokens ?? null;
-                                    requestLimit = parsedBudget.requests ?? null;
-                                  } catch {
-                                    tokenLimit = null;
-                                    requestLimit = null;
+                        const totalTok = userUsage.reduce(
+                          (sum, row) => sum + (row.tokens ?? 0),
+                          0,
+                        );
+                        const totalCost = userUsage.reduce(
+                          (sum, row) => sum + (row.costCredits ?? 0),
+                          0,
+                        );
+                        const keyword = usageSearch.trim().toLowerCase();
+                        const rows = [...userUsage]
+                          .filter((row) =>
+                            keyword
+                              ? String(row.username ?? "")
+                                  .toLowerCase()
+                                  .includes(keyword)
+                              : true,
+                          )
+                          .sort((a, b) =>
+                            usageSort === "tokens"
+                              ? (b.tokens ?? 0) - (a.tokens ?? 0)
+                              : usageSort === "cost"
+                                ? (b.costCredits ?? 0) - (a.costCredits ?? 0)
+                                : (b.requests ?? 0) - (a.requests ?? 0),
+                          );
+                        return (
+                          <>
+                            <div className="u-usage-summary">
+                              <div className="u-card">
+                                <small>近 30 天请求</small>
+                                <strong>{num(totalReq)}</strong>
+                              </div>
+                              <div className="u-card">
+                                <small>近 30 天 Token</small>
+                                <strong>{num(totalTok)}</strong>
+                              </div>
+                              <div className="u-card">
+                                <small>近 30 天成本</small>
+                                <strong>{dollars(totalCost)}</strong>
+                              </div>
+                              <div className="u-card">
+                                <small>活跃用户</small>
+                                <strong>
+                                  {
+                                    userUsage.filter(
+                                      (row) => (row.requests ?? 0) > 0,
+                                    ).length
                                   }
-                                  const requestPct =
-                                    requestLimit && requestLimit > 0
-                                      ? ((row.requests ?? 0) / requestLimit) * 100
-                                      : null;
-                                  const quotaPct =
-                                    tokenLimit && tokenLimit > 0
-                                      ? ((row.tokens ?? 0) / tokenLimit) * 100
-                                      : null;
+                                </strong>
+                              </div>
+                            </div>
+                            <div
+                              className="u-toolbar"
+                              style={{ padding: "0 16px 18px" }}
+                            >
+                              <div className="u-search">
+                                <Search size={15} />
+                                <input
+                                  placeholder="搜索用户"
+                                  value={usageSearch}
+                                  onChange={(event) =>
+                                    setUsageSearch(event.target.value)
+                                  }
+                                />
+                              </div>
+                              <select
+                                value={usageSort}
+                                onChange={(event) =>
+                                  setUsageSort(
+                                    event.target.value as
+                                      | "requests"
+                                      | "tokens"
+                                      | "cost",
+                                  )
+                                }
+                              >
+                                <option value="requests">按请求次数排序</option>
+                                <option value="tokens">按 Token 排序</option>
+                                <option value="cost">按成本排序</option>
+                              </select>
+                            </div>
+                            <div
+                              className="u-table-wrap"
+                              style={{ marginBottom: 18 }}
+                            >
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>排名</th>
+                                    <th>用户</th>
+                                    <th>请求次数</th>
+                                    <th>请求使用率</th>
+                                    <th>Token</th>
+                                    <th>Token 使用率</th>
+                                    <th>成本</th>
+                                    <th />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {rows.map((row, index) => {
+                                    let tokenLimit: number | null = null;
+                                    let requestLimit: number | null = null;
+                                    try {
+                                      const parsedBudget = JSON.parse(
+                                        row.budget || "{}",
+                                      );
+                                      tokenLimit = parsedBudget.tokens ?? null;
+                                      requestLimit =
+                                        parsedBudget.requests ?? null;
+                                    } catch {
+                                      tokenLimit = null;
+                                      requestLimit = null;
+                                    }
+                                    const requestPct =
+                                      requestLimit && requestLimit > 0
+                                        ? ((row.requests ?? 0) / requestLimit) *
+                                          100
+                                        : null;
+                                    const quotaPct =
+                                      tokenLimit && tokenLimit > 0
+                                        ? ((row.tokens ?? 0) / tokenLimit) * 100
+                                        : null;
+                                    return (
+                                      <tr key={row.user_id}>
+                                        <td>{index + 1}</td>
+                                        <td>{row.username}</td>
+                                        <td>{num(row.requests ?? 0)}</td>
+                                        <td>
+                                          {requestPct == null ? (
+                                            <span className="u-unlimited">
+                                              UNLIMITED
+                                            </span>
+                                          ) : (
+                                            <div className="flex items-center gap-2">
+                                              <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
+                                                <div
+                                                  className="h-full rounded-full bg-primary"
+                                                  style={{
+                                                    width: `${Math.min(100, requestPct)}%`,
+                                                  }}
+                                                />
+                                              </div>
+                                              <span>
+                                                {requestPct.toFixed(1)}%
+                                              </span>
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td>
+                                          {compactTokens(row.tokens ?? 0)}
+                                        </td>
+                                        <td>
+                                          {quotaPct == null ? (
+                                            <span className="u-unlimited">
+                                              UNLIMITED
+                                            </span>
+                                          ) : (
+                                            <div className="flex items-center gap-2">
+                                              <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
+                                                <div
+                                                  className="h-full rounded-full bg-primary"
+                                                  style={{
+                                                    width: `${Math.min(100, quotaPct)}%`,
+                                                  }}
+                                                />
+                                              </div>
+                                              <span>
+                                                {quotaPct.toFixed(1)}%
+                                              </span>
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td>{dollars(row.costCredits ?? 0)}</td>
+                                        <td />
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                            {rows.length > 0 && (
+                              <div className="grid gap-4 px-4 pb-4 md:grid-cols-2">
+                                {(
+                                  [
+                                    ["请求占比", "requests", totalReq],
+                                    ["Token 占比", "tokens", totalTok],
+                                  ] as const
+                                ).map(([title, key, total]) => {
+                                  const colors = [
+                                    "#6366f1",
+                                    "#22c55e",
+                                    "#f59e0b",
+                                    "#ef4444",
+                                    "#06b6d4",
+                                    "#a855f7",
+                                    "#ec4899",
+                                    "#84cc16",
+                                  ];
+                                  let acc = 0;
+                                  const stops: string[] = [];
+                                  rows.forEach((row, index) => {
+                                    const share =
+                                      total > 0
+                                        ? ((row[key] ?? 0) / total) * 100
+                                        : 0;
+                                    stops.push(
+                                      `${colors[index % colors.length]} ${acc.toFixed(2)}% ${(acc + share).toFixed(2)}%`,
+                                    );
+                                    acc += share;
+                                  });
                                   return (
-                                    <tr key={row.user_id}>
-                                      <td>{index + 1}</td>
-                                      <td>{row.username}</td>
-                                      <td>{num(row.requests ?? 0)}</td>
-                                      <td>
-                                        {requestPct == null ? (
-                                          <span className="u-unlimited">UNLIMITED</span>
-                                        ) : (
-                                          <div className="flex items-center gap-2">
-                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
-                                              <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, requestPct)}%` }} />
-                                            </div>
-                                            <span>{requestPct.toFixed(1)}%</span>
-                                          </div>
-                                        )}
-                                      </td>
-                                      <td>{compactTokens(row.tokens ?? 0)}</td>
-                                      <td>
-                                        {quotaPct == null ? (
-                                          <span className="u-unlimited">UNLIMITED</span>
-                                        ) : (
-                                          <div className="flex items-center gap-2">
-                                            <div className="h-2 w-20 overflow-hidden rounded-full bg-muted">
-                                              <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, quotaPct)}%` }} />
-                                            </div>
-                                            <span>{quotaPct.toFixed(1)}%</span>
-                                          </div>
-                                        )}
-                                      </td>
-                                      <td>{dollars(row.costCredits ?? 0)}</td>
-                                      <td />
-                                    </tr>
+                                    <div
+                                      key={key}
+                                      className="rounded-lg border border-border-default p-4"
+                                    >
+                                      <div className="text-sm font-medium text-foreground">
+                                        {title}
+                                      </div>
+                                      <div className="mt-3 flex flex-wrap items-center gap-5">
+                                        <div
+                                          className="h-32 w-32 shrink-0 rounded-full"
+                                          style={{
+                                            background:
+                                              total > 0
+                                                ? `conic-gradient(${stops.join(",")})`
+                                                : "hsl(var(--muted))",
+                                          }}
+                                        />
+                                        <ul className="space-y-1 text-xs text-muted-foreground">
+                                          {rows
+                                            .slice(0, 8)
+                                            .map((row, index) => (
+                                              <li
+                                                key={row.user_id}
+                                                className="flex items-center gap-2"
+                                              >
+                                                <span
+                                                  className="inline-block h-2 w-2 rounded-full"
+                                                  style={{
+                                                    background:
+                                                      colors[
+                                                        index % colors.length
+                                                      ],
+                                                  }}
+                                                />
+                                                <span className="text-foreground">
+                                                  {row.username}
+                                                </span>
+                                                <span>
+                                                  {total > 0
+                                                    ? (
+                                                        ((row[key] ?? 0) /
+                                                          total) *
+                                                        100
+                                                      ).toFixed(1)
+                                                    : "0.0"}
+                                                  %
+                                                </span>
+                                              </li>
+                                            ))}
+                                        </ul>
+                                      </div>
+                                    </div>
                                   );
                                 })}
-                              </tbody>
-                            </table>
-                          </div>
-                          {rows.length > 0 && (
-                            <div className="grid gap-4 px-4 pb-4 md:grid-cols-2">
-                              {([
-                                ["请求占比", "requests", totalReq],
-                                ["Token 占比", "tokens", totalTok],
-                              ] as const).map(([title, key, total]) => {
-                                const colors = ["#6366f1","#22c55e","#f59e0b","#ef4444","#06b6d4","#a855f7","#ec4899","#84cc16"];
-                                let acc = 0;
-                                const stops: string[] = [];
-                                rows.forEach((row, index) => {
-                                  const share = total > 0 ? ((row[key] ?? 0) / total) * 100 : 0;
-                                  stops.push(`${colors[index % colors.length]} ${acc.toFixed(2)}% ${(acc + share).toFixed(2)}%`);
-                                  acc += share;
-                                });
-                                return (
-                                  <div key={key} className="rounded-lg border border-border-default p-4">
-                                    <div className="text-sm font-medium text-foreground">{title}</div>
-                                    <div className="mt-3 flex flex-wrap items-center gap-5">
-                                      <div
-                                        className="h-32 w-32 shrink-0 rounded-full"
-                                        style={{ background: total > 0 ? `conic-gradient(${stops.join(",")})` : "hsl(var(--muted))" }}
-                                      />
-                                      <ul className="space-y-1 text-xs text-muted-foreground">
-                                        {rows.slice(0, 8).map((row, index) => (
-                                          <li key={row.user_id} className="flex items-center gap-2">
-                                            <span className="inline-block h-2 w-2 rounded-full" style={{ background: colors[index % colors.length] }} />
-                                            <span className="text-foreground">{row.username}</span>
-                                            <span>{total > 0 ? (((row[key] ?? 0) / total) * 100).toFixed(1) : "0.0"}%</span>
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {!rows.length && <Empty>没有匹配的用户。</Empty>}
-                        </>
-                      );
-                    })()}
-                  </section>
+                              </div>
+                            )}
+                            {!rows.length && <Empty>没有匹配的用户。</Empty>}
+                          </>
+                        );
+                      })()}
+                    </section>
                   )}
                   {mode === "grants" && (
-                  <section className="u-panel">
-                    <div className="u-panel-title">
-                      <UserPlus size={17} />
-                      用户权限
-                      <small>{grants.length} 个单独分配</small>
-                    </div>
-                    <div className="u-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>用户</th>
-                            <th>权限</th>
-                            <th>单独额度</th>
-                            <th>模型范围</th>
-                            <th>到期时间</th>
-                            <th>近 30 天请求</th>
-                            <th>Token</th>
-                            <th>成本</th>
-                            <th />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {userUsage.map((row) => {
-                            const rowModels = parseModels(row.models);
-                            return (
-                              <tr key={row.userId}>
-                                <td>{row.username}</td>
-                                <td>
-                                  <span
-                                    className={`u-tag ${
-                                      row.allowed ? "u-green" : "u-danger"
-                                    }`}
-                                  >
-                                    {row.allowed ? "允许" : "禁用"}
-                                  </span>
-                                </td>
-                                <td>{budgetText(parseBudget(row.budget))}</td>
-                                <td>
-                                  {rowModels.length
-                                    ? rowModels.join(", ")
-                                    : "全部已发布模型"}
-                                </td>
-                                <td>{date(row.expires_at || undefined)}</td>
-                                <td>{num(row.requests ?? 0)}</td>
-                                <td>{num(row.tokens ?? 0)}</td>
-                                <td>{dollars(row.costCredits ?? 0)}</td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="u-quiet"
-                                    onClick={() => {
-                                      setEditingUser(row.userId);
-                                      setUsername(row.username);
-                                      setAllowed(!!row.allowed);
-                                      setGrantBudget(parseBudget(row.budget));
-                                      setGrantModels(rowModels);
-                                      setExpires(
-                                        row.expires_at
-                                          ? new Date(
-                                              row.expires_at * 1000,
-                                            )
-                                              .toISOString()
-                                              .slice(0, 16)
-                                          : "",
-                                      );
-                                    }}
-                                  >
-                                    编辑
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="u-quiet u-danger"
-                                    onClick={() => void removeGrant(row)}
-                                  >
-                                    <Trash2 size={13} />
-                                    移除
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    {!userUsage.length && (
-                      <Empty>
-                        还没有单独分配。公开或指定用户模式可先使用共享规则。
-                      </Empty>
-                    )}
-                    <form
-                      className="u-panel-body u-form-divider"
-                      onSubmit={saveGrant}
-                    >
-                      <div className="u-form-head">
-                        <strong>
-                          {editingUser ? "编辑用户分配" : "新增用户分配"}
-                        </strong>
-                        {editingUser && (
-                          <button
-                            type="button"
-                            className="u-quiet"
-                            onClick={resetGrantForm}
-                          >
-                            取消编辑
-                          </button>
-                        )}
+                    <section className="u-panel">
+                      <div className="u-panel-title">
+                        <UserPlus size={17} />
+                        用户权限
+                        <small>{grants.length} 个单独分配</small>
                       </div>
-                      <div className="u-grid2">
-                        <Field label="平台用户名">
-                          <input
-                            required
-                            disabled={!!editingUser}
-                            value={username}
-                            onChange={(event) =>
-                              setUsername(event.target.value)
-                            }
-                          />
-                        </Field>
-                        <Field label="授权">
-                          <select
-                            value={String(allowed)}
-                            onChange={(event) =>
-                              setAllowed(event.target.value === "true")
-                            }
-                          >
-                            <option value="true">允许使用</option>
-                            <option value="false">禁用此用户</option>
-                          </select>
-                        </Field>
+                      <div className="u-table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>用户</th>
+                              <th>权限</th>
+                              <th>单独额度</th>
+                              <th>模型范围</th>
+                              <th>到期时间</th>
+                              <th>近 30 天请求</th>
+                              <th>Token</th>
+                              <th>成本</th>
+                              <th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {userUsage.map((row) => {
+                              const rowModels = parseModels(row.models);
+                              return (
+                                <tr key={row.userId}>
+                                  <td>{row.username}</td>
+                                  <td>
+                                    <span
+                                      className={`u-tag ${
+                                        row.allowed ? "u-green" : "u-danger"
+                                      }`}
+                                    >
+                                      {row.allowed ? "允许" : "禁用"}
+                                    </span>
+                                  </td>
+                                  <td>{budgetText(parseBudget(row.budget))}</td>
+                                  <td>
+                                    {rowModels.length
+                                      ? rowModels.join(", ")
+                                      : "全部已发布模型"}
+                                  </td>
+                                  <td>{date(row.expires_at || undefined)}</td>
+                                  <td>{num(row.requests ?? 0)}</td>
+                                  <td>{num(row.tokens ?? 0)}</td>
+                                  <td>{dollars(row.costCredits ?? 0)}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="u-quiet"
+                                      onClick={() => {
+                                        setEditingUser(row.userId);
+                                        setUsername(row.username);
+                                        setAllowed(!!row.allowed);
+                                        setGrantBudget(parseBudget(row.budget));
+                                        setGrantModels(rowModels);
+                                        setExpires(
+                                          row.expires_at
+                                            ? new Date(row.expires_at * 1000)
+                                                .toISOString()
+                                                .slice(0, 16)
+                                            : "",
+                                        );
+                                      }}
+                                    >
+                                      编辑
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="u-quiet u-danger"
+                                      onClick={() => void removeGrant(row)}
+                                    >
+                                      <Trash2 size={13} />
+                                      移除
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
-                      <BudgetFields
-                        title="此用户的独立额度"
-                        value={grantBudget}
-                        change={setGrantBudget}
-                      />
-                      <div className="u-grid2">
-                        <Field label="允许的模型（留空为全部）">
-                          {modelPicker(grantModels, setGrantModels, selected?.visibleModels)}
-                        </Field>
-                        <Field label="到期时间（可留空）">
-                          <input
-                            type="datetime-local"
-                            value={expires}
-                            onChange={(event) =>
-                              setExpires(event.target.value)
-                            }
-                          />
-                        </Field>
-                      </div>
-                      <button
-                        className="u-button"
-                        disabled={saving}
-                        type="submit"
+                      {!userUsage.length && (
+                        <Empty>
+                          还没有单独分配。公开或指定用户模式可先使用共享规则。
+                        </Empty>
+                      )}
+                      <form
+                        className="u-panel-body u-form-divider"
+                        onSubmit={saveGrant}
                       >
-                        {saving ? <Busy /> : "保存用户分配"}
-                      </button>
-                    </form>
-                  </section>
+                        <div className="u-form-head">
+                          <strong>
+                            {editingUser ? "编辑用户分配" : "新增用户分配"}
+                          </strong>
+                          {editingUser && (
+                            <button
+                              type="button"
+                              className="u-quiet"
+                              onClick={resetGrantForm}
+                            >
+                              取消编辑
+                            </button>
+                          )}
+                        </div>
+                        <div className="u-grid2">
+                          <Field label="平台用户名">
+                            <input
+                              required
+                              disabled={!!editingUser}
+                              value={username}
+                              onChange={(event) =>
+                                setUsername(event.target.value)
+                              }
+                            />
+                          </Field>
+                          <Field label="授权">
+                            <select
+                              value={String(allowed)}
+                              onChange={(event) =>
+                                setAllowed(event.target.value === "true")
+                              }
+                            >
+                              <option value="true">允许使用</option>
+                              <option value="false">禁用此用户</option>
+                            </select>
+                          </Field>
+                        </div>
+                        <BudgetFields
+                          title="此用户的独立额度"
+                          value={grantBudget}
+                          change={setGrantBudget}
+                        />
+                        <div className="u-grid2">
+                          <Field label="允许的模型（留空为全部）">
+                            {modelPicker(
+                              grantModels,
+                              setGrantModels,
+                              selected?.visibleModels,
+                            )}
+                          </Field>
+                          <Field label="到期时间（可留空）">
+                            <input
+                              type="datetime-local"
+                              value={expires}
+                              onChange={(event) =>
+                                setExpires(event.target.value)
+                              }
+                            />
+                          </Field>
+                        </div>
+                        <button
+                          className="u-button"
+                          disabled={saving}
+                          type="submit"
+                        >
+                          {saving ? <Busy /> : "保存用户分配"}
+                        </button>
+                      </form>
+                    </section>
                   )}
                 </>
               ) : mode === "codes" ? (
@@ -2256,7 +2445,9 @@ function Allocations({ generation }: { generation: number }) {
                         <button
                           type="button"
                           className="u-button"
-                          onClick={() => void copy(shareInviteText(createdCode.url!))}
+                          onClick={() =>
+                            void copy(shareInviteText(createdCode.url!))
+                          }
                         >
                           <Link2 size={14} />
                           复制引导口令
@@ -2297,7 +2488,11 @@ function Allocations({ generation }: { generation: number }) {
                       />
                       <div className="u-grid2">
                         <Field label="允许的模型（留空为全部）">
-                          {modelPicker(codeModels, setCodeModels, selected?.visibleModels)}
+                          {modelPicker(
+                            codeModels,
+                            setCodeModels,
+                            selected?.visibleModels,
+                          )}
                         </Field>
                         <div>
                           <Field label="到期时间（可留空）">
@@ -2365,7 +2560,8 @@ function Allocations({ generation }: { generation: number }) {
                             const expired =
                               !!code.expiresAt &&
                               code.expiresAt <= Math.floor(Date.now() / 1000);
-                            const active = code.active && !exhausted && !expired;
+                            const active =
+                              code.active && !exhausted && !expired;
                             return (
                               <tr key={code.id}>
                                 <td>{budgetText(code.budget)}</td>
@@ -2424,9 +2620,7 @@ function Allocations({ generation }: { generation: number }) {
                         </tbody>
                       </table>
                     </div>
-                    {!selectedCodes.length && (
-                      <Empty>还没有分享口令。</Empty>
-                    )}
+                    {!selectedCodes.length && <Empty>还没有分享口令。</Empty>}
                   </section>
                 </>
               ) : (
@@ -2699,7 +2893,9 @@ function Allocations({ generation }: { generation: number }) {
                                 </td>
                                 <td>
                                   {application.state === "approved"
-                                    ? budgetText(application.decidedBudget || {})
+                                    ? budgetText(
+                                        application.decidedBudget || {},
+                                      )
                                     : "—"}
                                 </td>
                                 <td>
@@ -2708,7 +2904,9 @@ function Allocations({ generation }: { generation: number }) {
                                     : "—"}
                                 </td>
                                 <td>{application.decisionNote || "—"}</td>
-                                <td>{date(application.decidedAt || undefined)}</td>
+                                <td>
+                                  {date(application.decidedAt || undefined)}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -2796,10 +2994,7 @@ function Keys({ generation }: { generation: number }) {
             {created.command}
           </pre>
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => void copy(created.command)}
-            >
+            <Button size="sm" onClick={() => void copy(created.command)}>
               <Copy className="mr-1 h-4 w-4" />
               复制接入 / 更新命令
             </Button>
@@ -2810,11 +3005,7 @@ function Keys({ generation }: { generation: number }) {
             >
               复制 API Key
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setCreated(null)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setCreated(null)}>
               隐藏
             </Button>
           </div>
@@ -3244,7 +3435,9 @@ function Profile({
                         <span className="font-medium text-primary">
                           {supplier.ownerName}
                         </span>
-                        <span className="font-normal text-muted-foreground">{" 的 "}</span>
+                        <span className="font-normal text-muted-foreground">
+                          {" 的 "}
+                        </span>
                       </>
                     )}
                     {supplier.name}
@@ -3295,17 +3488,13 @@ function Profile({
               </div>
               <footer>
                 {supplier.balanceKind === "sharedPool" ? (
-                  <span>
-                    包含所有共享用户，不含你自己的调用
-                  </span>
+                  <span>包含所有共享用户，不含你自己的调用</span>
                 ) : (
                   <>
+                    <span>共享池预算：{budgetText(supplier.sharedBudget)}</span>
                     <span>
-                      共享池预算：{budgetText(supplier.sharedBudget)}
-                    </span>
-                    <span>
-                      共享池已用：{usageText(supplier.sharedUsage.requests)} 次 ·{" "}
-                      {usageText(supplier.sharedUsage.tokens)} Token
+                      共享池已用：{usageText(supplier.sharedUsage.requests)} 次
+                      · {usageText(supplier.sharedUsage.tokens)} Token
                     </span>
                   </>
                 )}
@@ -3322,9 +3511,7 @@ function Profile({
   return (
     <>
       <div className="u-page-lead">
-        <p>
-          汇总你的个人平台额度，以及每个自有和共享供应商的剩余余额。
-        </p>
+        <p>汇总你的个人平台额度，以及每个自有和共享供应商的剩余余额。</p>
         <span className="u-tag">
           {me.user.role === "admin" ? "管理员" : "普通用户"} ·{" "}
           {overview?.usage.periodKey || me.quota.periodKey} UTC

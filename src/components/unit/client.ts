@@ -103,6 +103,13 @@ export interface Model {
   context_window?: number;
   description?: string;
 }
+export interface PersonalCodexCatalog {
+  models: Model[];
+  default_model?: string;
+  warnings?: string[];
+  user?: string;
+  quotaUnit?: string;
+}
 export interface Resource {
   id: string;
   name: string;

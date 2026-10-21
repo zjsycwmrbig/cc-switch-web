@@ -171,13 +171,41 @@ fn own_unpublished_resource_feeds_routes_and_catalog() {
     assert_eq!(routes[0]["targets"], json!(["mine"]));
 
     let export = catalog::export(&db, &alice, false).unwrap();
-    let slugs = export["models"]
-        .as_array()
-        .unwrap()
+    let models = export["models"].as_array().unwrap();
+    let slugs = models
         .iter()
         .filter_map(|m| m["slug"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
     assert_eq!(slugs, vec!["ccs-mine/test-model".to_string()]);
+    let row = &models[0];
+    assert_eq!(row["support_verbosity"], json!(false));
+    assert!(row["truncation_policy"].is_object());
+    assert!(row["supports_search_tool"].is_boolean());
+}
+
+/// 显式同步展示选择只过滤 Codex 目录，不能删除或禁用请求路由。
+#[test]
+fn catalog_selection_does_not_change_request_routes() {
+    let db = database();
+    resource(&db, "mine", "alice", "https://example.com/v1", false);
+    let alice = identity("alice");
+    api::seed_model_routes(&db, &alice).unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_preferences(user_id,value) VALUES('alice','{\"models\":[]}')
+             ON CONFLICT(user_id) DO UPDATE SET value=excluded.value",
+            [],
+        )
+        .unwrap();
+
+    let selected = catalog::export(&db, &alice, true).unwrap();
+    assert!(selected["models"].as_array().unwrap().is_empty());
+
+    let routes = api::list_model_routes(&db, "alice").unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0]["targets"], json!(["mine"]));
+    assert_eq!(routes[0]["enabled"], json!(true));
 }
 
 #[test]

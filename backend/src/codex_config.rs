@@ -2402,6 +2402,8 @@ const CODEX_CATALOG_PARSER_REQUIRED_FIELDS: &[&str] = &[
     // codex 0.148.0 rejects the catalog without it (#6661); a models_cache.json
     // written by an older build can lack it.
     "supports_parallel_tool_calls",
+    // codex 0.162.1 rejects the whole catalog when this is absent.
+    "support_verbosity",
 ];
 
 /// `models_cache.json` is shared by every Codex install on the machine (npm
@@ -9162,6 +9164,23 @@ pub(crate) fn normalize_codex_native_rows(rows: Vec<Value>) -> Option<Vec<Value>
             codex_native_row_is_valid(&row).then_some(row)
         })
         .collect()
+}
+
+/// Backfill a hub aggregation catalog row from the complete native Responses
+/// template. Provider catalog rows are not Codex-native rows and commonly omit
+/// strict parser fields such as `support_verbosity`; Codex rejects the entire
+/// file when any one row is incomplete. Existing values always win.
+pub(crate) fn normalize_codex_aggregate_catalog_row(row: &mut Value) {
+    let template = load_codex_native_responses_template();
+    {
+        let (Some(row), Some(template)) = (row.as_object_mut(), template.as_object()) else {
+            return;
+        };
+        for (key, value) in template {
+            row.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    backfill_codex_base_instructions(row);
 }
 
 /// Codex 的指令有新旧两种写法：新的 `model_messages.instructions_template`，旧的顶层

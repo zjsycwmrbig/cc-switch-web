@@ -287,6 +287,7 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
                     let mut row = raw.clone();
                     let _ =
                         crate::web_model_catalog::publish(&mut row, &pool_key, "官方共享账号池", 0);
+                    crate::codex_config::normalize_codex_aggregate_catalog_row(&mut row);
                     row
                 });
             }
@@ -361,6 +362,7 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
         row["slug"] = json!(encode("codex", &key, base));
         row["display_name"] = json!(name);
         row["visibility"] = json!("list");
+        crate::codex_config::normalize_codex_aggregate_catalog_row(&mut row);
         models.push(row);
     }
     models.extend(official.into_values());
