@@ -155,6 +155,10 @@ export function ProviderCard({
   const session = useUnitSession();
   const sharedReadOnly =
     !!provider.unitResource && !provider.unitResource.owned;
+  const canManageProviderUsage =
+    !session ||
+    session.me.user.role === "admin" ||
+    provider.unitResource?.owned === true;
 
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
@@ -232,8 +236,7 @@ export function ProviderCard({
     !isOfficial &&
     !isOfficialSubscriptionUsage;
   const { data: usage } = useUsageQuery(provider.id, appId, {
-    enabled:
-      scriptUsageActive && (!session || session.me.user.role === "admin"),
+    enabled: scriptUsageActive && canManageProviderUsage,
     autoQueryInterval,
   });
 
@@ -530,7 +533,8 @@ export function ProviderCard({
                   : undefined
               }
               onConfigureUsage={
-                (session && session.me.user.role !== "admin") ||
+                !canManageProviderUsage ||
+                sharedReadOnly ||
                 (isOfficial && !isBoundCodexOfficial) ||
                 isCopilot ||
                 (isCodexOauth && !isBoundCodexOfficial) ||

@@ -1,7 +1,54 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
 import { ProviderCard } from "@/components/providers/ProviderCard";
+import { UnitSession } from "@/components/unit/session";
+import type { Resource } from "@/components/unit/client";
 import type { Provider } from "@/types";
+import { renderWithQueryClient as render } from "../utils/testQueryClient";
+
+type UnitSessionValue = ComponentProps<typeof UnitSession.Provider>["value"];
+
+function unitSession(userId: string): UnitSessionValue {
+  return {
+    me: {
+      user: {
+        id: userId,
+        username: userId,
+        role: "user",
+        csrf: "csrf",
+      },
+      quota: {
+        budget: {},
+        period: "month",
+        periodKey: "2026-10",
+        usage: {},
+      },
+      publicUrl: "http://localhost",
+      proxyUrl: "http://localhost/v1",
+    },
+    refresh: vi.fn(),
+    logout: vi.fn(),
+    reset: vi.fn(),
+  };
+}
+
+function unitResource(ownerId: string, owned: boolean): Resource {
+  return {
+    id: `${ownerId}-resource`,
+    name: "Provider resource",
+    appType: "codex",
+    ownerId,
+    ownerName: ownerId,
+    routeKey: `${ownerId}-route`,
+    owned,
+    published: true,
+    disabled: false,
+    official: false,
+    models: [],
+    health: "ready",
+  };
+}
 
 const codexQuotaFooterProps = vi.hoisted(() => vi.fn());
 const useUsageQueryOptions = vi.hoisted(() => vi.fn());
@@ -62,8 +109,9 @@ function renderCard(
   provider: Provider,
   appId: "codex" | "grokbuild",
   onConfigureUsage = vi.fn(),
+  session: UnitSessionValue | null = null,
 ) {
-  return render(
+  const card = (
     <ProviderCard
       provider={provider}
       isCurrent
@@ -75,7 +123,14 @@ function renderCard(
       onOpenWebsite={vi.fn()}
       onDuplicate={vi.fn()}
       isProxyRunning={false}
-    />,
+    />
+  );
+  return render(
+    session ? (
+      <UnitSession.Provider value={session}>{card}</UnitSession.Provider>
+    ) : (
+      card
+    ),
   );
 }
 
@@ -185,6 +240,65 @@ describe("ProviderCard subscription quota", () => {
     expect(codexQuotaFooterProps).toHaveBeenCalledWith(
       expect.objectContaining({ autoQueryInterval: 12 }),
     );
+  });
+
+  it("普通用户可以查询并配置自己供应商的用量", () => {
+    const onConfigureUsage = vi.fn();
+    const provider = {
+      id: "owned-provider",
+      name: "Owned Provider",
+      category: "third_party",
+      settingsConfig: { auth: { OPENAI_API_KEY: "sk-test" }, config: "" },
+      meta: {
+        usage_script: {
+          enabled: true,
+          language: "javascript",
+          code: "({ request: {}, extractor: () => ({}) })",
+          templateType: "custom",
+          autoQueryInterval: 5,
+        },
+      },
+      unitResource: unitResource("owner", true),
+    } as Provider;
+    const session = unitSession("owner");
+
+    renderCard(provider, "codex", onConfigureUsage, session);
+
+    expect(useUsageQueryOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "configure-usage" }));
+    expect(onConfigureUsage).toHaveBeenCalledWith(provider);
+  });
+
+  it("普通用户不能查询或配置共享供应商的用量", () => {
+    const onConfigureUsage = vi.fn();
+    const provider = {
+      id: "shared-provider",
+      name: "Shared Provider",
+      category: "third_party",
+      settingsConfig: { auth: { OPENAI_API_KEY: "sk-test" }, config: "" },
+      meta: {
+        usage_script: {
+          enabled: true,
+          language: "javascript",
+          code: "({ request: {}, extractor: () => ({}) })",
+          templateType: "custom",
+          autoQueryInterval: 5,
+        },
+      },
+      unitResource: unitResource("another-user", false),
+    } as Provider;
+    const session = unitSession("viewer");
+
+    renderCard(provider, "codex", onConfigureUsage, session);
+
+    expect(useUsageQueryOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "configure-usage" }),
+    ).not.toBeInTheDocument();
   });
 
   it("旧式 codex_oauth Provider 保持固定额度行为", () => {
