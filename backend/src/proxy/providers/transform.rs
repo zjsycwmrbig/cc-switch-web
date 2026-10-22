@@ -341,16 +341,29 @@ fn map_tool_choice_to_chat(tool_choice: &Value) -> Value {
 
 /// 转换单条消息到 OpenAI 格式（可能产生多条消息）
 
-/// 修复孤立的 tool_calls：assistant 声明了工具调用但缺少对应 tool 结果时，
-/// 补一条占位 tool 消息，避免上游以“tool_calls 后缺少 tool 响应”拒绝整段请求。
+/// Normalize Chat tool-call history before sending it upstream.
+///
+/// OpenAI-compatible providers require every `tool` message to immediately
+/// follow the assistant message declaring its `tool_call_id`. Codex can persist
+/// developer notices (for example `<image_resize_notice>`) between parallel tool
+/// outputs. Move those notices after the complete tool-result block, synthesize
+/// missing outputs, and drop tool messages that have no matching call.
 pub fn repair_orphan_tool_calls(messages: &mut Vec<Value>) {
-    let mut i = 0;
-    while i < messages.len() {
-        if messages[i].get("role").and_then(Value::as_str) != Some("assistant") {
-            i += 1;
+    let original = std::mem::take(messages);
+    let mut repaired = Vec::with_capacity(original.len());
+    let mut cursor = 0;
+
+    while cursor < original.len() {
+        let message = original[cursor].clone();
+        cursor += 1;
+
+        if message.get("role").and_then(Value::as_str) == Some("tool") {
+            // A tool result is valid only when consumed below, immediately after
+            // the assistant message that declared its matching tool call.
             continue;
         }
-        let ids = messages[i]
+
+        let expected_ids = message
             .get("tool_calls")
             .and_then(Value::as_array)
             .map(|calls| {
@@ -360,27 +373,49 @@ pub fn repair_orphan_tool_calls(messages: &mut Vec<Value>) {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if ids.is_empty() {
-            i += 1;
+        repaired.push(message);
+        if expected_ids.is_empty() {
             continue;
         }
-        let mut j = i + 1;
-        let mut found = std::collections::HashSet::new();
-        while j < messages.len() && messages[j].get("role").and_then(Value::as_str) == Some("tool") {
-            if let Some(id) = messages[j].get("tool_call_id").and_then(Value::as_str) {
-                found.insert(id.to_string());
+
+        let expected = expected_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut outputs = std::collections::HashMap::new();
+        let mut deferred = Vec::new();
+
+        // The whole tool-result batch must precede the next assistant turn.
+        // Keep non-tool messages so notices and synthetic media are preserved,
+        // but move them behind every matching tool result.
+        while cursor < original.len() {
+            let next = &original[cursor];
+            match next.get("role").and_then(Value::as_str) {
+                Some("assistant") => break,
+                Some("tool") => {
+                    if let Some(id) = next.get("tool_call_id").and_then(Value::as_str) {
+                        if expected.contains(id) && !outputs.contains_key(id) {
+                            outputs.insert(id.to_string(), next.clone());
+                        }
+                    }
+                    cursor += 1;
+                }
+                _ => {
+                    deferred.push(next.clone());
+                    cursor += 1;
+                }
             }
-            j += 1;
         }
-        let missing: Vec<String> = ids.into_iter().filter(|id| !found.contains(id)).collect();
-        for (offset, id) in missing.into_iter().enumerate() {
-            messages.insert(
-                i + 1 + offset,
-                json!({"role":"tool","tool_call_id":id,"content":"[tool result unavailable]"}),
-            );
+
+        for id in expected_ids {
+            repaired.push(outputs.remove(&id).unwrap_or_else(
+                || json!({"role":"tool","tool_call_id":id,"content":"[tool result unavailable]"}),
+            ));
         }
-        i += 1;
+        repaired.extend(deferred);
     }
+
+    *messages = repaired;
 }
 
 fn convert_message_to_openai(
@@ -809,6 +844,55 @@ mod tests {
         assert_eq!(result["max_tokens"], 1024);
         assert_eq!(result["messages"][0]["role"], "user");
         assert_eq!(result["messages"][0]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_repair_orphan_tool_calls_reorders_interleaved_notices_and_drops_orphans() {
+        let mut messages = vec![
+            json!({"role":"tool","tool_call_id":"orphan","content":"stale"}),
+            json!({
+                "role":"assistant",
+                "content":Value::Null,
+                "tool_calls":[
+                    {"id":"call_1","type":"function","function":{"name":"one","arguments":"{}"}},
+                    {"id":"call_2","type":"function","function":{"name":"two","arguments":"{}"}},
+                    {"id":"call_3","type":"function","function":{"name":"three","arguments":"{}"}}
+                ]
+            }),
+            json!({"role":"tool","tool_call_id":"call_1","content":"first"}),
+            json!({"role":"system","content":"<image_resize_notice>resized</image_resize_notice>"}),
+            json!({"role":"tool","tool_call_id":"unrelated","content":"extra"}),
+            json!({"role":"tool","tool_call_id":"call_2","content":"second"}),
+            json!({"role":"user","content":"continue"}),
+            json!({"role":"assistant","content":"answer"}),
+        ];
+
+        repair_orphan_tool_calls(&mut messages);
+
+        let roles = messages
+            .iter()
+            .filter_map(|message| message.get("role").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            vec![
+                "assistant",
+                "tool",
+                "tool",
+                "tool",
+                "system",
+                "user",
+                "assistant"
+            ]
+        );
+        assert_eq!(messages[1]["tool_call_id"], "call_1");
+        assert_eq!(messages[2]["tool_call_id"], "call_2");
+        assert_eq!(messages[3]["tool_call_id"], "call_3");
+        assert_eq!(messages[3]["content"], "[tool result unavailable]");
+        assert_eq!(
+            messages[4]["content"],
+            "<image_resize_notice>resized</image_resize_notice>"
+        );
     }
 
     #[test]
