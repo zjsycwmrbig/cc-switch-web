@@ -429,7 +429,15 @@ pub(crate) fn plan(
                     table["experimental_bearer_token"] = toml_edit::value(key);
                 }
             }
-            (RouteWrite::Custom(table), if official { None } else { Some(RouteAuth::Bearer) }, AuthGoal::KeepNative)
+            (
+                RouteWrite::Custom(table),
+                if official {
+                    None
+                } else {
+                    Some(RouteAuth::Bearer)
+                },
+                AuthGoal::KeepNative,
+            )
         }
     };
 
@@ -1208,7 +1216,9 @@ fn stack_catalog(
                 config_text,
                 profile: *profile,
             },
-            native: is_official(&member.provider).then_some(official_rows).flatten(),
+            native: is_official(&member.provider)
+                .then_some(official_rows)
+                .flatten(),
         })
         .collect();
     plan_codex_stack_catalog(route_row, &members).map(Some)

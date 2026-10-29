@@ -523,7 +523,10 @@ mod tests {
         ];
         let path = write_session_file(temp.path(), "session-idem", &lines);
 
-        assert_eq!(sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?.imported, 2);
+        assert_eq!(
+            sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?.imported,
+            2
+        );
         {
             let conn = lock_conn!(db.conn);
             conn.execute("DELETE FROM session_log_sync", [])?;
@@ -564,7 +567,10 @@ mod tests {
         let result = sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?;
         assert_eq!(result.imported, 1);
         assert_eq!(result.deferred_files, 1);
-        assert_eq!(crate::services::session_usage::get_sync_state(&db, &path.to_string_lossy())?, (0, 0));
+        assert_eq!(
+            crate::services::session_usage::get_sync_state(&db, &path.to_string_lossy())?,
+            (0, 0)
+        );
         Ok(())
     }
 
@@ -618,7 +624,10 @@ mod tests {
         );
         let path = write_session_file(temp.path(), "session-cost", &[complete, partial]);
 
-        assert_eq!(sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?.imported, 2);
+        assert_eq!(
+            sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?.imported,
+            2
+        );
         let rows = query_rows(&db)?;
         let complete_cost = Decimal::from_str(&rows[0].4).expect("complete cost");
         let partial_cost = Decimal::from_str(&rows[1].4).expect("partial cost");
@@ -648,7 +657,10 @@ mod tests {
             )],
         );
 
-        assert_eq!(sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?.imported, 1);
+        assert_eq!(
+            sync_single_grok_file(&db, &path, test_last_modified(&db, &path))?.imported,
+            1
+        );
         let rows = query_rows(&db)?;
         assert_eq!(
             Decimal::from_str(&rows[0].4).expect("cost"),
@@ -669,7 +681,12 @@ mod tests {
             .set_len(MAX_GROK_FILE_BYTES + 1)
             .unwrap();
 
-        assert_eq!(sync_single_grok_file(&db, &path, test_last_modified(&db, &path)).unwrap().imported, 0);
+        assert_eq!(
+            sync_single_grok_file(&db, &path, test_last_modified(&db, &path))
+                .unwrap()
+                .imported,
+            0
+        );
     }
 
     #[test]

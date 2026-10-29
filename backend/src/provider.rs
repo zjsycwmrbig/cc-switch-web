@@ -1212,7 +1212,10 @@ mod tests {
         }}));
         assert_eq!(
             claude.resolve_usage_credentials(&AppType::Claude),
-            ("https://opencode.ai/zen/go".to_string(), "sk-claude".to_string())
+            (
+                "https://opencode.ai/zen/go".to_string(),
+                "sk-claude".to_string()
+            )
         );
 
         let codex = make(json!({
@@ -1221,7 +1224,10 @@ mod tests {
         }));
         assert_eq!(
             codex.resolve_usage_credentials(&AppType::Codex),
-            ("https://opencode.ai/zen/go/v1".to_string(), "sk-codex".to_string())
+            (
+                "https://opencode.ai/zen/go/v1".to_string(),
+                "sk-codex".to_string()
+            )
         );
 
         let opencode = make(json!({ "options": {
@@ -1230,7 +1236,10 @@ mod tests {
         }}));
         assert_eq!(
             opencode.resolve_usage_credentials(&AppType::OpenCode),
-            ("https://opencode.ai/zen/go/v1".to_string(), "sk-opencode".to_string())
+            (
+                "https://opencode.ai/zen/go/v1".to_string(),
+                "sk-opencode".to_string()
+            )
         );
 
         let pi = make(json!({
@@ -1241,7 +1250,10 @@ mod tests {
         }));
         assert_eq!(
             pi.resolve_usage_credentials(&AppType::Pi),
-            ("https://opencode.ai/zen/go/v1".to_string(), "sk-pi".to_string())
+            (
+                "https://opencode.ai/zen/go/v1".to_string(),
+                "sk-pi".to_string()
+            )
         );
     }
 

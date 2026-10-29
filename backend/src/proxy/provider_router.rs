@@ -81,9 +81,13 @@ impl ProviderRouter {
             let current_id = AppType::from_str(app_type)
                 .ok()
                 .and_then(|app_enum| {
-                    crate::mode::current::provider_for(&self.db, &app_enum, crate::mode::current::Purpose::InUse)
-                        .ok()
-                        .flatten()
+                    crate::mode::current::provider_for(
+                        &self.db,
+                        &app_enum,
+                        crate::mode::current::Purpose::InUse,
+                    )
+                    .ok()
+                    .flatten()
                 })
                 .or_else(|| self.db.get_current_provider(app_type).ok().flatten());
 
@@ -396,7 +400,9 @@ mod tests {
         let mut circuit_config = db.get_proxy_config_for_app("claude").await.unwrap();
         circuit_config.circuit_failure_threshold = 1;
         circuit_config.circuit_timeout_seconds = 0;
-        db.update_proxy_config_for_app(circuit_config).await.unwrap();
+        db.update_proxy_config_for_app(circuit_config)
+            .await
+            .unwrap();
 
         let provider_a =
             Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);
@@ -437,7 +443,9 @@ mod tests {
         let mut circuit_config = db.get_proxy_config_for_app("claude").await.unwrap();
         circuit_config.circuit_failure_threshold = 1;
         circuit_config.circuit_timeout_seconds = 0;
-        db.update_proxy_config_for_app(circuit_config).await.unwrap();
+        db.update_proxy_config_for_app(circuit_config)
+            .await
+            .unwrap();
 
         let provider_a =
             Provider::with_id("a".to_string(), "Provider A".to_string(), json!({}), None);

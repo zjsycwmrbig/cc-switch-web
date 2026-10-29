@@ -170,6 +170,7 @@ export interface ApiKey {
   name: string;
   prefix: string;
   active: number;
+  token_version?: number;
   created_at: number;
   last_used_at?: number;
   expires_at?: number;

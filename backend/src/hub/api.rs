@@ -23,6 +23,8 @@ pub fn routes(app: Arc<AppState>) -> Router {
         .route("/api/unit/password", put(password))
         .route("/api/unit/account", axum::routing::delete(delete_account))
         .route("/api/unit/keys", get(keys).post(create_key))
+        .route("/api/unit/keys/batch", post(batch_keys))
+        .route("/api/unit/keys/:id/command", get(key_command))
         .route("/api/unit/keys/:id", axum::routing::delete(revoke_key))
         .route(
             "/api/unit/preferences",
@@ -69,10 +71,7 @@ pub fn routes(app: Arc<AppState>) -> Router {
             "/api/unit/model-routes",
             get(model_routes).post(save_model_route),
         )
-        .route(
-            "/api/unit/model-routes/detect",
-            post(detect_model_routes),
-        )
+        .route("/api/unit/model-routes/detect", post(detect_model_routes))
         .route(
             "/api/unit/model-routes/:id",
             axum::routing::delete(delete_model_route),
@@ -175,9 +174,10 @@ struct Credentials {
 }
 async fn register(
     State(app): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(v): Json<Credentials>,
 ) -> Result<Response> {
-    let secure = public_url(&app.db).starts_with("https://");
+    let secure = request_secure(&app.db, &headers);
     let permit = PASSWORD_WORK
         .try_acquire()
         .map_err(|_| Error::limited("authentication_busy", "认证请求繁忙，请稍后重试"))?;
@@ -197,8 +197,12 @@ async fn register(
     )
         .into_response())
 }
-async fn login(State(app): State<Arc<AppState>>, Json(v): Json<Credentials>) -> Result<Response> {
-    let secure = public_url(&app.db).starts_with("https://");
+async fn login(
+    State(app): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(v): Json<Credentials>,
+) -> Result<Response> {
+    let secure = request_secure(&app.db, &headers);
     let permit = PASSWORD_WORK
         .try_acquire()
         .map_err(|_| Error::limited("authentication_busy", "认证请求繁忙，请稍后重试"))?;
@@ -217,6 +221,7 @@ async fn login(State(app): State<Arc<AppState>>, Json(v): Json<Credentials>) -> 
 }
 async fn logout(
     State(app): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(user): Extension<Identity>,
 ) -> Result<Response> {
     conn(&app.db)?.execute(
@@ -226,7 +231,7 @@ async fn logout(
     Ok((
         [(
             header::SET_COOKIE,
-            auth::session_cookie("", 0, public_url(&app.db).starts_with("https://")),
+            auth::session_cookie("", 0, request_secure(&app.db, &headers)),
         )],
         Json(json!({"ok":true})),
     )
@@ -251,6 +256,139 @@ pub fn proxy_url(db: &crate::database::Database) -> String {
     .trim_end_matches('/')
     .into()
 }
+fn forwarded_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+fn requested_host(headers: &HeaderMap) -> Option<String> {
+    forwarded_value(headers, "x-forwarded-host")
+        .or_else(|| forwarded_value(headers, header::HOST.as_str()))
+}
+fn forwarded_scheme(headers: &HeaderMap) -> Option<&'static str> {
+    match forwarded_value(headers, "x-forwarded-proto")?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "http" => Some("http"),
+        "https" => Some("https"),
+        _ => None,
+    }
+}
+fn origin_from_host(scheme: &str, host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty()
+        || host
+            .chars()
+            .any(|ch| ch.is_ascii_whitespace() || matches!(ch, '/' | '\\' | '@' | '?' | '#'))
+    {
+        return None;
+    }
+    let url = url::Url::parse(&format!("{scheme}://{host}")).ok()?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
+}
+fn host_matches_public_authority(host: &str, public: &url::Url) -> bool {
+    let Ok(current) = url::Url::parse(&format!("http://{host}")) else {
+        return false;
+    };
+    let same_host = current
+        .host_str()
+        .zip(public.host_str())
+        .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right));
+    same_host
+        && (current.port() == public.port()
+            || current.port_or_known_default() == public.port_or_known_default())
+}
+fn request_scheme(db: &crate::database::Database, headers: &HeaderMap) -> &'static str {
+    if let Some(scheme) = forwarded_scheme(headers) {
+        return scheme;
+    }
+    let Ok(public) = url::Url::parse(&public_url(db)) else {
+        return "http";
+    };
+    let Some(host) = requested_host(headers) else {
+        return if public.scheme() == "https" {
+            "https"
+        } else {
+            "http"
+        };
+    };
+    if host_matches_public_authority(&host, &public) && public.scheme() == "https" {
+        "https"
+    } else {
+        "http"
+    }
+}
+/// 当前页面实际使用的 origin；无有效 Host 时回退到管理员配置的公开地址。
+pub(crate) fn request_origin(db: &crate::database::Database, headers: &HeaderMap) -> String {
+    let fallback = public_url(db);
+    let Some(host) = requested_host(headers) else {
+        return fallback;
+    };
+    origin_from_host(request_scheme(db, headers), &host).unwrap_or(fallback)
+}
+pub(crate) fn request_secure(db: &crate::database::Database, headers: &HeaderMap) -> bool {
+    request_scheme(db, headers) == "https"
+}
+fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_ascii_lowercase();
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+/// 代理地址与公开入口同主机（或为 loopback）时按当前访问主机替换；
+/// 只有指向独立域名/网关的显式代理配置才保持原样。
+pub(crate) fn request_proxy_url(db: &crate::database::Database, headers: &HeaderMap) -> String {
+    let configured = proxy_url(db);
+    let Ok(mut proxy) = url::Url::parse(&configured) else {
+        return configured;
+    };
+    let follows_request_host = proxy.host_str().is_some_and(is_loopback_host)
+        || url::Url::parse(&public_url(db)).is_ok_and(|public| {
+            proxy
+                .host_str()
+                .zip(public.host_str())
+                .is_some_and(|(proxy_host, public_host)| {
+                    proxy_host.eq_ignore_ascii_case(public_host)
+                })
+        });
+    if !follows_request_host {
+        return configured;
+    }
+    let Ok(origin) = url::Url::parse(&request_origin(db, headers)) else {
+        return configured;
+    };
+    let Some(host) = origin.host_str() else {
+        return configured;
+    };
+    let host = host.trim_matches('[').trim_matches(']');
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    if proxy.set_host(Some(&host)).is_err() {
+        return configured;
+    }
+    proxy.to_string().trim_end_matches('/').to_owned()
+}
 async fn me(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,
@@ -267,6 +405,7 @@ struct Password {
 }
 async fn password(
     State(app): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(user): Extension<Identity>,
     Json(v): Json<Password>,
 ) -> Result<Response> {
@@ -303,7 +442,7 @@ async fn password(
     Ok((
         [(
             header::SET_COOKIE,
-            auth::session_cookie("", 0, public_url(&app.db).starts_with("https://")),
+            auth::session_cookie("", 0, request_secure(&app.db, &headers)),
         )],
         Json(json!({"ok":true})),
     )
@@ -342,7 +481,7 @@ async fn keys(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,
 ) -> Result<Json<Value>> {
-    Ok(Json(json!(query_json(&*conn(&app.db)?,"SELECT id,name,prefix,active,created_at,last_used_at,expires_at FROM hub_api_keys WHERE user_id=?1 ORDER BY created_at DESC",&[&user.id])?)))
+    Ok(Json(json!(query_json(&*conn(&app.db)?,"SELECT id,name,prefix,active,created_at,last_used_at,expires_at,token_version FROM hub_api_keys WHERE user_id=?1 ORDER BY created_at DESC, rowid DESC",&[&user.id])?)))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -350,22 +489,98 @@ struct KeyRequest {
     name: String,
     expires_at: Option<i64>,
 }
+fn key_install_command(token: &str, origin: &str) -> String {
+    format!(
+        "curl -fsSL -H 'Authorization: Bearer {token}' '{origin}/api/unit/install.sh' | CC_SWITCH_CONFIGURE_ROUTE=1 CC_SWITCH_RESTART_APP_SERVER=1 bash"
+    )
+}
 async fn create_key(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,
+    headers: HeaderMap,
     Json(v): Json<KeyRequest>,
 ) -> Result<Json<Value>> {
     let name = v.name.trim();
     if name.is_empty() || name.len() > 100 || v.expires_at.is_some_and(|t| t <= now()) {
-        return Err(Error::bad("请填写设备名称和有效的到期时间"));
+        return Err(Error::bad("请填写设备码名称和有效的到期时间"));
     }
-    let token = auth::secret();
     let key = id();
-    conn(&app.db)?.execute("INSERT INTO hub_api_keys(id,user_id,name,token_hash,prefix,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![key,user.id,name,auth::hash(&token),&token[..12],now(),v.expires_at])?;
+    let token = auth::device_token(&app.db, &user.id, &key);
+    let created_at = now();
+    conn(&app.db)?.execute(
+        "INSERT INTO hub_api_keys(
+            id,user_id,name,token_hash,prefix,created_at,expires_at,token_version
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![
+            key,
+            user.id,
+            name,
+            auth::hash(&token),
+            &token[..12],
+            created_at,
+            v.expires_at,
+            auth::DEVICE_TOKEN_VERSION
+        ],
+    )?;
     audit(&app.db, &user.id, "key.create", &key, json!({"name":name}))?;
-    Ok(Json(
-        json!({"id":key,"key":token,"command":format!("curl -fsSL -H 'Authorization: Bearer {token}' '{}/api/unit/install.sh' | CC_SWITCH_CONFIGURE_ROUTE=1 CC_SWITCH_RESTART_APP_SERVER=1 bash",public_url(&app.db))}),
-    ))
+    let origin = request_origin(&app.db, &headers);
+    Ok(Json(json!({
+        "id":key,
+        "name":name,
+        "prefix":&token[..12],
+        "active":1,
+        "created_at":created_at,
+        "expires_at":v.expires_at,
+        "token_version":auth::DEVICE_TOKEN_VERSION,
+        "key":token,
+        "command":key_install_command(&token, &origin)
+    })))
+}
+async fn key_command(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path(key): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    if user.csrf.is_none() || user.key_id.is_some() {
+        return Err(Error::forbidden());
+    }
+    let c = conn(&app.db)?;
+    let found = c
+        .query_row(
+            "SELECT name,token_version,active,expires_at
+             FROM hub_api_keys WHERE id=?1 AND user_id=?2",
+            params![key, user.id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| Error::not_found("device_key_not_found", "设备码不存在"))?;
+    let (name, token_version, active, expires_at) = found;
+    if active == 0 || expires_at.is_some_and(|time| time <= now()) {
+        return Err(Error::bad("该设备码已禁用或已过期"));
+    }
+    if token_version != auth::DEVICE_TOKEN_VERSION {
+        return Err(Error::bad(
+            "历史设备码无法恢复原命令，请选择或创建可恢复命令的设备码",
+        ));
+    }
+    drop(c);
+    let token = auth::device_token(&app.db, &user.id, &key);
+    let origin = request_origin(&app.db, &headers);
+    Ok(Json(json!({
+        "id":key,
+        "name":name,
+        "prefix":&token[..12],
+        "token_version":token_version,
+        "command":key_install_command(&token, &origin)
+    })))
 }
 async fn revoke_key(
     State(app): State<Arc<AppState>>,
@@ -378,6 +593,87 @@ async fn revoke_key(
     )?;
     audit(&app.db, &user.id, "key.revoke", &key, json!({}))?;
     Ok(Json(json!({"ok":true})))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct KeyBatchRequest {
+    ids: Vec<String>,
+    action: String,
+}
+async fn batch_keys(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Json(v): Json<KeyBatchRequest>,
+) -> Result<Json<Value>> {
+    if user.csrf.is_none() || user.key_id.is_some() {
+        return Err(Error::forbidden());
+    }
+    let action = match v.action.as_str() {
+        "disable" => "disable",
+        "enable" => "enable",
+        "delete" => "delete",
+        _ => return Err(Error::bad("不支持的设备码操作")),
+    };
+    let mut ids = Vec::with_capacity(v.ids.len());
+    for raw in v.ids {
+        let key = raw.trim();
+        if key.is_empty() {
+            return Err(Error::bad("设备码 ID 不能为空"));
+        }
+        if !ids.iter().any(|existing| existing == key) {
+            ids.push(key.to_owned());
+        }
+    }
+    if ids.is_empty() {
+        return Err(Error::bad("请选择要操作的设备码"));
+    }
+    if ids.len() > 100 {
+        return Err(Error::bad("单次最多操作 100 个设备码"));
+    }
+
+    let mut c = conn(&app.db)?;
+    let tx = c.transaction()?;
+    let mut changed = Vec::new();
+    for key in ids {
+        let affected = match action {
+            "disable" => tx.execute(
+                "UPDATE hub_api_keys SET active=0 WHERE id=?1 AND user_id=?2 AND active=1",
+                params![key, user.id],
+            )?,
+            "enable" => tx.execute(
+                "UPDATE hub_api_keys SET active=1 WHERE id=?1 AND user_id=?2 AND active=0",
+                params![key, user.id],
+            )?,
+            "delete" => tx.execute(
+                "DELETE FROM hub_api_keys WHERE id=?1 AND user_id=?2",
+                params![key, user.id],
+            )?,
+            _ => unreachable!(),
+        };
+        if affected == 0 {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO hub_audit(id,actor,action,target,details,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                id(),
+                user.id,
+                format!("key.{action}"),
+                key,
+                json_text(&json!({"batch":true})),
+                now()
+            ],
+        )?;
+        changed.push(key);
+    }
+    tx.commit()?;
+    Ok(Json(json!({
+        "ok":true,
+        "action":action,
+        "affected":changed.len(),
+        "ids":changed
+    })))
 }
 async fn get_preferences(
     State(app): State<Arc<AppState>>,
@@ -600,11 +896,7 @@ async fn delete_resource(
 }
 
 /// 删除供应商时的统一清理：解绑官方账号并软删除资源。
-pub(super) async fn purge_resource(
-    app: &AppState,
-    owner: &str,
-    resource: &str,
-) -> Result<()> {
+pub(super) async fn purge_resource(app: &AppState, owner: &str, resource: &str) -> Result<()> {
     let r = resources::get(&app.db, resource)?;
     // 官方供应商与官方账号一一对应：删除供应商时同步解绑并移除授权账号，避免账号残留。
     if r.official {
@@ -660,9 +952,7 @@ async fn publication(
             )
             .optional()?;
         let Some(account) = account else {
-            return Err(Error::bad(
-                "请先在“授权中心”登录官方账号，再回来点“加入”",
-            ));
+            return Err(Error::bad("请先在“授权中心”登录官方账号，再回来点“加入”"));
         };
         conn(&app.db)?.execute(
             "UPDATE hub_resources SET account_id=?1 WHERE id=?2",
@@ -814,10 +1104,7 @@ fn validate_requested_deadline(expires_at: Option<i64>) -> Result<()> {
     Ok(())
 }
 
-fn normalize_application_models(
-    r: &resources::Resource,
-    models: &[String],
-) -> Result<Vec<String>> {
+fn normalize_application_models(r: &resources::Resource, models: &[String]) -> Result<Vec<String>> {
     if models.len() > 500 || models.iter().any(|model| model.len() > 200) {
         return Err(Error::bad("申请的模型列表过长"));
     }
@@ -952,15 +1239,19 @@ pub(super) fn list_model_routes(
     let mut merged: Vec<Value> = vec![];
     for row in rows {
         let is_auto = row["auto"].as_bool().unwrap_or(false);
-        if let Some(existing) = is_auto.then(|| {
-            let key = resources::model_group_key(row["model"].as_str().unwrap_or_default());
-            merged.iter_mut().find(|item| {
-                item["auto"].as_bool().unwrap_or(false)
-                    && resources::model_group_key(item["model"].as_str().unwrap_or_default())
-                        == key
+        if let Some(existing) = is_auto
+            .then(|| {
+                let key = resources::model_group_key(row["model"].as_str().unwrap_or_default());
+                merged.iter_mut().find(|item| {
+                    item["auto"].as_bool().unwrap_or(false)
+                        && resources::model_group_key(item["model"].as_str().unwrap_or_default())
+                            == key
+                })
             })
-        }).flatten() {
-            if row["updatedAt"].as_i64().unwrap_or(0) >= existing["updatedAt"].as_i64().unwrap_or(0) {
+            .flatten()
+        {
+            if row["updatedAt"].as_i64().unwrap_or(0) >= existing["updatedAt"].as_i64().unwrap_or(0)
+            {
                 existing["displayName"] = row["displayName"].clone();
                 existing["model"] = row["model"].clone();
                 existing["updatedAt"] = row["updatedAt"].clone();
@@ -1068,7 +1359,10 @@ fn sanitize_model_routes(db: &crate::database::Database, user: &Identity) -> Res
 pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity) -> Result<()> {
     let existing = list_model_routes(db, &user.id)?;
     let mut have = std::collections::HashSet::new();
-    for row in existing.iter().filter(|row| !row["auto"].as_bool().unwrap_or(false)) {
+    for row in existing
+        .iter()
+        .filter(|row| !row["auto"].as_bool().unwrap_or(false))
+    {
         let Some(model) = row["model"].as_str() else {
             continue;
         };
@@ -1081,9 +1375,7 @@ pub(super) fn seed_model_routes(db: &crate::database::Database, user: &Identity)
     }
     for r in resources::all(db)?
         .into_iter()
-        .filter(|r| {
-            r.app_type == "codex" && !r.disabled
-        })
+        .filter(|r| r.app_type == "codex" && !r.disabled)
     {
         for raw in &r.models {
             let Some(model) = raw["slug"].as_str() else {
@@ -1246,8 +1538,7 @@ async fn detect_model_routes(
     let all = resources::all(&app.db)?;
     // 分组键：最后一个 `/` 之后、转小写、去掉特殊字符。
     // 成员保留完整原始模型 ID，用于还原自动路由的基础模型名。
-    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
-        Default::default();
+    let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> = Default::default();
     for r in &all {
         if r.app_type != "codex" || r.disabled {
             continue;
@@ -1270,13 +1561,17 @@ async fn detect_model_routes(
         }
     }
     let existing = list_model_routes(&app.db, &user.id)?;
-    let mut existing_by_key: std::collections::HashMap<String, (String, String, String, Vec<String>)> =
-        Default::default();
+    let mut existing_by_key: std::collections::HashMap<
+        String,
+        (String, String, String, Vec<String>),
+    > = Default::default();
     for row in &existing {
         if !row["auto"].as_bool().unwrap_or(false) {
             continue;
         }
-        let Some(model) = row["model"].as_str() else { continue };
+        let Some(model) = row["model"].as_str() else {
+            continue;
+        };
         existing_by_key.insert(
             resources::model_group_key(model),
             (
@@ -1285,7 +1580,12 @@ async fn detect_model_routes(
                 model.to_string(),
                 row["targets"]
                     .as_array()
-                    .map(|list| list.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
                     .unwrap_or_default(),
             ),
         );
@@ -1317,8 +1617,7 @@ async fn detect_model_routes(
                     targets.push(member.clone());
                 }
             }
-            let generated_name =
-                name == model || looks_generated_auto_name(&name, &base_model);
+            let generated_name = name == model || looks_generated_auto_name(&name, &base_model);
             let model_changed = model != base_model;
             if targets.len() == before && !generated_name && !model_changed {
                 continue;
@@ -1341,7 +1640,10 @@ async fn detect_model_routes(
     }
     if v.apply {
         for candidate in &candidates {
-            let id = candidate["id"].as_str().map(str::to_owned).unwrap_or_else(super::id);
+            let id = candidate["id"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(super::id);
             let model = candidate["model"].as_str().unwrap_or("");
             let group = resources::model_group_key(model);
             let stale = {
@@ -1416,7 +1718,11 @@ async fn create_application(
     }
     let models = normalize_application_models(&r, &v.models)?;
     let auto = auto_approve_budget(&app.db, &r, &v.budget)?;
-    let state = if auto.is_some() { "approved" } else { "pending" };
+    let state = if auto.is_some() {
+        "approved"
+    } else {
+        "pending"
+    };
     let auto_decided = auto.is_some();
     let decided_models_text = if auto_decided {
         json_text(&models)
@@ -1583,7 +1889,11 @@ async fn decide_application(
             &user.id,
             if v.approve { v.expires_at } else { None },
             json_text(&models),
-            if v.approve { json_text(&v.budget) } else { "{}".to_string() },
+            if v.approve {
+                json_text(&v.budget)
+            } else {
+                "{}".to_string()
+            },
             kind,
             note
         ],
@@ -1648,6 +1958,7 @@ struct AccountDeletion {
 /// 注销自己的账号：清理个人数据并停用账号，管理员账号不允许自助注销。
 async fn delete_account(
     State(app): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(user): Extension<Identity>,
     Json(v): Json<AccountDeletion>,
 ) -> Result<Response> {
@@ -1731,7 +2042,10 @@ async fn delete_account(
              (SELECT id FROM hub_share_codes WHERE created_by=?1)",
             [&user.id],
         )?;
-        tx.execute("DELETE FROM hub_share_codes WHERE created_by=?1", [&user.id])?;
+        tx.execute(
+            "DELETE FROM hub_share_codes WHERE created_by=?1",
+            [&user.id],
+        )?;
         tx.execute("DELETE FROM hub_sessions WHERE user_id=?1", [&user.id])?;
         tx.execute("DELETE FROM hub_api_keys WHERE user_id=?1", [&user.id])?;
         tx.execute("DELETE FROM hub_preferences WHERE user_id=?1", [&user.id])?;
@@ -1749,7 +2063,7 @@ async fn delete_account(
     Ok((
         [(
             header::SET_COOKIE,
-            auth::session_cookie("", 0, public_url(&app.db).starts_with("https://")),
+            auth::session_cookie("", 0, request_secure(&app.db, &headers)),
         )],
         Json(json!({"ok":true})),
     )
@@ -1890,13 +2204,7 @@ async fn revoke_share_code(
     if changed == 0 {
         return Err(Error::forbidden());
     }
-    audit(
-        &app.db,
-        &user.id,
-        "share.revoke",
-        &share,
-        json!({}),
-    )?;
+    audit(&app.db, &user.id, "share.revoke", &share, json!({}))?;
     Ok(Json(json!({"ok":true})))
 }
 
@@ -1914,11 +2222,7 @@ async fn claim_share(
     Ok(Json(claim_share_code(&app, &user, &v.token)?))
 }
 
-pub(super) fn claim_share_code(
-    app: &AppState,
-    user: &Identity,
-    token: &str,
-) -> Result<Value> {
+pub(super) fn claim_share_code(app: &AppState, user: &Identity, token: &str) -> Result<Value> {
     let token = token.trim();
     if !(16..=256).contains(&token.len()) {
         return Err(Error::bad("分享口令无效或已失效"));
@@ -1948,12 +2252,18 @@ pub(super) fn claim_share_code(
             },
         )
         .optional()?;
-    let (share_id, resource_id, resource_name, budget, models, expires_at, max_claims, claimed, active) =
-        row.ok_or_else(|| Error::bad("分享口令无效或已失效"))?;
-    if !active
-        || expires_at.is_some_and(|expires| expires <= now())
-        || claimed >= max_claims
-    {
+    let (
+        share_id,
+        resource_id,
+        resource_name,
+        budget,
+        models,
+        expires_at,
+        max_claims,
+        claimed,
+        active,
+    ) = row.ok_or_else(|| Error::bad("分享口令无效或已失效"))?;
+    if !active || expires_at.is_some_and(|expires| expires <= now()) || claimed >= max_claims {
         return Err(Error::bad("分享口令已失效或已被领完"));
     }
     let (owner_id, published, disabled): (String, bool, bool) = tx.query_row(
@@ -2075,8 +2385,7 @@ async fn profile_overview(
             &app.db,
             &format!("grant:{}:{}:{}", r.id, user.id, period_key),
         )?;
-        let shared_usage =
-            bucket_usage(&app.db, &format!("shared:{}:{}", r.id, period_key))?;
+        let shared_usage = bucket_usage(&app.db, &format!("shared:{}:{}", r.id, period_key))?;
         let (budget, supplier_usage, balance_kind) = if owned {
             (
                 r.policy.shared_budget.clone(),
@@ -2177,9 +2486,8 @@ fn prune_model_routes_for_resource(
 ) -> Result<()> {
     let rows = {
         let c = conn(db)?;
-        let mut statement = c.prepare(
-            "SELECT id,model,targets FROM hub_model_routes WHERE targets LIKE ?1",
-        )?;
+        let mut statement =
+            c.prepare("SELECT id,model,targets FROM hub_model_routes WHERE targets LIKE ?1")?;
         let result = statement
             .query_map([format!("%{}%", resource.id)], |row| {
                 Ok((
@@ -2275,10 +2583,12 @@ pub fn installer_response(db: &crate::database::Database, headers: &HeaderMap) -
             .replace('`', "\\`")
             .replace('"', "\\\"")
     };
+    let origin = request_origin(db, headers);
+    let proxy_url = request_proxy_url(db, headers);
     let script = installer_template()
-        .replace("__CC_SWITCH_ORIGIN__", &escaped(&public_url(db)))
+        .replace("__CC_SWITCH_ORIGIN__", &escaped(&origin))
         .replace("__CC_SWITCH_ACCESS_KEY__", &escaped(token))
-        .replace("__CC_SWITCH_PROXY_URL__", &escaped(&proxy_url(db)));
+        .replace("__CC_SWITCH_PROXY_URL__", &escaped(&proxy_url));
     Ok((
         [
             (header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8"),

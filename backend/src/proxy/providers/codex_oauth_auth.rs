@@ -2151,22 +2151,43 @@ fn compute_expires_at_ms(expires_in: Option<i64>) -> i64 {
     now_ms + secs * 1000
 }
 
-fn classify_refresh_failure(status: reqwest::StatusCode, body: &str, refresh_token: &str) -> CodexOAuthError {
+fn classify_refresh_failure(
+    status: reqwest::StatusCode,
+    body: &str,
+    refresh_token: &str,
+) -> CodexOAuthError {
     let code = extract_refresh_error_code(body).unwrap_or_else(|| "unknown".into());
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
-    let message = parsed.as_ref().and_then(|value| {
-        value.pointer("/error/message").and_then(serde_json::Value::as_str)
-            .or_else(|| value.get("error_description").and_then(serde_json::Value::as_str))
-    }).unwrap_or(body);
-    let message = if refresh_token.is_empty() { message.to_string() }
-        else { message.replace(refresh_token, "[REDACTED]") };
+    let message = parsed
+        .as_ref()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    value
+                        .get("error_description")
+                        .and_then(serde_json::Value::as_str)
+                })
+        })
+        .unwrap_or(body);
+    let message = if refresh_token.is_empty() {
+        message.to_string()
+    } else {
+        message.replace(refresh_token, "[REDACTED]")
+    };
     let message: String = message.chars().take(500).collect();
     log::warn!("[CodexOAuth] 刷新接口拒绝: status={status}, code={code}, message={message}");
     // 403 也可能是地区限制、网关或风控；只有明确的 refresh-token 错误才触发凭据恢复。
-    if matches!(code.as_str(), "refresh_token_expired" | "refresh_token_reused" | "refresh_token_invalidated") {
+    if matches!(
+        code.as_str(),
+        "refresh_token_expired" | "refresh_token_reused" | "refresh_token_invalidated"
+    ) {
         CodexOAuthError::RefreshTokenInvalid
     } else {
-        CodexOAuthError::TokenFetchFailed(format!("刷新接口返回 HTTP {status}，code={code}: {message}"))
+        CodexOAuthError::TokenFetchFailed(format!(
+            "刷新接口返回 HTTP {status}，code={code}: {message}"
+        ))
     }
 }
 
@@ -3541,16 +3562,28 @@ mod tests {
 
     #[test]
     fn refresh_failures_preserve_non_credential_rejection_and_redact_token() {
-        let error = classify_refresh_failure(reqwest::StatusCode::FORBIDDEN,
-            r#"{"error":{"code":"unsupported_country_region_territory","message":"region denied"}}"#, "secret-refresh");
+        let error = classify_refresh_failure(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"error":{"code":"unsupported_country_region_territory","message":"region denied"}}"#,
+            "secret-refresh",
+        );
         assert!(matches!(error, CodexOAuthError::TokenFetchFailed(message)
             if message.contains("403") && message.contains("unsupported_country_region_territory")));
-        let error = classify_refresh_failure(reqwest::StatusCode::UNAUTHORIZED,
-            r#"{"error":{"code":"token_expired","message":"bad secret-refresh"}}"#, "secret-refresh");
+        let error = classify_refresh_failure(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error":{"code":"token_expired","message":"bad secret-refresh"}}"#,
+            "secret-refresh",
+        );
         assert!(matches!(error, CodexOAuthError::TokenFetchFailed(message)
             if message.contains("token_expired") && !message.contains("secret-refresh")));
-        assert!(matches!(classify_refresh_failure(reqwest::StatusCode::BAD_REQUEST,
-            r#"{"error":{"code":"refresh_token_reused"}}"#, "secret"), CodexOAuthError::RefreshTokenInvalid));
+        assert!(matches!(
+            classify_refresh_failure(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"refresh_token_reused"}}"#,
+                "secret"
+            ),
+            CodexOAuthError::RefreshTokenInvalid
+        ));
     }
 
     #[test]

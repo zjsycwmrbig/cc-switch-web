@@ -286,6 +286,7 @@ mod tests {
         let db = Database {
             log_count_cache: std::sync::Mutex::new(None),
             conn: Mutex::new(conn),
+            hub_token_secret: [0; 32],
         };
 
         let expected = crate::services::skill::SkillStore::default().repos.len();
@@ -302,6 +303,9 @@ mod tests {
             .init_default_skill_repos()
             .expect("seed default skill repos again");
         assert_eq!(inserted_again, 0);
-        assert_eq!(db.get_skill_repos().expect("repos after reseed").len(), expected);
+        assert_eq!(
+            db.get_skill_repos().expect("repos after reseed").len(),
+            expected
+        );
     }
 }

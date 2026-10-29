@@ -9,7 +9,6 @@ mod hermes;
 mod import_export;
 mod mcp;
 mod misc;
-pub(crate) mod tool_management;
 mod model_fetch;
 mod omo;
 mod openclaw;
@@ -22,6 +21,7 @@ mod skill;
 mod stream_check;
 mod subscription;
 mod sync_support;
+pub(crate) mod tool_management;
 
 mod usage;
 mod webdav_sync;

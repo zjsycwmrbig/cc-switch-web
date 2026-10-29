@@ -18,7 +18,9 @@ pub async fn fetch_models_with_token(
     token: &str,
     account_id: &str,
 ) -> Result<Vec<FetchedModel>, String> {
-    Ok(parse_models(fetch_catalog_with_token(token, account_id).await?))
+    Ok(parse_models(
+        fetch_catalog_with_token(token, account_id).await?,
+    ))
 }
 
 /// 保留窗口、工具能力和指令等原生字段，供聚合目录导出使用。

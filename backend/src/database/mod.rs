@@ -79,6 +79,73 @@ pub(crate) use lock_conn;
 pub struct Database {
     pub(crate) conn: Mutex<Connection>,
     pub(crate) log_count_cache: Mutex<Option<crate::services::usage_stats::LogCountCache>>,
+    pub(crate) hub_token_secret: [u8; 32],
+}
+
+fn random_hub_token_secret() -> [u8; 32] {
+    let mut secret = [0u8; 32];
+    secret[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    secret[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    secret
+}
+
+fn load_or_create_hub_token_secret(config_dir: &std::path::Path) -> Result<[u8; 32], AppError> {
+    use std::io::Write;
+
+    let path = config_dir.join("hub-api-key.secret");
+    if path.exists() {
+        let value = std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+        return decode_hub_token_secret(value.trim()).ok_or_else(|| {
+            AppError::Config(format!(
+                "设备密钥主密钥格式无效，请从备份恢复 {}",
+                path.display()
+            ))
+        });
+    }
+
+    std::fs::create_dir_all(config_dir).map_err(|e| AppError::io(config_dir, e))?;
+    let secret = random_hub_token_secret();
+    let encoded = encode_hub_token_secret(&secret);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(&path) {
+        Ok(mut file) => {
+            file.write_all(encoded.as_bytes())
+                .map_err(|e| AppError::io(&path, e))?;
+            file.sync_all().map_err(|e| AppError::io(&path, e))?;
+            Ok(secret)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let value = std::fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
+            decode_hub_token_secret(value.trim()).ok_or_else(|| {
+                AppError::Config(format!(
+                    "设备密钥主密钥格式无效，请从备份恢复 {}",
+                    path.display()
+                ))
+            })
+        }
+        Err(error) => Err(AppError::io(&path, error)),
+    }
+}
+
+fn encode_hub_token_secret(secret: &[u8; 32]) -> String {
+    secret.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hub_token_secret(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut secret = [0u8; 32];
+    for (index, byte) in secret.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(secret)
 }
 
 fn register_db_change_hook(conn: &Connection) {
@@ -118,10 +185,12 @@ impl Database {
                 .map_err(|e| AppError::Database(e.to_string()))?;
         }
         register_db_change_hook(&conn);
+        let hub_token_secret = load_or_create_hub_token_secret(&get_app_config_dir())?;
 
         let db = Self {
             conn: Mutex::new(conn),
             log_count_cache: Mutex::new(None),
+            hub_token_secret,
         };
         db.create_tables()?;
 
@@ -182,6 +251,7 @@ impl Database {
         let db = Self {
             conn: Mutex::new(conn),
             log_count_cache: Mutex::new(None),
+            hub_token_secret: random_hub_token_secret(),
         };
         db.create_tables()?;
         db.ensure_model_pricing_seeded()?;

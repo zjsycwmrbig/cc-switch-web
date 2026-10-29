@@ -1533,8 +1533,12 @@ fn resolve_stack_target(
     extensions: &http::Extensions,
 ) -> Result<Option<crate::mode::stack::StackTarget>, Box<axum::response::Response>> {
     if let Some(target) = extensions.get::<crate::hub::gateway::ForcedStack>() {
-        if let Some(identity)=extensions.get::<crate::hub::gateway::Authenticated>() {
-            log::debug!("[unit] request={} user={}",identity.request_id,identity.user_id);
+        if let Some(identity) = extensions.get::<crate::hub::gateway::Authenticated>() {
+            log::debug!(
+                "[unit] request={} user={}",
+                identity.request_id,
+                identity.user_id
+            );
         }
         body["model"] = Value::String(target.0.upstream_model.clone());
         return Ok(Some(target.0.clone()));

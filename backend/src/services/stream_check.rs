@@ -387,13 +387,8 @@ impl StreamCheckService {
             == Some("codex_oauth");
 
         let body = if is_openai_responses {
-            anthropic_to_responses(
-                anthropic_body,
-                Some(&provider.id),
-                is_codex_oauth,
-                false,
-            )
-            .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
+            anthropic_to_responses(anthropic_body, Some(&provider.id), is_codex_oauth, false)
+                .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?
         } else if is_gemini_native {
             anthropic_to_gemini(anthropic_body)
                 .map_err(|e| AppError::Message(format!("Failed to build test request: {e}")))?

@@ -1,10 +1,13 @@
 use super::*;
 use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::http::{header, HeaderMap};
+use hmac::{Hmac, Mac};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 pub const COOKIE: &str = "ccswitchuint_session";
+pub const DEVICE_TOKEN_VERSION: i64 = 1;
+type HmacSha256 = Hmac<Sha256>;
 pub fn hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
@@ -14,6 +17,17 @@ pub fn secret() -> String {
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     )
+}
+pub fn device_token(db: &crate::database::Database, user_id: &str, key_id: &str) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(&db.hub_token_secret).expect("HMAC accepts a 32-byte key");
+    mac.update(b"cc-switch-web/hub-device-token/v1\0");
+    mac.update(user_id.as_bytes());
+    mac.update(b"\0");
+    mac.update(key_id.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let suffix: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("ccu_{suffix}")
 }
 pub fn password_hash(password: &str) -> Result<String> {
     if password.chars().count() < 8 || password.len() > 256 {
@@ -104,20 +118,15 @@ pub fn check_csrf(user: &Identity, headers: &HeaderMap) -> Result<()> {
 pub fn check_origin(db: &crate::database::Database, headers: &HeaderMap) -> Result<()> {
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|h| h.to_str().ok()) {
         let url = url::Url::parse(origin).map_err(|_| Error::forbidden())?;
-        let expected = url::Url::parse(&setting(
-            db,
-            "publicUrl",
-            &std::env::var("CC_SWITCH_PUBLIC_URL").unwrap_or_default(),
-        ))
-        .ok();
-        let good = if let Some(expected) = expected {
-            url.origin() == expected.origin()
-        } else {
-            url[url::Position::BeforeHost..url::Position::AfterPort].eq(headers
-                .get(header::HOST)
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or(""))
-        };
+        let actual = url.origin().ascii_serialization();
+        let public = url::Url::parse(&super::api::public_url(db))
+            .ok()
+            .map(|value| value.origin().ascii_serialization());
+        let current = url::Url::parse(&super::api::request_origin(db, headers))
+            .ok()
+            .map(|value| value.origin().ascii_serialization());
+        let good = public.as_deref() == Some(actual.as_str())
+            || current.as_deref() == Some(actual.as_str());
         if !good {
             return Err(Error::forbidden());
         }

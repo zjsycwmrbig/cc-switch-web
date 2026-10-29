@@ -9091,7 +9091,9 @@ pub(crate) fn plan_codex_stack_catalog(
 }
 
 /// 一家第三方供应商在合并目录里的行（`comp_hash` 保持模板的值）。
-pub(crate) fn codex_stack_third_party_rows(row: &CodexCatalogRow<'_>) -> Result<Vec<Value>, AppError> {
+pub(crate) fn codex_stack_third_party_rows(
+    row: &CodexCatalogRow<'_>,
+) -> Result<Vec<Value>, AppError> {
     let specs = codex_published_specs(row.settings, row.config_text);
     if specs.is_empty() {
         return Ok(Vec::new());
@@ -9500,7 +9502,10 @@ mod official_mirror_tests {
             .as_array()
             .unwrap()
             .clone();
-        let slugs: Vec<&str> = models.iter().filter_map(|row| row["slug"].as_str()).collect();
+        let slugs: Vec<&str> = models
+            .iter()
+            .filter_map(|row| row["slug"].as_str())
+            .collect();
         assert_eq!(slugs, vec!["gpt-6-sol", "ccs-openai/gpt-6-sol"]);
         // 官方行的 Lite 协议对第三方不可用，合并时按第三方关闭。
         assert_eq!(models[1]["use_responses_lite"], json!(false));

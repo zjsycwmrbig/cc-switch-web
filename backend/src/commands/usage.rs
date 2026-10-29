@@ -1,9 +1,7 @@
 //! 使用统计相关命令
 
 use crate::error::AppError;
-use crate::services::model_pricing::{
-    ModelPricingInfo, ModelsDevSyncConfig, ModelsDevSyncState,
-};
+use crate::services::model_pricing::{ModelPricingInfo, ModelsDevSyncConfig, ModelsDevSyncState};
 use crate::services::session_usage::{DataSourceSummary, SessionSyncResult};
 use crate::services::usage_stats::*;
 use crate::store::AppState;
@@ -68,9 +66,7 @@ pub fn get_request_detail_internal(
     state.db.get_request_detail(&request_id)
 }
 
-pub async fn sync_session_usage_internal(
-    state: &AppState,
-) -> Result<SessionSyncResult, AppError> {
+pub async fn sync_session_usage_internal(state: &AppState) -> Result<SessionSyncResult, AppError> {
     let db = state.db.clone();
     let _guard = crate::services::session_usage::session_sync_mutex()
         .lock()
@@ -80,9 +76,7 @@ pub async fn sync_session_usage_internal(
         .map_err(|error| AppError::Message(format!("会话用量同步任务失败: {error}")))
 }
 
-pub async fn rebuild_codex_usage_internal(
-    state: &AppState,
-) -> Result<SessionSyncResult, AppError> {
+pub async fn rebuild_codex_usage_internal(state: &AppState) -> Result<SessionSyncResult, AppError> {
     let db = state.db.clone();
     let _guard = crate::services::session_usage::session_sync_mutex()
         .lock()
@@ -210,10 +204,7 @@ pub fn check_provider_limits_internal(
     state.db.check_provider_limits(&provider_id, &app_type)
 }
 
-pub fn delete_model_pricing_internal(
-    state: &AppState,
-    model_id: String,
-) -> Result<(), AppError> {
+pub fn delete_model_pricing_internal(state: &AppState, model_id: String) -> Result<(), AppError> {
     crate::services::model_pricing::delete_model_pricing(&state.db, &model_id)?;
 
     log::info!("已删除模型定价: {model_id}");

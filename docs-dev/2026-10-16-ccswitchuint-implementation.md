@@ -136,3 +136,99 @@
 - `npx --yes pnpm@10.20.0 build:frontend`：通过，产物 `assets/index-DVTgNq8S.js`。
 - 两轮部署均为前端快路径：产物直接落到 `/opt/cc-switch-web/dist`，未重编 Rust、未重启服务；第一次备份 `/root/ccswitchuint-backups/ui-market-card-20261019T160112Z/dist.old`，标题改版备份 `/root/ccswitchuint-backups/ui-title-owner-20261019T160526Z/dist.old`。
 - 线上核对：`/`、入口分块均返回 200，服务端返回的首页哈希与新产物一致，构建分块已包含「<用户名> 的 <供应商名>」标题结构与 `tierLabel` 档位映射；公网 `47.93.170.86:8890` 返回 200。
+
+## 设备密钥恢复、同步选择与转发重试修正
+
+本轮补齐设备密钥的安全恢复流程，并修正聚合同步和转发器中的边界问题。
+
+- 设备密钥改为使用 `/root/.cc-switch-web/hub-api-key.secret` 主密钥进行 HMAC 派生，同一设备可重复获取同步命令，不再依赖首次生成的明文。
+- `hub_api_keys` 新增 `token_version`。旧密钥继续用于鉴权，但旧格式密钥不能用于恢复设备命令，避免把不可验证的令牌当作可恢复凭据。
+- 新增仅限当前网页会话使用的 `GET /api/unit/keys/:id/command`；Bearer 访问和跨用户读取均被拒绝。
+- 聚合同步面板支持多设备选择；用户尚无设备时，首次复制会创建 `default` 设备。
+- 转发器在上游响应头返回前断连时不再重试同一供应商，而是切换到下一个候选，避免重复请求。
+- 多用户测试显式创建设备授权；公开可见资源不再被误认为可直接使用。计量剩余额度统一读取 `user:<id>:lifetime`，与请求开始时的预留桶保持一致。
+
+### 本轮验证
+
+- `cargo test --manifest-path backend/Cargo.toml hub:: -- --test-threads=1`：15 项通过。
+- `cargo test --manifest-path backend/Cargo.toml proxy::forwarder::tests:: -- --test-threads=1`：39 项通过。
+- `npx --yes pnpm@10.20.0 typecheck`：通过。
+- `npx --yes pnpm@10.20.0 exec vitest run tests/components/AggregationSyncPanel.test.tsx`：10 项通过。
+- `PATH=/root/.cargo/bin:$PATH npx --yes pnpm@10.20.0 build`：前端与 Rust release 构建通过。
+- `git diff --check`：通过。
+
+### 本轮部署结果
+
+- 部署时间：2026-10-27 17:28（Asia/Shanghai）。
+- 回滚备份：`/root/ccswitchuint-backups/full-20261027T092721Z/`，包含旧二进制、旧前端、环境文件、systemd unit/drop-in、主密钥副本和 SQLite 一致性快照；备份数据库 `quick_check` 为 `ok`。
+- 部署前二进制 SHA256：`6dee8fa049e094391c336173cef6f19998322f813ceaf171bb475fa1cd42d655`。
+- 新二进制 SHA256：`adfedf2841477639e06aec5f72cb5f3a98bad88a72dc9669fb4786b1c89615f5`，部署文件与运行中 `/proc/<PID>/exe` 哈希一致。
+- `cc-switch-web.service` 状态为 `active (running)`，监听 `127.0.0.1:8890`；路由代理恢复监听 `127.0.0.1:15721`。
+- 本地和公网健康接口均返回 `{"status":"ok","mode":"local-rust-service"}`，本地与公网首页均返回 200。
+- 生产数据库 `quick_check` 为 `ok`，`hub_api_keys` 已包含 `token_version`，主密钥权限为 `0600`。
+- 未认证访问 `/api/unit/keys/x/command` 返回 `401`。
+- 新前端入口为 `assets/index-auQzcIPj.js`，样式为 `assets/index-BayTaB62.css`。
+
+## 新旧设备码统一与批量管理
+
+本轮把历史设备码和当前可恢复命令的设备码收回同一套管理视图，补齐批量启停与删除能力。
+
+- 聚合同步面板直接展示当前账号的全部可用设备码，包括仅有鉴权用途的历史设备码；历史设备码不再被隐藏，但不能恢复原同步命令，界面会明确提示。
+- 已有设备码时按创建时间倒序默认选择最新设备，不再读取本地保存的旧选择；用户仍可在下拉框中手动切换。列表中已禁用或已过期的设备不参与同步设备选择。
+- 设备码列表按 `created_at DESC, rowid DESC` 稳定倒序返回，并携带 `token_version`，供前端区分可恢复命令的设备码与历史设备码。
+- 设备码管理新增全选、半选和逐行选择，支持单条或批量启用、禁用、删除；删除前二次确认，并提示历史请求记录会保留。
+- 新增 `POST /api/unit/keys/batch`，支持 `disable`、`enable`、`delete`，单次最多处理 100 个去重 ID。接口只接受带 CSRF 的网页会话，严格按当前用户隔离并在事务内执行。
+- 每个实际发生变化的设备码分别写入 `key.disable`、`key.enable` 或 `key.delete` 审计记录；删除设备码不会删除已有 `hub_requests` 历史。原单条 `DELETE /api/unit/keys/:id` 继续保持撤销语义。
+
+### 本轮验证
+
+- `npx --yes pnpm@10.20.0 typecheck`：通过。
+- `npx --yes pnpm@10.20.0 exec vitest run tests/components/AggregationSyncPanel.test.tsx`：10 项通过，覆盖默认选择最新设备、历史设备码统一展示和首次创建 `default` 的并发防重。
+- `cargo test --manifest-path backend/Cargo.toml hub:: -- --test-threads=1`：16 项通过，覆盖批量启停删、鉴权和 CSRF 拒绝、跨用户隔离以及删除审计。
+- `PATH=/root/.cargo/bin:$PATH npx --yes pnpm@10.20.0 build`：前端与 Rust release 构建通过。
+- `git diff --check`：通过。
+
+### 本轮部署结果
+
+- 部署时间：2026-10-27 17:48（Asia/Shanghai）。
+- 回滚备份：`/root/ccswitchuint-backups/full-20261027T094748Z/`，包含旧二进制、旧前端、环境文件、systemd unit/drop-in、主密钥副本和 SQLite 一致性快照；备份数据库 `quick_check` 为 `ok`。
+- 部署前二进制 SHA256：`adfedf2841477639e06aec5f72cb5f3a98bad88a72dc9669fb4786b1c89615f5`。
+- 新二进制 SHA256：`bf5ad9a9a29ab70ba26a13590b67d0ebaf1d1ea3b0e7ec3d7a0a33eb4b101b56`，部署文件与运行中 `/proc/<PID>/exe` 哈希一致。
+- `cc-switch-web.service` 状态为 `active (running)`，监听 `127.0.0.1:8890`；路由代理监听 `127.0.0.1:15721`。
+- 本地和公网健康接口均返回 `{"status":"ok","mode":"local-rust-service"}`，本地与公网首页均返回 200，生产数据库 `quick_check` 为 `ok`。
+- 未认证访问 `POST /api/unit/keys/batch` 返回 `401`。
+- 新前端入口为 `assets/index-Bn13WSNz.js`，样式为 `assets/index-DiSMC3r1.css`；线上 HTML 引用与公网静态资源均核对为 200。
+
+## 接入命令按当前访问地址动态生成
+
+本轮解决“模型与接入”复制命令固定使用 `127.0.0.1:8890`、无法从其他内网地址使用的问题。
+
+- 新增请求地址解析：优先读取首个 `X-Forwarded-Host`，其次读取 `Host`；协议优先读取 `X-Forwarded-Proto`，仅接受 `http`、`https`。
+- 设备码创建、设备码命令恢复和安装脚本下载统一使用当前访问 origin，自动保留内网 IP、端口和反向代理域名。
+- 模型代理地址为 loopback（`127.0.0.1`、`localhost`、`::1`），或代理主机与 `publicUrl` 主机相同时，只替换主机名并保留端口与 `/v1` 路径；只有代理主机与公开入口不同、明确指向独立域名或网关时才保持原样。生产配置中的公网 IP 代理因此也会随内网访问地址切换。
+- `CC_SWITCH_PUBLIC_URL` 和平台 `publicUrl` 保留为缺少有效 Host 时的回退值，同时继续作为允许的 Origin。
+- 来源校验同时接受公开 URL 和当前请求 Host 对应的 Origin，保留 CSRF token 校验；内网 HTTP 访问不会再因公网 HTTPS 配置被拒绝。
+- 会话 Cookie 的 `Secure` 属性改为按当前请求协议判断，避免公网 HTTPS 配置导致内网 HTTP 登录态无法保存。
+- Host 会经过 URL 解析和字符校验；无效或带路径、用户信息、空白字符的地址不会进入生成命令。
+
+### 本轮验证
+
+- `PATH=/root/.cargo/bin:$PATH cargo check --manifest-path backend/Cargo.toml`：通过。
+- `PATH=/root/.cargo/bin:$PATH cargo test --manifest-path backend/Cargo.toml hub:: -- --test-threads=1`：20 项通过。
+- 新增测试覆盖当前 Host/端口替换、`X-Forwarded-Host` 与 `X-Forwarded-Proto`、内网 Origin 放行、跨 Host Origin 拒绝、loopback 与公开入口同主机代理替换、独立外部代理保持，以及真机安装脚本内容。
+- `npx --yes pnpm@10.20.0 typecheck`：通过。
+- `npx --yes pnpm@10.20.0 exec vitest run tests/components/AggregationSyncPanel.test.tsx`：10 项通过。
+- `PATH=/root/.cargo/bin:$PATH npx --yes pnpm@10.20.0 build`：前端与 Rust release 构建通过。
+- `git diff --check`：通过。
+
+### 本轮部署结果
+
+- 部署时间：2026-10-28 19:34（Asia/Shanghai）。
+- 回滚备份：`/root/ccswitchuint-backups/full-20261028T113352Z/`，包含旧二进制、旧前端、环境文件、安装脚本、systemd unit/drop-in、主密钥及运行配置副本和 SQLite 一致性快照；备份数据库 `quick_check` 为 `ok`。
+- 部署前二进制 SHA256：`246a3ce5d3637dc7e8f32d03351d530c7492f4c7d994d5d37b424da1a29534b7`。
+- 新二进制 SHA256：`67e35df0d27117bdff9a9d89078ac9089a15e7f96588bee660a2bfcf540f774a`，部署文件与运行中 `/proc/<PID>/exe` 哈希一致。
+- `cc-switch-web.service` 状态为 `active (running)`，监听 `0.0.0.0:8890`；路由代理恢复监听 `127.0.0.1:15721`，启动日志无错误或 panic。
+- 本地和公网健康接口均返回 `{"status":"ok","mode":"local-rust-service"}`，本地与公网首页均返回 200，公网前端入口资源返回 200。
+- 生产数据库 `quick_check` 为 `ok`，版本为 20；主密钥权限为 `0600`。
+- 未认证访问 `/api/unit/keys/not-a-key/command` 返回 `401`。
+- 新前端入口为 `assets/index-PKy1HO1v.js`，样式为 `assets/index-DiSMC3r1.css`。

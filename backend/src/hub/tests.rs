@@ -11,6 +11,7 @@ use crate::{
     },
     store::AppState,
 };
+use axum::http::{header, HeaderMap};
 use rusqlite::params;
 use std::collections::HashSet;
 use std::future::IntoFuture;
@@ -45,6 +46,125 @@ fn identity(name: &str) -> Identity {
         csrf: None,
     }
 }
+#[test]
+fn request_addresses_follow_the_current_host_and_proxy_overrides() {
+    let db = database();
+    let c = conn(&db).unwrap();
+    c.execute(
+        "INSERT OR REPLACE INTO hub_settings(key,value) VALUES
+            ('publicUrl','http://127.0.0.1:8890')",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT OR REPLACE INTO hub_settings(key,value) VALUES
+            ('publicProxyUrl','http://127.0.0.1:15721/v1')",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, "192.168.1.20:8890".parse().unwrap());
+    assert_eq!(
+        api::request_origin(&db, &headers),
+        "http://192.168.1.20:8890"
+    );
+    assert_eq!(
+        api::request_proxy_url(&db, &headers),
+        "http://192.168.1.20:15721/v1"
+    );
+    assert!(!api::request_secure(&db, &headers));
+
+    headers.insert("x-forwarded-host", "cc.example.com".parse().unwrap());
+    headers.insert("x-forwarded-proto", "https".parse().unwrap());
+    assert_eq!(api::request_origin(&db, &headers), "https://cc.example.com");
+    assert_eq!(
+        api::request_proxy_url(&db, &headers),
+        "http://cc.example.com:15721/v1"
+    );
+    assert!(api::request_secure(&db, &headers));
+
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_settings SET value='https://gateway.example.com/v1'
+             WHERE key='publicProxyUrl'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        api::request_proxy_url(&db, &headers),
+        "https://gateway.example.com/v1"
+    );
+}
+#[test]
+fn proxy_on_the_public_host_follows_the_current_request_host() {
+    let db = database();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) VALUES
+                ('publicUrl','http://47.93.170.86:8890'),
+                ('publicProxyUrl','http://47.93.170.86:15721/v1')",
+            [],
+        )
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, "192.168.1.20:8890".parse().unwrap());
+    assert_eq!(
+        api::request_proxy_url(&db, &headers),
+        "http://192.168.1.20:15721/v1"
+    );
+
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_settings SET value='http://gateway.internal:15721/v1'
+             WHERE key='publicProxyUrl'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        api::request_proxy_url(&db, &headers),
+        "http://gateway.internal:15721/v1"
+    );
+}
+#[test]
+fn origin_check_accepts_the_current_request_host() {
+    let db = database();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) VALUES
+                ('publicUrl','http://127.0.0.1:8890')",
+            [],
+        )
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, "192.168.1.20:8890".parse().unwrap());
+    headers.insert(header::ORIGIN, "http://192.168.1.20:8890".parse().unwrap());
+    assert!(auth::check_origin(&db, &headers).is_ok());
+
+    headers.insert(header::ORIGIN, "http://192.168.1.21:8890".parse().unwrap());
+    assert!(auth::check_origin(&db, &headers).is_err());
+
+    headers.insert("x-forwarded-host", "cc.example.com".parse().unwrap());
+    headers.insert("x-forwarded-proto", "https".parse().unwrap());
+    headers.insert(header::ORIGIN, "https://cc.example.com".parse().unwrap());
+    assert!(auth::check_origin(&db, &headers).is_ok());
+}
+fn grant_access(db: &Database, resource: &str, user: &str, budget: &str, models: &str) {
+    conn(db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_grants(resource_id,user_id,allowed,budget,models)
+             VALUES(?1,?2,1,?3,?4)
+             ON CONFLICT(resource_id,user_id) DO UPDATE SET
+                allowed=1,budget=excluded.budget,models=excluded.models",
+            params![resource, user, budget, models],
+        )
+        .unwrap();
+}
 fn app(db: Arc<Database>) -> Arc<AppState> {
     let dir = tempfile::tempdir().unwrap().keep();
     let cop = Arc::new(RwLock::new(CopilotAuthManager::new(dir.join("copilot"))));
@@ -64,6 +184,22 @@ fn app(db: Arc<Database>) -> Arc<AppState> {
         proxy_service,
         mode_startup_errors: Arc::new(RwLock::new(Default::default())),
     })
+}
+async fn batch_device_keys(
+    client: &reqwest::Client,
+    base: &str,
+    cookie: &str,
+    ids: &[&str],
+    action: &str,
+) -> reqwest::Response {
+    client
+        .post(format!("{base}/api/unit/keys/batch"))
+        .header("Cookie", cookie)
+        .header("x-csrf-token", "alice-csrf")
+        .json(&json!({"ids":ids,"action":action}))
+        .send()
+        .await
+        .unwrap()
 }
 fn resource(
     db: &Database,
@@ -121,10 +257,18 @@ fn public_private_and_model_specific_grants_are_enforced() {
     let db = database();
     let mut r = resource(&db, "test", "admin", "https://example.com/v1", false);
     let alice = identity("alice");
-    assert!(resources::usable(&db, &alice, &r, "test-model").is_ok());
+    assert!(resources::usable(&db, &alice, &r, "test-model").is_err());
+    r.policy.visibility = "public".into();
+    assert!(resources::usable(&db, &alice, &r, "test-model").is_err());
     r.policy.visibility = "selected".into();
     assert!(resources::grant(&db, &alice, &r, Some("test-model")).is_err());
-    conn(&db).unwrap().execute("INSERT INTO hub_grants(resource_id,user_id,allowed,models,budget) VALUES('test','alice',1,'[\"test-model\"]','{\"requests\":5}')",[]).unwrap();
+    grant_access(
+        &db,
+        "test",
+        "alice",
+        r#"{"requests":5}"#,
+        r#"["test-model"]"#,
+    );
     assert_eq!(
         resources::grant(&db, &alice, &r, Some("test-model"))
             .unwrap()
@@ -266,23 +410,13 @@ fn share_codes_enforce_lifecycle_and_create_explicit_grants() {
     );
     let state = app(db.clone());
     let alice = identity("alice");
-    let claimed =
-        api::claim_share_code(&state, &alice, "ccu_share_token_active").unwrap();
+    let claimed = api::claim_share_code(&state, &alice, "ccu_share_token_active").unwrap();
     assert_eq!(claimed["resourceId"], "test");
     assert_eq!(claimed["budget"]["requests"], 5);
     assert!(api::claim_share_code(&state, &alice, "ccu_share_token_active").is_err());
-    assert!(
-        api::claim_share_code(&state, &identity("bob"), "ccu_share_token_expired")
-            .is_err()
-    );
-    assert!(
-        api::claim_share_code(&state, &identity("bob"), "ccu_share_token_revoked")
-            .is_err()
-    );
-    assert!(
-        api::claim_share_code(&state, &identity("bob"), "ccu_share_token_exhausted")
-            .is_err()
-    );
+    assert!(api::claim_share_code(&state, &identity("bob"), "ccu_share_token_expired").is_err());
+    assert!(api::claim_share_code(&state, &identity("bob"), "ccu_share_token_revoked").is_err());
+    assert!(api::claim_share_code(&state, &identity("bob"), "ccu_share_token_exhausted").is_err());
     assert_eq!(
         resources::grant(&db, &alice, &r, Some("test-model"))
             .unwrap()
@@ -349,7 +483,7 @@ fn concurrent_share_claims_allow_exactly_one_winner() {
 }
 
 #[tokio::test]
-async fn profile_overview_only_returns_visible_or_authorized_suppliers() {
+async fn profile_overview_only_returns_owned_or_authorized_suppliers() {
     let db = database();
     let mine = resource(&db, "mine", "alice", "https://example.com/v1", false);
     let mine_policy = Policy {
@@ -366,7 +500,7 @@ async fn profile_overview_only_returns_visible_or_authorized_suppliers() {
             [json_text(&mine_policy)],
         )
         .unwrap();
-    let shared_bucket = format!("shared:mine:{}", metering::period("month"));
+    let shared_bucket = format!("shared:mine:{}", metering::period("lifetime"));
     conn(&db)
         .unwrap()
         .execute(
@@ -436,7 +570,7 @@ async fn profile_overview_only_returns_visible_or_authorized_suppliers() {
         .iter()
         .filter_map(|supplier| supplier["id"].as_str())
         .collect::<HashSet<_>>();
-    assert_eq!(ids, HashSet::from(["mine", "public", "selected"]));
+    assert_eq!(ids, HashSet::from(["mine", "selected"]));
     let mine = suppliers
         .iter()
         .find(|supplier| supplier["id"] == mine.id)
@@ -462,10 +596,7 @@ fn reservations_serialize_competing_requests_and_settle_once() {
     let db = database();
     conn(&db)
         .unwrap()
-        .execute(
-            "UPDATE hub_users SET budget='{\"requests\":1}' WHERE id='alice'",
-            [],
-        )
+        .execute("UPDATE hub_users SET concurrency=1 WHERE id='alice'", [])
         .unwrap();
     let amount = metering::Amount {
         requests: 1,
@@ -556,6 +687,7 @@ fn retry_releases_resource_holds_but_keeps_one_consumer_reservation() {
     let db = database();
     let r = resource(&db, "test", "admin", "https://example.com/v1", false);
     let user = identity("alice");
+    grant_access(&db, "test", "alice", "{}", "[]");
     let amount = metering::Amount {
         requests: 1,
         tokens: 100,
@@ -629,6 +761,8 @@ async fn streamed_usage_settles_and_disconnected_stream_keeps_its_reservation() 
     let task = tokio::spawn(axum::serve(listener, upstream).into_future());
     let db = database();
     resource(&db, "test", "admin", &base, false);
+    grant_access(&db, "test", "alice", "{}", "[]");
+    grant_access(&db, "test", "bob", "{}", "[]");
     let proxy = proxy(db.clone()).await;
     let endpoint = format!(
         "http://127.0.0.1:{}/v1/responses",
@@ -690,6 +824,14 @@ async fn streamed_usage_settles_and_disconnected_stream_keeps_its_reservation() 
 #[tokio::test]
 async fn authentication_and_resource_routes_do_not_expose_other_users_secrets() {
     let db = database();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value)
+             VALUES('publicProxyUrl','http://127.0.0.1:15721/v1')",
+            [],
+        )
+        .unwrap();
     resource(&db, "test", "admin", "https://example.com/v1", false);
     let encoded = auth::password_hash("test-password-123").unwrap();
     conn(&db)
@@ -776,6 +918,7 @@ async fn authentication_and_resource_routes_do_not_expose_other_users_secrets() 
     let created: Value = client
         .post(format!("{base}/api/unit/keys"))
         .header("Cookie", &cookie)
+        .header("Origin", base.as_str())
         .header("x-csrf-token", me["user"]["csrf"].as_str().unwrap())
         .json(&json!({"name":"device"}))
         .send()
@@ -785,6 +928,59 @@ async fn authentication_and_resource_routes_do_not_expose_other_users_secrets() 
         .await
         .unwrap();
     assert!(created["key"].as_str().unwrap().starts_with("ccu_"));
+    assert_eq!(created["token_version"], 1);
+    assert!(created["command"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("{base}/api/unit/install.sh")));
+    let copied: Value = client
+        .get(format!(
+            "{base}/api/unit/keys/{}/command",
+            created["id"].as_str().unwrap()
+        ))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(copied["command"], created["command"]);
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/unit/keys/{}/command",
+                created["id"].as_str().unwrap()
+            ))
+            .bearer_auth(created["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/api/unit/catalog"))
+            .bearer_auth(created["key"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let installer = client
+        .get(format!("{base}/api/unit/install.sh"))
+        .bearer_auth(created["key"].as_str().unwrap())
+        .header("x-forwarded-host", "cc.example.com")
+        .header("x-forwarded-proto", "https")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(installer.status(), 200);
+    let installer = installer.text().await.unwrap();
+    assert!(installer.contains("https://cc.example.com"));
+    assert!(installer.contains("http://cc.example.com:15721/v1"));
     let keys = client
         .get(format!("{base}/api/unit/keys"))
         .header("Cookie", &cookie)
@@ -796,6 +992,356 @@ async fn authentication_and_resource_routes_do_not_expose_other_users_secrets() 
         .unwrap();
     assert!(!keys.contains(created["key"].as_str().unwrap()));
     assert!(!keys.contains("token_hash"));
+    assert!(keys.contains("\"token_version\":1"));
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_api_keys(
+                id,user_id,name,token_hash,prefix,created_at,token_version
+             ) VALUES('legacy-device','alice','legacy',?1,'legacy',?2,0)",
+            params![auth::hash("legacy-token"), now()],
+        )
+        .unwrap();
+    let legacy = client
+        .get(format!("{base}/api/unit/keys/legacy-device/command"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(legacy.status(), 400);
+    assert!(legacy
+        .text()
+        .await
+        .unwrap()
+        .contains("历史设备码无法恢复原命令"));
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'bob','bob-csrf',?2,?3)",
+            params![auth::hash("bob-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+    let other_user_command = client
+        .get(format!(
+            "{base}/api/unit/keys/{}/command",
+            created["id"].as_str().unwrap()
+        ))
+        .header(
+            "Cookie",
+            format!("{}={}", auth::COOKIE, "bob-session-token"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other_user_command.status(), 404);
+    task.abort();
+}
+#[tokio::test]
+async fn library_usage_allows_private_owner_but_rejects_other_users() {
+    let db = database();
+    let upstream = axum::Router::new().route(
+        "/balance",
+        axum::routing::get(|| async { Json(json!({"balance":12.5})) }),
+    );
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_base = format!("http://{}", upstream_listener.local_addr().unwrap());
+    let upstream_task =
+        tokio::spawn(axum::serve(upstream_listener, upstream).into_future());
+    resource(&db, "alice-private", "alice", &upstream_base, false);
+    resource(&db, "bob-private", "bob", "https://example.com/v1", false);
+    let mut provider = db
+        .get_provider_by_id("alice-private", "codex")
+        .unwrap()
+        .unwrap();
+    let usage_code = r#"({
+        request: {
+            url: "__BALANCE_URL__",
+            method: "GET",
+            headers: {}
+        },
+        extractor: function(response) {
+            return { remaining: response.balance, unit: "USD" };
+        }
+    })"#
+        .replace("__BALANCE_URL__", &format!("{upstream_base}/balance"));
+    provider.meta = Some(crate::provider::ProviderMeta {
+        usage_script: Some(crate::provider::UsageScript {
+            enabled: true,
+            language: "javascript".into(),
+            code: usage_code,
+            timeout: Some(5),
+            api_key: None,
+            base_url: Some(upstream_base.clone()),
+            access_token: None,
+            user_id: None,
+            template_type: Some("custom".into()),
+            coding_plan_provider: None,
+            auto_query_interval: None,
+        }),
+        ..Default::default()
+    });
+    db.save_provider("codex", &provider).unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET published=0 WHERE id IN ('alice-private','bob-private')",
+            [],
+        )
+        .unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'alice','alice-csrf',?2,?3)",
+            params![auth::hash("alice-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+    let state = app(db.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, api::routes(state)).into_future());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let cookie = format!("{}={}", auth::COOKIE, "alice-session-token");
+
+    let own_private = client
+        .get(format!(
+            "{base}/api/unit/ui/library/codex/alice-private/usage"
+        ))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(own_private.status(), 200);
+    let own_private: Value = own_private.json().await.unwrap();
+    assert_eq!(own_private["success"], true);
+    assert_eq!(own_private["data"][0]["remaining"], 12.5);
+
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/unit/ui/library/codex/bob-private/usage"
+            ))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET disabled=1 WHERE id='alice-private'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/unit/ui/library/codex/alice-private/usage"
+            ))
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    conn(&db)
+        .unwrap()
+        .execute(
+            "UPDATE hub_resources SET disabled=0,published=1 WHERE id='alice-private'",
+            [],
+        )
+        .unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'bob','bob-csrf',?2,?3)",
+            params![auth::hash("bob-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/unit/ui/library/codex/alice-private/usage"
+            ))
+            .header(
+                "Cookie",
+                format!("{}={}", auth::COOKIE, "bob-session-token"),
+            )
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    task.abort();
+    upstream_task.abort();
+}
+#[tokio::test]
+async fn device_key_batch_actions_are_scoped_and_require_a_web_session() {
+    let db = database();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'alice','alice-csrf',?2,?3)",
+            params![auth::hash("alice-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+    let app = app(db.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, api::routes(app)).into_future());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let cookie = format!("{}={}", auth::COOKIE, "alice-session-token");
+
+    let mut created = Vec::new();
+    for name in ["first", "second"] {
+        let response = client
+            .post(format!("{base}/api/unit/keys"))
+            .header("Cookie", &cookie)
+            .header("x-csrf-token", "alice-csrf")
+            .json(&json!({"name":name,"expiresAt":null}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        created.push(response.json::<Value>().await.unwrap());
+    }
+    let first_id = created[0]["id"].as_str().unwrap();
+    let second_id = created[1]["id"].as_str().unwrap();
+    let first_token = created[0]["key"].as_str().unwrap();
+
+    let disabled = batch_device_keys(
+        &client,
+        &base,
+        &cookie,
+        &[first_id, second_id, "bob"],
+        "disable",
+    )
+    .await;
+    assert_eq!(disabled.status(), 200);
+    let disabled: Value = disabled.json().await.unwrap();
+    assert_eq!(disabled["affected"], 2);
+    assert_eq!(
+        client
+            .get(format!("{base}/api/unit/catalog"))
+            .bearer_auth(first_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    {
+        let c = conn(&db).unwrap();
+        for id in [first_id, second_id] {
+            let active: i64 = c
+                .query_row("SELECT active FROM hub_api_keys WHERE id=?1", [id], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(active, 0);
+        }
+        let bob_active: i64 = c
+            .query_row(
+                "SELECT active FROM hub_api_keys WHERE id='bob'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob_active, 1);
+    }
+
+    assert_eq!(
+        client
+            .post(format!("{base}/api/unit/keys/batch"))
+            .bearer_auth(first_token)
+            .json(&json!({"ids":[first_id],"action":"enable"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/api/unit/keys/batch"))
+            .header("Cookie", &cookie)
+            .json(&json!({"ids":[first_id],"action":"enable"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        batch_device_keys(&client, &base, &cookie, &[], "enable")
+            .await
+            .status(),
+        400
+    );
+    assert_eq!(
+        batch_device_keys(&client, &base, &cookie, &[first_id], "unknown")
+            .await
+            .status(),
+        400
+    );
+
+    let enabled =
+        batch_device_keys(&client, &base, &cookie, &[first_id, second_id], "enable").await;
+    assert_eq!(enabled.status(), 200);
+    assert_eq!(enabled.json::<Value>().await.unwrap()["affected"], 2);
+    assert_eq!(
+        client
+            .get(format!("{base}/api/unit/catalog"))
+            .bearer_auth(first_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    let deleted = batch_device_keys(&client, &base, &cookie, &[first_id, "bob"], "delete").await;
+    assert_eq!(deleted.status(), 200);
+    assert_eq!(deleted.json::<Value>().await.unwrap()["affected"], 1);
+    {
+        let c = conn(&db).unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM hub_api_keys WHERE id=?1",
+                [first_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM hub_api_keys WHERE id='bob'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM hub_audit WHERE action='key.delete' AND target=?1",
+                [first_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
     task.abort();
 }
 async fn proxy(db: Arc<Database>) -> ProxyServer {
@@ -826,6 +1372,8 @@ async fn gateway_injects_upstream_key_and_records_consumer_provider_device() {
     let task = tokio::spawn(axum::serve(listener, upstream).into_future());
     let db = database();
     resource(&db, "test", "admin", &upstream_base, false);
+    grant_access(&db, "test", "alice", "{}", "[]");
+    grant_access(&db, "test", "bob", "{}", "[]");
     let proxy = proxy(db.clone()).await;
     let base = format!("http://127.0.0.1:{}", proxy.get_status().await.port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -909,6 +1457,8 @@ async fn official_pool_rotates_only_among_authorized_candidates() {
     let db = database();
     resource(&db, "a", "admin", &first_base, true);
     resource(&db, "b", "bob", &second_base, true);
+    grant_access(&db, "a", "alice", "{}", "[]");
+    grant_access(&db, "b", "alice", "{}", "[]");
     let hidden = resource(&db, "c", "bob", &second_base, true);
     conn(&db)
         .unwrap()

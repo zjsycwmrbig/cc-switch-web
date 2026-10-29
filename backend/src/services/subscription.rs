@@ -269,7 +269,9 @@ fn read_claude_credentials() -> (Option<String>, CredentialStatus, Option<String
     parse_claude_credentials_json(&content)
 }
 
-fn parse_claude_credentials_json(content: &str) -> (Option<String>, CredentialStatus, Option<String>) {
+fn parse_claude_credentials_json(
+    content: &str,
+) -> (Option<String>, CredentialStatus, Option<String>) {
     let parsed: serde_json::Value = match serde_json::from_str(&content) {
         Ok(value) => value,
         Err(error) => {
@@ -774,7 +776,9 @@ pub async fn query_codex_quota(
         query_codex_usage(access_token, account_id, tool, expired_hint),
         query_codex_reset_credits(access_token, account_id),
     );
-    if quota.success { quota.reset_credits = reset_credits; }
+    if quota.success {
+        quota.reset_credits = reset_credits;
+    }
     quota
 }
 
@@ -1429,8 +1433,6 @@ mod tests {
         .unwrap();
         assert!(quota.reset_credits.is_none());
     }
-
-
 }
 
 /// Codex 在 Keychain 里存登录用的账户名：`cli|` 加规范化后的 Codex 配置目录路径的

@@ -150,7 +150,10 @@ fn codex_live_routes_to_own_proxy(state: &AppState) -> bool {
     let port = config.listen_port;
     let mut needles = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     let address = config.listen_address.trim();
-    if !address.is_empty() && address != "0.0.0.0" && address != "127.0.0.1" && address != "localhost"
+    if !address.is_empty()
+        && address != "0.0.0.0"
+        && address != "127.0.0.1"
+        && address != "localhost"
     {
         needles.push(format!("{address}:{port}"));
     }
@@ -3805,7 +3808,10 @@ impl ProviderService {
         .await
     }
 
-    pub(crate) fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+    pub(crate) fn validate_provider_settings(
+        app_type: &AppType,
+        provider: &Provider,
+    ) -> Result<(), AppError> {
         match app_type {
             AppType::Claude | AppType::ClaudeDesktop => {
                 if !provider.settings_config.is_object() {

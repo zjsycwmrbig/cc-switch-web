@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
 
-use indexmap::IndexMap;
 use crate::app_config::AppType;
 use crate::services::mcp::McpService;
 use crate::store::AppState;
+use indexmap::IndexMap;
 use std::str::FromStr;
 
 // ============================================================================

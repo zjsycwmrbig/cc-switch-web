@@ -503,21 +503,25 @@ impl Database {
                         Self::set_user_version(conn, 16)?;
                     }
                     16 => {
-                        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+                        crate::hub::schema::create(conn)
+                            .map_err(|e| AppError::Database(e.to_string()))?;
                         Self::set_user_version(conn, 17)?;
                     }
                     17 => {
-                        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+                        crate::hub::schema::create(conn)
+                            .map_err(|e| AppError::Database(e.to_string()))?;
                         Self::set_user_version(conn, 18)?;
                     }
                     18 => {
                         log::info!("迁移数据库从 v18 到 v19（供应商库申请与免审规则）");
-                        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+                        crate::hub::schema::create(conn)
+                            .map_err(|e| AppError::Database(e.to_string()))?;
                         Self::set_user_version(conn, 19)?;
                     }
                     19 => {
                         log::info!("迁移数据库从 v19 到 v20（模型自动路由映射）");
-                        crate::hub::schema::create(conn).map_err(|e| AppError::Database(e.to_string()))?;
+                        crate::hub::schema::create(conn)
+                            .map_err(|e| AppError::Database(e.to_string()))?;
                         Self::set_user_version(conn, 20)?;
                     }
                     _ => {

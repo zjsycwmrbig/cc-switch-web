@@ -501,7 +501,11 @@ pub(crate) fn has_suspected_codex_session_duplicate(
 impl Database {
     /// 获取使用量汇总
     /// 会话页仅汇总客户端会话导入行，避免与代理记录重复。
-    pub fn get_session_usage_summary(&self, app_type: &str, session_id: &str) -> Result<UsageSummary, AppError> {
+    pub fn get_session_usage_summary(
+        &self,
+        app_type: &str,
+        session_id: &str,
+    ) -> Result<UsageSummary, AppError> {
         let conn = lock_conn!(self.conn);
         let source = "COALESCE(l.data_source, 'proxy')";
         let app = "CASE WHEN l.app_type = 'claude-desktop' THEN 'claude' ELSE l.app_type END";
@@ -1718,7 +1722,13 @@ mod tests {
 
         let summary = db.get_session_usage_summary("claude", "sess-a")?;
         assert_eq!(summary.total_requests, 2);
-        assert_eq!(summary.total_input_tokens + summary.total_output_tokens + summary.total_cache_read_tokens + summary.total_cache_creation_tokens, 10 + 200 + 5000 + 20 + 300 + 7000);
+        assert_eq!(
+            summary.total_input_tokens
+                + summary.total_output_tokens
+                + summary.total_cache_read_tokens
+                + summary.total_cache_creation_tokens,
+            10 + 200 + 5000 + 20 + 300 + 7000
+        );
         assert_eq!(summary.total_cost, "0.300000");
 
         let empty = db.get_session_usage_summary("claude", "missing")?;

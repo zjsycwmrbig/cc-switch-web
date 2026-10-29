@@ -5,13 +5,13 @@ fn shell_single_quote(value: &str) -> String {
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[derive(serde::Serialize)]
@@ -3924,10 +3924,9 @@ fn wsl_distro_from_path(path: &Path) -> Option<String> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-use super::*;
+    use super::*;
     #[tokio::test]
     async fn lifecycle_coordinator_serializes_writes_and_rejects_duplicate_tools() {
         let coordinator = Arc::new(ToolLifecycleCoordinator::default());
@@ -4197,35 +4196,35 @@ use super::*;
         }
     }
 
-        #[test]
-        fn is_conflicting_thresholds() {
-            let make = |version: Option<&str>, runnable: bool| ToolInstallation {
-                path: "/x".to_string(),
-                version: version.map(str::to_string),
-                runnable,
-                error: None,
-                source: "nvm".to_string(),
-                is_path_default: false,
-                real: std::path::PathBuf::from("/x"),
-            };
-            // 单处 → 不冲突。
-            assert!(!is_conflicting(&[make(Some("1.0.0"), true)]));
-            // 两处同版本、都能跑 → 不冲突（同版本装两遍不打扰）。
-            assert!(!is_conflicting(&[
-                make(Some("1.0.0"), true),
-                make(Some("1.0.0"), true)
-            ]));
-            // 版本分歧 → 冲突。
-            assert!(is_conflicting(&[
-                make(Some("1.0.0"), true),
-                make(Some("2.0.0"), true)
-            ]));
-            // 同版本但运行态混合（一个能跑、一个跑不起来）→ 冲突。
-            assert!(is_conflicting(&[
-                make(Some("1.0.0"), true),
-                make(Some("1.0.0"), false)
-            ]));
-        }
+    #[test]
+    fn is_conflicting_thresholds() {
+        let make = |version: Option<&str>, runnable: bool| ToolInstallation {
+            path: "/x".to_string(),
+            version: version.map(str::to_string),
+            runnable,
+            error: None,
+            source: "nvm".to_string(),
+            is_path_default: false,
+            real: std::path::PathBuf::from("/x"),
+        };
+        // 单处 → 不冲突。
+        assert!(!is_conflicting(&[make(Some("1.0.0"), true)]));
+        // 两处同版本、都能跑 → 不冲突（同版本装两遍不打扰）。
+        assert!(!is_conflicting(&[
+            make(Some("1.0.0"), true),
+            make(Some("1.0.0"), true)
+        ]));
+        // 版本分歧 → 冲突。
+        assert!(is_conflicting(&[
+            make(Some("1.0.0"), true),
+            make(Some("2.0.0"), true)
+        ]));
+        // 同版本但运行态混合（一个能跑、一个跑不起来）→ 冲突。
+        assert!(is_conflicting(&[
+            make(Some("1.0.0"), true),
+            make(Some("1.0.0"), false)
+        ]));
+    }
 
     /// 锚定落空后的兜底:认不出渠道的原生可执行文件不再退回裸 `npm i -g`(#7650),
     /// 脚本 shim / node_modules 里的入口 / 定位不到默认那处仍保持旧的静态命令。

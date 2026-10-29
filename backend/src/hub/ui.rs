@@ -25,9 +25,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/unit/ui/accounts/:id/models", get(account_models))
 }
 fn visible(db: &crate::database::Database, user: &Identity, r: &resources::Resource) -> bool {
-    r.owner_id == user.id
-        || user.admin()
-        || resources::grant(db, user, r, None).is_ok()
+    r.owner_id == user.id || user.admin() || resources::grant(db, user, r, None).is_ok()
 }
 async fn providers(
     State(app): State<Arc<AppState>>,
@@ -55,12 +53,13 @@ async fn providers(
 /// 供应商库卡片上的余额/用量查询（官方号是套餐用量，其他供应商是余额）。
 async fn library_usage(
     State(app): State<Arc<AppState>>,
-    Extension(_user): Extension<Identity>,
+    Extension(user): Extension<Identity>,
     Path((kind, resource)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
     use std::str::FromStr;
     let r = resources::get(&app.db, &resource)?;
-    if r.app_type != kind || !r.published || r.disabled {
+    let publicly_usable = r.published && !r.disabled;
+    if r.app_type != kind || !(visible(&app.db, &user, &r) || publicly_usable) {
         return Err(Error::forbidden());
     }
     // 官方账号没有 usage_script，用授权中心的订阅配额（5h/周额度）代替。
@@ -95,14 +94,12 @@ async fn library_usage(
                         "error": quota.error.unwrap_or_else(|| "官方账号用量不可用".into()),
                     })))
                 }
-                Err(error) => {
-                    return Ok(Json(json!({"success": false, "error": error})))
-                }
+                Err(error) => return Ok(Json(json!({"success": false, "error": error}))),
             }
         }
     }
-    let app_type = crate::app_config::AppType::from_str(&kind)
-        .map_err(|_| Error::bad("未知应用类型"))?;
+    let app_type =
+        crate::app_config::AppType::from_str(&kind).map_err(|_| Error::bad("未知应用类型"))?;
     match crate::commands::query_provider_usage_internal(
         &app,
         &app.copilot_auth_state,
@@ -111,9 +108,9 @@ async fn library_usage(
     )
     .await
     {
-        Ok(result) => Ok(Json(
-            serde_json::to_value(result).unwrap_or_else(|_| json!({"success": false, "error": "用量结果序列化失败"})),
-        )),
+        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_else(
+            |_| json!({"success": false, "error": "用量结果序列化失败"}),
+        ))),
         Err(error) => Ok(Json(json!({"success": false, "error": format!("{error}")}))),
     }
 }
@@ -238,13 +235,20 @@ async fn save_provider(
         "provider":v.provider,"baseConfig":v.base_config,
     }))
     .map_err(|_| Error::bad("供应商表单数据无效"))?;
-    let resource_id = api::save_resource_impl(&app, &user, previous.as_ref().map(|r| r.id.as_str()), input)
-        .await?;
+    let resource_id =
+        api::save_resource_impl(&app, &user, previous.as_ref().map(|r| r.id.as_str()), input)
+            .await?;
     if v.add {
         if let Some(id) = resource_id.get("id").and_then(Value::as_str) {
             if let Ok(resource) = resources::get(&app.db, id) {
                 if let Err(error) = catalog::refresh(&app, &user, &resource).await {
-                    audit(&app.db, &user.id, "models.initial_refresh_failed", id, json!({"error":error.2}))?;
+                    audit(
+                        &app.db,
+                        &user.id,
+                        "models.initial_refresh_failed",
+                        id,
+                        json!({"error":error.2}),
+                    )?;
                 }
             }
         }
@@ -356,11 +360,7 @@ fn filtered(user: &Identity, q: &UsageFilter) -> Result<(String, Vec<rusqlite::t
         sql.push_str(" AND r.status=?");
         args.push(status.into());
     }
-    if let Some(username) = q
-        .username
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-    {
+    if let Some(username) = q.username.as_ref().filter(|value| !value.trim().is_empty()) {
         sql.push_str(
             " AND r.user_id IN (SELECT id FROM hub_users WHERE LOWER(username) LIKE LOWER(?))",
         );

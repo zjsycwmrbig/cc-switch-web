@@ -45,7 +45,10 @@ fn check_system_env(keywords: &[&str]) -> Result<Vec<EnvConflict>, String> {
 
     if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Environment") {
         for (name, value) in hkcu.enum_values().filter_map(Result::ok) {
-            if keywords.iter().any(|keyword| name.to_uppercase().contains(keyword)) {
+            if keywords
+                .iter()
+                .any(|keyword| name.to_uppercase().contains(keyword))
+            {
                 conflicts.push(EnvConflict {
                     var_name: name.clone(),
                     var_value: value.to_string(),
@@ -60,7 +63,10 @@ fn check_system_env(keywords: &[&str]) -> Result<Vec<EnvConflict>, String> {
         .open_subkey("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment")
     {
         for (name, value) in hklm.enum_values().filter_map(Result::ok) {
-            if keywords.iter().any(|keyword| name.to_uppercase().contains(keyword)) {
+            if keywords
+                .iter()
+                .any(|keyword| name.to_uppercase().contains(keyword))
+            {
                 conflicts.push(EnvConflict {
                     var_name: name.clone(),
                     var_value: value.to_string(),
@@ -79,7 +85,11 @@ fn check_system_env(keywords: &[&str]) -> Result<Vec<EnvConflict>, String> {
 #[cfg(not(target_os = "windows"))]
 fn check_system_env(keywords: &[&str]) -> Result<Vec<EnvConflict>, String> {
     Ok(std::env::vars()
-        .filter(|(key, _)| keywords.iter().any(|keyword| key.to_uppercase().contains(keyword)))
+        .filter(|(key, _)| {
+            keywords
+                .iter()
+                .any(|keyword| key.to_uppercase().contains(keyword))
+        })
         .map(|(key, value)| EnvConflict {
             var_name: key,
             var_value: value,

@@ -58,7 +58,9 @@ fn validate_codex_proxy_authorization(
 ) -> Result<(), ProxyError> {
     if let Some(expected) = expected_key.filter(|key| !key.is_empty()) {
         if codex_bearer_access_token(headers) != Some(expected) {
-            return Err(ProxyError::AuthError("官方账号代理需要有效的代理访问密钥".into()));
+            return Err(ProxyError::AuthError(
+                "官方账号代理需要有效的代理访问密钥".into(),
+            ));
         }
     }
     Ok(())
@@ -290,7 +292,7 @@ impl RequestForwarder {
                 status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
             }
 
-            // 转发请求（普通重试由客户端控制；响应头前连接中断允许同供应商重连一次）
+            // 转发请求。响应头前连接失败不在同一供应商上重复发送，直接进入候选切换。
             let mut forwarded = self
                 .forward(
                     provider,
@@ -302,33 +304,6 @@ impl RequestForwarder {
                     app_type,
                 )
                 .await;
-            if forwarded
-                .as_ref()
-                .is_err_and(is_transient_pre_response_error)
-            {
-                let first_error = forwarded
-                    .as_ref()
-                    .err()
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
-                log::warn!(
-                    "[{app_type_str}] [FWD-004] Provider {} 返回响应前连接中断，重新建立连接后重试一次: {}",
-                    provider.name,
-                    first_error
-                );
-                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-                forwarded = self
-                    .forward(
-                        provider,
-                        endpoint,
-                        &provider_body,
-                        &headers,
-                        &extensions,
-                        adapter.as_ref(),
-                        app_type,
-                    )
-                    .await;
-            }
             // 同一家原生 Responses 上游明确拒绝历史状态时，最多清理后重试一次。
             // 在统一结果处理前重试，成功/失败仍沿用既有统计与故障转移语义。
             if let Err(error) = &forwarded {
@@ -1111,7 +1086,11 @@ impl RequestForwarder {
             && super::providers::should_convert_codex_responses_to_chat(provider, endpoint);
         let codex_official = matches!(app_type, AppType::Codex)
             && super::providers::is_codex_official_provider(provider);
-        if codex_official && extensions.get::<crate::hub::gateway::Authenticated>().is_none() {
+        if codex_official
+            && extensions
+                .get::<crate::hub::gateway::Authenticated>()
+                .is_none()
+        {
             let key = std::env::var("CC_SWITCH_WEB_ACCESS_KEY").ok();
             validate_codex_proxy_authorization(headers, key.as_deref())?;
         }
@@ -1630,9 +1609,7 @@ impl RequestForwarder {
             }
 
             if (codex_responses_to_anthropic
-                || (self.stack_request
-                    && matches!(app_type, AppType::Codex)
-                    && !codex_official))
+                || (self.stack_request && matches!(app_type, AppType::Codex) && !codex_official))
                 && is_codex_client_fingerprint_header(key_str)
             {
                 continue;
@@ -1803,8 +1780,12 @@ impl RequestForwarder {
             ordered_headers.remove("openai-organization");
             ordered_headers.remove("openai-project");
             if !ordered_headers.contains_key("originator") {
-                ordered_headers.insert("originator", http::HeaderValue::from_static(
-                    super::providers::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR));
+                ordered_headers.insert(
+                    "originator",
+                    http::HeaderValue::from_static(
+                        super::providers::codex_oauth_auth::CODEX_OAUTH_ORIGINATOR,
+                    ),
+                );
             }
         }
         // 托管 OAuth 的 workspace 由账号绑定决定，覆盖客户端或本地代理配置的旧值。
@@ -1861,8 +1842,13 @@ impl RequestForwarder {
 
         // 发送请求
         let response = if is_socks_proxy || provider.is_xai_oauth() {
-            if extensions.get::<crate::hub::network::OutboundPolicy>().is_some_and(|p|!p.allow_private) {
-                return Err(ProxyError::InvalidRequest("普通用户供应商请使用直连或 HTTP 上游代理；SOCKS 出站需要管理员管理".into()));
+            if extensions
+                .get::<crate::hub::network::OutboundPolicy>()
+                .is_some_and(|p| !p.allow_private)
+            {
+                return Err(ProxyError::InvalidRequest(
+                    "普通用户供应商请使用直连或 HTTP 上游代理；SOCKS 出站需要管理员管理".into(),
+                ));
             }
             // xAI 使用标准 header 编码；SOCKS5 代理也只能走 reqwest。
             log::debug!("[Forwarder] Using reqwest without exact header case preservation");
@@ -2076,23 +2062,6 @@ impl RequestForwarder {
             _ => ErrorCategory::NonRetryable,
         }
     }
-}
-
-fn is_transient_pre_response_error(error: &ProxyError) -> bool {
-    let ProxyError::ForwardFailed(message) = error else {
-        return false;
-    };
-    let message = message.to_ascii_lowercase();
-    [
-        "response parse failed: connection error",
-        "error sending request",
-        "connection closed before message completed",
-        "connection reset by peer",
-        "broken pipe",
-        "unexpected eof",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
 }
 
 /// 从 ProxyError 中提取错误消息
@@ -3574,25 +3543,6 @@ mod tests {
             .as_deref(),
             Some("overloaded_error: busy")
         );
-    }
-
-    #[test]
-    fn transient_pre_response_connection_errors_are_retryable() {
-        assert!(is_transient_pre_response_error(&ProxyError::ForwardFailed(
-            "Response parse failed: connection error".to_string()
-        )));
-        assert!(is_transient_pre_response_error(&ProxyError::ForwardFailed(
-            "上游连接失败: error sending request".to_string()
-        )));
-        assert!(!is_transient_pre_response_error(
-            &ProxyError::UpstreamError {
-                status: 502,
-                body: None,
-            }
-        ));
-        assert!(!is_transient_pre_response_error(&ProxyError::Timeout(
-            "请求超时".to_string()
-        )));
     }
 
     #[test]

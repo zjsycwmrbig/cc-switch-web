@@ -476,12 +476,14 @@ pub fn reconcile(
 }
 pub fn remaining(db: &crate::database::Database, user: &Identity) -> Result<Value> {
     let c = conn(db)?;
-    let (budget, p): (String, String) = c.query_row(
-        "SELECT budget,period FROM hub_users WHERE id=?1",
+    let budget: String = c.query_row(
+        "SELECT budget FROM hub_users WHERE id=?1",
         [&user.id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| r.get(0),
     )?;
-    let key = format!("user:{}:{}", user.id, period(&p));
+    let key = format!("user:{}:lifetime", user.id);
     let values=c.query_row("SELECT used_requests,used_tokens,used_credits,reserved_requests,reserved_tokens,reserved_credits FROM hub_buckets WHERE id=?1",[key],|r|Ok(json!({"requests":r.get::<_,i64>(0)?,"tokens":r.get::<_,i64>(1)?,"credits":r.get::<_,i64>(2)?,"reservedRequests":r.get::<_,i64>(3)?,"reservedTokens":r.get::<_,i64>(4)?,"reservedCredits":r.get::<_,i64>(5)?}))).optional()?.unwrap_or(json!({}));
-    Ok(json!({"budget":parse::<Budget>(&budget),"period":p,"periodKey":period(&p),"usage":values}))
+    Ok(
+        json!({"budget":parse::<Budget>(&budget),"period":"lifetime","periodKey":"lifetime","usage":values}),
+    )
 }

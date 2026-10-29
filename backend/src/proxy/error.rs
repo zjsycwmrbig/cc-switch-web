@@ -135,9 +135,7 @@ impl IntoResponse for ProxyError {
                     ProxyError::TransformError(_) => {
                         (StatusCode::UNPROCESSABLE_ENTITY, self.to_string())
                     }
-                    ProxyError::InvalidRequest(_) => {
-                        (StatusCode::BAD_REQUEST, self.to_string())
-                    }
+                    ProxyError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
                     ProxyError::Timeout(_) => (StatusCode::GATEWAY_TIMEOUT, self.to_string()),
                     ProxyError::AuthError(_) => (StatusCode::UNAUTHORIZED, self.to_string()),
                     ProxyError::Internal(_) => {

@@ -1,6 +1,5 @@
 //! Multi-user gateway. Identity, grants, metering and settlement share this boundary.
 pub(crate) mod api;
-pub(crate) mod ui;
 pub(crate) mod auth;
 pub(crate) mod catalog;
 pub(crate) mod gateway;
@@ -10,6 +9,7 @@ pub(crate) mod resources;
 pub(crate) mod schema;
 #[cfg(test)]
 mod tests;
+pub(crate) mod ui;
 
 use axum::{
     http::StatusCode,

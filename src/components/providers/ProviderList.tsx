@@ -302,8 +302,14 @@ export function ProviderList({
     try {
       const value = await unit(`/ui/library/${appId}/${resourceId}/usage`);
       setUnitUsage((old) => ({ ...old, [resourceId]: value }));
-    } catch {
-      setUnitUsage((old) => ({ ...old, [resourceId]: null }));
+    } catch (error) {
+      setUnitUsage((old) => ({
+        ...old,
+        [resourceId]: {
+          success: false,
+          error: error instanceof Error ? error.message : "余额/用量查询失败",
+        },
+      }));
     } finally {
       setUsageLoading((old) => ({ ...old, [resourceId]: false }));
     }

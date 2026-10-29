@@ -261,8 +261,7 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
     let chosen = prefs.get("models").and_then(Value::as_array);
     let mut models = vec![];
     let mut official = std::collections::BTreeMap::new();
-    let mut templates: std::collections::HashMap<String, Value> =
-        std::collections::HashMap::new();
+    let mut templates: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
     let mut route_keys: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let pool_key = auth::setting(db, "officialPoolKey", "official");
@@ -303,7 +302,11 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             };
             let auto = route["auto"].as_bool().unwrap_or(false);
             let slug = encode("codex", if auto { "auto" } else { "" }, base);
-            if auto && choices.iter().any(|choice| choice.as_str() == Some(slug.as_str())) {
+            if auto
+                && choices
+                    .iter()
+                    .any(|choice| choice.as_str() == Some(slug.as_str()))
+            {
                 auto_selected_groups.insert(resources::model_group_key(base));
             }
         }
@@ -319,31 +322,26 @@ pub fn export(db: &crate::database::Database, user: &Identity, selected: bool) -
             continue;
         };
         let group = resources::model_group_key(base);
-        if !route["auto"].as_bool().unwrap_or(false)
-            && auto_selected_groups.contains(&group)
-        {
+        if !route["auto"].as_bool().unwrap_or(false) && auto_selected_groups.contains(&group) {
             continue;
         }
-        let mut row = templates
-            .get(&group)
-            .cloned()
-            .unwrap_or_else(|| {
-                json!({
-                    "slug":base,
-                    "display_name":base,
-                    "description":base,
-                    "default_reasoning_level":"medium",
-                    "supported_reasoning_levels":[
-                        {"effort":"low","description":"Fast responses with lighter reasoning"},
-                        {"effort":"medium","description":"Balances speed and reasoning depth"},
-                        {"effort":"high","description":"Greater reasoning depth"}
-                    ],
-                    "shell_type":"unified_exec",
-                    "visibility":"list",
-                    "supported_in_api":true,
-                    "priority":1000
-                })
-            });
+        let mut row = templates.get(&group).cloned().unwrap_or_else(|| {
+            json!({
+                "slug":base,
+                "display_name":base,
+                "description":base,
+                "default_reasoning_level":"medium",
+                "supported_reasoning_levels":[
+                    {"effort":"low","description":"Fast responses with lighter reasoning"},
+                    {"effort":"medium","description":"Balances speed and reasoning depth"},
+                    {"effort":"high","description":"Greater reasoning depth"}
+                ],
+                "shell_type":"unified_exec",
+                "visibility":"list",
+                "supported_in_api":true,
+                "priority":1000
+            })
+        });
         let targets = route["targets"]
             .as_array()
             .map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>())

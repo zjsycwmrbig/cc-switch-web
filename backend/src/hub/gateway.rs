@@ -186,14 +186,12 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             "共享聚合入口只支持 POST；模型列表请使用 GET /v1/models",
         ));
     }
-    let _permit = REQUEST_WORK
-        .try_acquire()
-        .map_err(|_| {
-            Error::limited(
-                "gateway_busy",
-                "中转网关并发已满（同时最多处理 16 个请求），请稍后重试",
-            )
-        })?;
+    let _permit = REQUEST_WORK.try_acquire().map_err(|_| {
+        Error::limited(
+            "gateway_busy",
+            "中转网关并发已满（同时最多处理 16 个请求），请稍后重试",
+        )
+    })?;
     let app = if path.ends_with("/messages") {
         AppType::Claude
     } else {
@@ -210,27 +208,22 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         ));
     }
     let (parts, body) = request.into_parts();
-    let bytes = to_bytes(body, 32 * 1024 * 1024)
-        .await
-        .map_err(|_| {
-            Error::too_large(
-                "request_body_too_large",
-                "请求体超过 32 MiB，或读取过程中连接中断；请压缩历史后重试",
-            )
-        })?;
-    let mut body: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| {
-            Error::bad_code(
-                "invalid_json",
-                "请求体不是有效 JSON；请检查 Responses 请求格式",
-            )
-        })?;
+    let bytes = to_bytes(body, 32 * 1024 * 1024).await.map_err(|_| {
+        Error::too_large(
+            "request_body_too_large",
+            "请求体超过 32 MiB，或读取过程中连接中断；请压缩历史后重试",
+        )
+    })?;
+    let mut body: Value = serde_json::from_slice(&bytes).map_err(|_| {
+        Error::bad_code(
+            "invalid_json",
+            "请求体不是有效 JSON；请检查 Responses 请求格式",
+        )
+    })?;
     let original = body
         .get("model")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            Error::bad_code("missing_model", "请求缺少字符串类型的 model 字段")
-        })?
+        .ok_or_else(|| Error::bad_code("missing_model", "请求缺少字符串类型的 model 字段"))?
         .to_owned();
     let (key, model) = match crate::mode::stack::decode(&app, &original) {
         crate::mode::stack::Decoded::Stack { key, model, .. } => (key.to_owned(), model.to_owned()),
@@ -295,22 +288,19 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     let mut candidates: Vec<resources::Resource> = Vec::new();
     let mut reasons: Vec<Error> = Vec::new();
     let mut matched = 0usize;
-    for r in resources::all(&state.db)?
-        .into_iter()
-        .filter(|r| {
-            r.app_type == app.as_str()
-                && match &auto_targets {
-                    Some(targets) => targets.contains(&r.id),
-                    None => {
-                        if pooled {
-                            r.official
-                        } else {
-                            r.route_key == key
-                        }
+    for r in resources::all(&state.db)?.into_iter().filter(|r| {
+        r.app_type == app.as_str()
+            && match &auto_targets {
+                Some(targets) => targets.contains(&r.id),
+                None => {
+                    if pooled {
+                        r.official
+                    } else {
+                        r.route_key == key
                     }
                 }
-        })
-    {
+            }
+    }) {
         if affinity.as_ref().is_some_and(|a| a != &r.id) {
             continue;
         }
@@ -443,7 +433,8 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     let mut last_error = None;
     for (r, provider, price, cost) in priced {
         // 同一路由可能匹配不同供应商的不同原始 slug，转发前解析成该供应商的实际模型名。
-        let upstream_model = resources::match_model_slug(&r, &model).unwrap_or_else(|| model.clone());
+        let upstream_model =
+            resources::match_model_slug(&r, &model).unwrap_or_else(|| model.clone());
         let attempt = match metering::attempt(
             &state.db,
             &user,

@@ -163,11 +163,8 @@ pub(crate) fn set_common_config_snippet_internal(
     if matches!(app_type, "claude" | "codex" | "gemini") {
         let app = AppType::from_str(app_type)
             .map_err(|e| ConfigCommandError::bad_request(e.to_string()))?;
-        crate::services::provider::ProviderService::sync_current_provider_for_app(
-            state,
-            app,
-        )
-        .map_err(|e| ConfigCommandError::internal(e.to_string()))?;
+        crate::services::provider::ProviderService::sync_current_provider_for_app(state, app)
+            .map_err(|e| ConfigCommandError::internal(e.to_string()))?;
     }
 
     if app_type == "omo"
@@ -190,11 +187,8 @@ pub(crate) fn set_common_config_snippet_internal(
             .map_err(|e| ConfigCommandError::internal(e.to_string()))?
             .is_some()
     {
-        crate::services::omo::OmoService::write_config_to_file(
-            state,
-            &crate::services::omo::SLIM,
-        )
-        .map_err(|e| ConfigCommandError::internal(e.to_string()))?;
+        crate::services::omo::OmoService::write_config_to_file(state, &crate::services::omo::SLIM)
+            .map_err(|e| ConfigCommandError::internal(e.to_string()))?;
     }
     Ok(())
 }

@@ -1,10 +1,11 @@
 import {
   unit,
+  type ApiKey,
   type PersonalCodexCatalog,
   type Preferences,
 } from "@/components/unit/client";
 import { useUnitSession } from "@/components/unit/session";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
@@ -19,6 +20,13 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   downloadWebAggregationModels,
   getWebAccessKey,
   getWebApiBase,
@@ -26,6 +34,10 @@ import {
 
 const quote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 const PAGE_SIZE = 10;
+
+const usableDevice = (device: ApiKey) =>
+  Boolean(device.active) &&
+  (!device.expires_at || device.expires_at * 1000 > Date.now());
 
 export function AggregationSyncPanel({
   onPersonalModels,
@@ -39,7 +51,15 @@ export function AggregationSyncPanel({
   refreshKey?: number;
 } = {}) {
   const session = useUnitSession();
-  const [personalCommand, setPersonalCommand] = useState("");
+  const userId = session?.me.user.id ?? "";
+  const [devices, setDevices] = useState<ApiKey[]>([]);
+  const [devicesBusy, setDevicesBusy] = useState(false);
+  const [devicesError, setDevicesError] = useState("");
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [deviceCommand, setDeviceCommand] = useState("");
+  const [commandBusy, setCommandBusy] = useState(false);
+  const [deviceRequest, setDeviceRequest] = useState(0);
+  const creatingDefaultDevice = useRef(false);
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [catalog, setCatalog] = useState<PersonalCodexCatalog | null>(null);
@@ -53,7 +73,18 @@ export function AggregationSyncPanel({
   const key = getWebAccessKey();
   const auth = key ? `-H ${quote(`Authorization: Bearer ${key}`)} ` : "";
   const legacyCommand = `curl -fsSL ${auth}${quote(`${origin}/api/model-catalog/codex/aggregation/install.sh`)} | CC_SWITCH_RESTART_APP_SERVER=1 bash`;
-  const command = session ? personalCommand : legacyCommand;
+  const command = session ? deviceCommand : legacyCommand;
+  const availableDevices = useMemo(
+    () =>
+      devices
+        .filter(usableDevice)
+        .sort((left, right) => right.created_at - left.created_at),
+    [devices],
+  );
+  const selectedDevice = availableDevices.find(
+    (device) => device.id === selectedDeviceId,
+  );
+  const selectedDeviceCanRecover = selectedDevice?.token_version === 1;
   const totalPages = Math.max(
     1,
     Math.ceil((catalog?.models.length ?? 0) / PAGE_SIZE),
@@ -90,15 +121,106 @@ export function AggregationSyncPanel({
       live = false;
     };
   }, [refreshKey, session, catalogRequest]);
+  useEffect(() => {
+    if (!userId) {
+      setDevices([]);
+      setDevicesError("");
+      setDevicesBusy(false);
+      setSelectedDeviceId("");
+      setDeviceCommand("");
+      return;
+    }
+    let live = true;
+    setDevicesBusy(true);
+    setDevicesError("");
+    void unit<ApiKey[]>("/keys")
+      .then((value) => {
+        if (live) setDevices(value);
+      })
+      .catch((error) => {
+        if (!live) return;
+        setDevices([]);
+        setDevicesError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (live) setDevicesBusy(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [deviceRequest, userId]);
+  useEffect(() => {
+    if (!userId || devicesBusy) return;
+    if (
+      selectedDeviceId &&
+      availableDevices.some((device) => device.id === selectedDeviceId)
+    ) {
+      return;
+    }
+    setSelectedDeviceId(availableDevices[0]?.id ?? "");
+  }, [availableDevices, devicesBusy, selectedDeviceId, userId]);
+  useEffect(() => {
+    if (!userId || !selectedDeviceId || !selectedDeviceCanRecover) {
+      setDeviceCommand("");
+      setCommandBusy(false);
+      return;
+    }
+    let live = true;
+    setDeviceCommand("");
+    setCommandBusy(true);
+    setDevicesError("");
+    void unit<{ command: string }>(
+      `/keys/${encodeURIComponent(selectedDeviceId)}/command`,
+    )
+      .then((value) => {
+        if (live) setDeviceCommand(value.command);
+      })
+      .catch((error) => {
+        if (live)
+          setDevicesError(
+            error instanceof Error ? error.message : String(error),
+          );
+      })
+      .finally(() => {
+        if (live) setCommandBusy(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [selectedDeviceCanRecover, selectedDeviceId, userId]);
+  const createDefaultDevice = async () => {
+    if (creatingDefaultDevice.current) return "";
+    creatingDefaultDevice.current = true;
+    try {
+      const created = await unit<ApiKey & { command: string }>(
+        "/keys",
+        "POST",
+        {
+          name: "default",
+          expiresAt: null,
+        },
+      );
+      setDevices((current) => [created, ...current]);
+      setSelectedDeviceId(created.id);
+      setDeviceCommand(created.command);
+      return created.command;
+    } finally {
+      creatingDefaultDevice.current = false;
+    }
+  };
   const ensureCommand = async () => {
-    if (session && !personalCommand) {
+    if (!session) return legacyCommand;
+    if (selectedDeviceId && !selectedDeviceCanRecover) {
+      toast.error(
+        "该设备码沿用历史凭据，仅支持鉴权和用量统计；请选择或创建可恢复命令的设备码",
+      );
+      return "";
+    }
+    if (!selectedDeviceId) {
+      if (devicesBusy) return "";
       setBusy(true);
       try {
-        const value = await unit<{ command: string }>("/keys", "POST", {
-          name: `网页模型同步 ${new Date().toLocaleString()}`,
-        });
-        setPersonalCommand(value.command);
-        return value.command;
+        return await createDefaultDevice();
       } catch (e) {
         toast.error(e instanceof Error ? e.message : String(e));
         return "";
@@ -106,7 +228,20 @@ export function AggregationSyncPanel({
         setBusy(false);
       }
     }
-    return command;
+    if (deviceCommand) return deviceCommand;
+    setBusy(true);
+    try {
+      const value = await unit<{ command: string }>(
+        `/keys/${encodeURIComponent(selectedDeviceId)}/command`,
+      );
+      setDeviceCommand(value.command);
+      return value.command;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+      return "";
+    } finally {
+      setBusy(false);
+    }
   };
   const copyText = async (toCopy: string) => {
     if (!toCopy) return;
@@ -231,25 +366,107 @@ export function AggregationSyncPanel({
                 )}
                 {t("aggregationSync.download")}
               </Button>
-              <Button size="sm" disabled={busy} onClick={() => void copy()}>
+              <Button
+                size="sm"
+                disabled={
+                  busy ||
+                  devicesBusy ||
+                  commandBusy ||
+                  (Boolean(selectedDeviceId) && !selectedDeviceCanRecover)
+                }
+                onClick={() => void copy()}
+              >
                 <Copy className="mr-1 h-4 w-4" />
-                {session && !command
-                  ? "生成并复制我的同步命令"
-                  : t("aggregationSync.copy")}
+                {session && devicesBusy
+                  ? "读取设备…"
+                  : session && commandBusy
+                    ? "读取同步命令…"
+                    : session && selectedDeviceId && !selectedDeviceCanRecover
+                      ? "无法生成同步命令"
+                      : session && !selectedDeviceId
+                        ? "创建 default 并复制"
+                        : t("aggregationSync.copy")}
               </Button>
             </div>
           </div>
-          {session && (onPersonalModels || onDevices) && (
-            <div className="flex gap-2">
-              {onPersonalModels && (
-                <Button size="sm" variant="ghost" onClick={onPersonalModels}>
-                  选择我的模型
-                </Button>
+          {session && (
+            <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-sm">
+                  <label
+                    className="text-xs font-medium"
+                    htmlFor="aggregation-sync-device"
+                  >
+                    复制到哪台设备
+                  </label>
+                  {availableDevices.length ? (
+                    <Select
+                      value={selectedDeviceId}
+                      onValueChange={setSelectedDeviceId}
+                    >
+                      <SelectTrigger
+                        id="aggregation-sync-device"
+                        aria-label="选择同步设备"
+                        className="h-9 bg-background"
+                      >
+                        <SelectValue placeholder="选择设备" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableDevices.map((device) => (
+                          <SelectItem key={device.id} value={device.id}>
+                            {device.name} · {device.prefix}…
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="flex h-9 items-center rounded-md border border-dashed border-border bg-background px-3 text-xs text-muted-foreground">
+                      {devicesBusy
+                        ? "正在读取设备…"
+                        : "暂无可用设备码；首次复制时会自动创建 default"}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {onPersonalModels && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={onPersonalModels}
+                    >
+                      选择我的模型
+                    </Button>
+                  )}
+                  {onDevices && (
+                    <Button size="sm" variant="ghost" onClick={onDevices}>
+                      管理设备码
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={devicesBusy}
+                    onClick={() => setDeviceRequest((value) => value + 1)}
+                  >
+                    <RefreshCw
+                      className={`mr-1 h-3.5 w-3.5 ${
+                        devicesBusy ? "animate-spin" : ""
+                      }`}
+                    />
+                    刷新设备
+                  </Button>
+                </div>
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                设备码用于区分不同主机的流量和用量，方便在统计中辨认来源；同一账号下所有设备码权限相同，共享账号额度与模型范围。
+              </p>
+              {selectedDevice && !selectedDeviceCanRecover && (
+                <p className="text-xs leading-relaxed text-amber-600">
+                  这台设备码沿用历史凭据，仍可用于鉴权和用量统计，但不能重新生成同步命令。
+                </p>
               )}
-              {onDevices && (
-                <Button size="sm" variant="ghost" onClick={onDevices}>
-                  管理设备密钥
-                </Button>
+              {devicesError && (
+                <p className="text-xs text-destructive">{devicesError}</p>
               )}
             </div>
           )}

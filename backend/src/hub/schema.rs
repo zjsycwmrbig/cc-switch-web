@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS hub_sessions (
 CREATE TABLE IF NOT EXISTS hub_api_keys (
  id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES hub_users(id), name TEXT NOT NULL,
  token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
- created_at INTEGER NOT NULL, last_used_at INTEGER, expires_at INTEGER
+ created_at INTEGER NOT NULL, last_used_at INTEGER, expires_at INTEGER,
+ token_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS hub_resources (
  id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, app_type TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES hub_users(id),
@@ -140,10 +141,11 @@ CREATE TABLE IF NOT EXISTS hub_audit (id TEXT PRIMARY KEY, actor TEXT NOT NULL, 
         "decision_note",
         "TEXT NOT NULL DEFAULT ''",
     )?;
+    add_column_if_missing(c, "hub_model_routes", "auto", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(
         c,
-        "hub_model_routes",
-        "auto",
+        "hub_api_keys",
+        "token_version",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     // 旧数据没有显式类型：旧自动名称或多目标路由归为自动路由。

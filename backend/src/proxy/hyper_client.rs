@@ -233,10 +233,29 @@ pub async fn send_request(
     proxy_url: Option<&str>,
 ) -> Result<ProxyResponse, ProxyError> {
     // Extract our own OriginalHeaderCases if available
-    let pinned = if original_extensions.get::<crate::hub::network::OutboundPolicy>().is_some_and(|p|!p.allow_private) {
-        let host=uri.host().ok_or_else(||ProxyError::InvalidRequest("供应商地址缺少域名".into()))?;
-        Some(crate::hub::network::resolve(host,uri.port_u16().unwrap_or(if uri.scheme_str()==Some("http"){80}else{443})).await.map_err(|e|ProxyError::InvalidRequest(e.2))?)
-    }else{None};
+    let pinned = if original_extensions
+        .get::<crate::hub::network::OutboundPolicy>()
+        .is_some_and(|p| !p.allow_private)
+    {
+        let host = uri
+            .host()
+            .ok_or_else(|| ProxyError::InvalidRequest("供应商地址缺少域名".into()))?;
+        Some(
+            crate::hub::network::resolve(
+                host,
+                uri.port_u16()
+                    .unwrap_or(if uri.scheme_str() == Some("http") {
+                        80
+                    } else {
+                        443
+                    }),
+            )
+            .await
+            .map_err(|e| ProxyError::InvalidRequest(e.2))?,
+        )
+    } else {
+        None
+    };
     let original_cases = original_extensions.get::<OriginalHeaderCases>().cloned();
     let has_cases = original_cases
         .as_ref()
@@ -386,12 +405,19 @@ async fn send_raw_request(
 
     // Establish TCP connection — either direct or through HTTP CONNECT proxy
     let stream = if let Some(proxy) = proxy_url {
-        let pinned_host=pinned.and_then(|a|a.first()).map(|a|match a.ip(){std::net::IpAddr::V4(ip)=>ip.to_string(),std::net::IpAddr::V6(ip)=>format!("[{ip}]")});
+        let pinned_host = pinned.and_then(|a| a.first()).map(|a| match a.ip() {
+            std::net::IpAddr::V4(ip) => ip.to_string(),
+            std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        });
         connect_via_proxy(proxy, pinned_host.as_deref().unwrap_or(host), port).await?
     } else {
         ProxyStream::Tcp(
-            if let Some(addresses)=pinned {tokio::net::TcpStream::connect(addresses).await} else {tokio::net::TcpStream::connect((host, port)).await}
-                .map_err(|e| ProxyError::ForwardFailed(format!("TCP connect failed: {e}")))?,
+            if let Some(addresses) = pinned {
+                tokio::net::TcpStream::connect(addresses).await
+            } else {
+                tokio::net::TcpStream::connect((host, port)).await
+            }
+            .map_err(|e| ProxyError::ForwardFailed(format!("TCP connect failed: {e}")))?,
         )
     };
 
@@ -551,11 +577,13 @@ fn global_tls_connector() -> &'static tokio_rustls::TlsConnector {
         let native = rustls_native_certs::load_native_certs();
         let (added, _errors) = root_store.add_parsable_certificates(native.certs);
         log::debug!("[HyperClient] TLS root store: webpki + {added} native certs");
-        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("ring supports default TLS protocol versions")
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("ring supports default TLS protocol versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
         tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
     })
 }

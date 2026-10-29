@@ -1013,7 +1013,10 @@ impl ProviderAdapter for CodexAdapter {
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
         // 官方凭据由服务端账号管理器逐请求注入，客户端只连接代理。
         if is_codex_official_provider(provider) {
-            return Some(AuthInfo::new("codex_oauth_placeholder".into(), AuthStrategy::CodexOAuth));
+            return Some(AuthInfo::new(
+                "codex_oauth_placeholder".into(),
+                AuthStrategy::CodexOAuth,
+            ));
         }
 
         if provider.is_xai_oauth() {

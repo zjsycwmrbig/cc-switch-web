@@ -21,6 +21,8 @@ import {
   Link2,
   LoaderCircle,
   Plus,
+  Power,
+  PowerOff,
   Route,
   Search,
   Trash2,
@@ -35,12 +37,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -2940,11 +2944,27 @@ function Allocations({ generation }: { generation: number }) {
 function Keys({ generation }: { generation: number }) {
   const [keys, setKeys] = useState<ApiKey[]>([]),
     [name, setName] = useState(""),
-    [created, setCreated] = useState<{ key: string; command: string } | null>(
-      null,
-    ),
-    [busy, setBusy] = useState(false);
-  const load = useCallback(() => unit<ApiKey[]>("/keys").then(setKeys), []);
+    [created, setCreated] = useState<
+      | (ApiKey & {
+          key: string;
+          command: string;
+        })
+      | null
+    >(null),
+    [commandBusy, setCommandBusy] = useState(""),
+    [busy, setBusy] = useState(false),
+    [batchBusy, setBatchBusy] = useState(false),
+    [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set()),
+    [deleteIds, setDeleteIds] = useState<string[]>([]);
+  const load = useCallback(async () => {
+    const next = await unit<ApiKey[]>("/keys");
+    const available = new Set(next.map((key) => key.id));
+    setKeys(next);
+    setSelectedIds((current) => {
+      const selected = [...current].filter((id) => available.has(id));
+      return selected.length === current.size ? current : new Set(selected);
+    });
+  }, []);
   useEffect(() => {
     void load().catch((e) => toast.error(errorText(e)));
   }, [load, generation]);
@@ -2952,7 +2972,12 @@ function Keys({ generation }: { generation: number }) {
     e.preventDefault();
     setBusy(true);
     try {
-      setCreated(await unit("/keys", "POST", { name, expiresAt: null }));
+      setCreated(
+        await unit<ApiKey & { key: string; command: string }>("/keys", "POST", {
+          name,
+          expiresAt: null,
+        }),
+      );
       setName("");
       await load();
     } catch (e) {
@@ -2961,34 +2986,94 @@ function Keys({ generation }: { generation: number }) {
       setBusy(false);
     }
   };
+  const copyExistingCommand = async (id: string) => {
+    setCommandBusy(id);
+    try {
+      const value = await unit<{ command: string }>(
+        `/keys/${encodeURIComponent(id)}/command`,
+      );
+      await copy(value.command);
+    } catch (error) {
+      toast.error(errorText(error));
+    } finally {
+      setCommandBusy("");
+    }
+  };
+  const runBatch = async (
+    action: "disable" | "enable" | "delete",
+    ids: string[],
+  ) => {
+    const targets = [...new Set(ids)];
+    if (!targets.length || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const result = await unit<{ affected: number }>("/keys/batch", "POST", {
+        ids: targets,
+        action,
+      });
+      if (action === "delete" && created && targets.includes(created.id)) {
+        setCreated(null);
+      }
+      setSelectedIds(new Set());
+      await load();
+      const actionText =
+        action === "delete" ? "删除" : action === "disable" ? "禁用" : "启用";
+      toast.success(`已${actionText} ${result.affected} 个设备码`);
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+  const toggleSelected = (id: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const allSelected = keys.length > 0 && selectedIds.size === keys.length;
+  const someSelected = selectedIds.size > 0 && !allSelected;
+  const selectedKeys = keys.filter((key) => selectedIds.has(key.id));
+  const deleteTargets = keys.filter((key) => deleteIds.includes(key.id));
+  const deleteNames = deleteTargets
+    .slice(0, 5)
+    .map((key) => key.name)
+    .join("、");
+  const deleteMessage = deleteTargets.length
+    ? `确定删除以下 ${deleteTargets.length} 个设备码吗？删除后无法恢复，历史请求记录会保留。\n\n${deleteNames}${
+        deleteTargets.length > 5 ? " 等" : ""
+      }`
+    : "";
   return (
     <section className="space-y-3 rounded-lg border border-border p-4">
       <div className="space-y-1">
-        <h3 className="text-sm font-medium">设备与接入密钥</h3>
+        <h3 className="text-sm font-medium">设备码管理</h3>
         <p className="text-xs text-muted-foreground">
-          为每台主机创建独立密钥，用量归入你的账号，也能按设备查看。
+          设备码用于区分不同主机的流量和用量，方便在统计中辨认来源。同一账号下所有设备码权限相同，共享账号额度与模型范围。
         </p>
       </div>
       <form className="flex flex-wrap items-center gap-2" onSubmit={create}>
         <Input
           required
           maxLength={100}
-          placeholder="设备名称，例如 moss、nccl5"
+          placeholder="设备码名称，例如 default、moss"
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="h-9 w-full max-w-xs"
         />
         <Button type="submit" size="sm" disabled={busy}>
           <Plus className="mr-1 h-4 w-4" />
-          创建设备密钥
+          创建设备码
         </Button>
       </form>
       {created && (
         <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3">
-          <h4 className="text-sm font-medium">复制到远程主机执行</h4>
+          <h4 className="text-sm font-medium">设备码与接入命令</h4>
           <p className="text-xs text-muted-foreground">
-            密钥明文仅在本次显示。命令会备份配置、写入个人路由和模型目录，并尝试重启
-            Codex app-server。
+            设备码明文只在创建时显示；同步命令之后仍可从设备列表重新复制。命令会备份配置、写入个人路由和模型目录，并尝试重启
+            Codex app-server。该设备码之后可在列表中统一启用、禁用或删除。
           </p>
           <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-background p-3 text-xs select-all">
             {created.command}
@@ -3003,7 +3088,7 @@ function Keys({ generation }: { generation: number }) {
               variant="outline"
               onClick={() => void copy(created.key)}
             >
-              复制 API Key
+              复制设备码
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setCreated(null)}>
               隐藏
@@ -3011,60 +3096,197 @@ function Keys({ generation }: { generation: number }) {
           </div>
         </div>
       )}
+      {selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 p-2">
+          <span className="mr-auto text-xs text-muted-foreground">
+            已选择 {selectedIds.size} 个设备码
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={batchBusy}
+            onClick={() =>
+              void runBatch(
+                "enable",
+                selectedKeys.map((key) => key.id),
+              )
+            }
+          >
+            <Power className="mr-1 h-3.5 w-3.5" />
+            启用
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={batchBusy}
+            onClick={() =>
+              void runBatch(
+                "disable",
+                selectedKeys.map((key) => key.id),
+              )
+            }
+          >
+            <PowerOff className="mr-1 h-3.5 w-3.5" />
+            禁用
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={batchBusy}
+            onClick={() => setDeleteIds(selectedKeys.map((key) => key.id))}
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            删除
+          </Button>
+        </div>
+      )}
       {keys.length > 0 && (
-        <Table>
+        <Table className="min-w-[760px]">
           <TableHeader>
             <TableRow>
-              <TableHead>设备</TableHead>
-              <TableHead>密钥前缀</TableHead>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label="选择全部设备码"
+                  checked={
+                    allSelected ? true : someSelected ? "indeterminate" : false
+                  }
+                  onCheckedChange={(checked) =>
+                    setSelectedIds(
+                      checked ? new Set(keys.map((key) => key.id)) : new Set(),
+                    )
+                  }
+                />
+              </TableHead>
+              <TableHead>设备码</TableHead>
+              <TableHead>前缀</TableHead>
               <TableHead>最近使用</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="w-16" />
+              <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {keys.map((k) => (
-              <TableRow key={k.id}>
-                <TableCell>{k.name}</TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
-                  {k.prefix}…
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {date(k.last_used_at)}
-                </TableCell>
-                <TableCell>{k.active ? "启用" : "已撤销"}</TableCell>
-                <TableCell className="text-right">
-                  {!!k.active && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-destructive hover:text-destructive"
-                      onClick={async () => {
-                        try {
-                          await unit(`/keys/${k.id}`, "DELETE");
-                          await load();
-                        } catch (e) {
-                          toast.error(errorText(e));
-                        }
-                      }}
-                    >
-                      撤销
-                    </Button>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
+            {keys.map((k) => {
+              const expired =
+                k.expires_at != null &&
+                k.expires_at <= Math.floor(Date.now() / 1000);
+              const canRecover =
+                Boolean(k.active) && !expired && k.token_version === 1;
+              return (
+                <TableRow key={k.id}>
+                  <TableCell>
+                    <Checkbox
+                      aria-label={`选择设备码 ${k.name}`}
+                      checked={selectedIds.has(k.id)}
+                      onCheckedChange={(checked) =>
+                        toggleSelected(k.id, checked)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">{k.name}</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      创建于 {date(k.created_at)}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {k.prefix}…
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {date(k.last_used_at)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span
+                        className={`u-tag ${
+                          expired ? "u-tag-danger" : k.active ? "u-green" : ""
+                        }`}
+                      >
+                        {expired ? "已过期" : k.active ? "可用" : "已禁用"}
+                      </span>
+                      {k.token_version !== 1 && (
+                        <span className="u-tag">仅鉴权</span>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {canRecover && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={commandBusy === k.id}
+                          onClick={() => void copyExistingCommand(k.id)}
+                        >
+                          {commandBusy === k.id ? (
+                            <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                          ) : (
+                            <Copy className="mr-1 h-4 w-4" />
+                          )}
+                          复制命令
+                        </Button>
+                      )}
+                      {!!k.active ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={batchBusy}
+                          onClick={() => void runBatch("disable", [k.id])}
+                        >
+                          <PowerOff className="mr-1 h-3.5 w-3.5" />
+                          禁用
+                        </Button>
+                      ) : !expired ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={batchBusy}
+                          onClick={() => void runBatch("enable", [k.id])}
+                        >
+                          <Power className="mr-1 h-3.5 w-3.5" />
+                          启用
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        disabled={batchBusy}
+                        onClick={() => setDeleteIds([k.id])}
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        删除
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
       {!keys.length && (
         <p className="text-xs text-muted-foreground">
-          创建第一个设备密钥，即可获取可复制的接入命令。
+          创建第一个设备码，即可获取可复制的接入命令。
         </p>
       )}
       <p className="text-xs text-muted-foreground">
-        更新网页中的模型选择后，重复执行已保存的命令即可同步。撤销密钥会阻止后续请求。
+        更新网页中的模型选择后，重新复制并执行同步命令即可更新配置。历史设备码仍可继续用于鉴权，但无法恢复原始命令；禁用或删除设备码会阻止后续请求，历史请求记录会保留。
       </p>
+      <ConfirmDialog
+        isOpen={deleteIds.length > 0}
+        title="删除设备码"
+        message={deleteMessage}
+        confirmText="删除"
+        onConfirm={() => {
+          if (batchBusy) return;
+          const targets = deleteIds;
+          setDeleteIds([]);
+          void runBatch("delete", targets);
+        }}
+        onCancel={() => {
+          if (!batchBusy) setDeleteIds([]);
+        }}
+      />
     </section>
   );
 }
