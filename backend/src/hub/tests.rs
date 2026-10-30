@@ -262,7 +262,10 @@ async fn usage_views_group_by_user_and_show_owner_billing_names() {
         .unwrap();
     assert_eq!(providers.as_array().unwrap().len(), 1);
     assert_eq!(providers[0]["providerId"], "provider-config-display");
-    assert_eq!(providers[0]["providerName"], "bob");
+    assert_eq!(
+        providers[0]["providerName"],
+        "bob · provider-config-display"
+    );
     assert_eq!(providers[0]["requestCount"], 3);
 
     let models: Value = client
@@ -297,7 +300,10 @@ async fn usage_views_group_by_user_and_show_owner_billing_names() {
         .await
         .unwrap();
     assert_eq!(logs["total"], 3);
-    assert_eq!(logs["data"][0]["providerName"], "bob");
+    assert_eq!(
+        logs["data"][0]["providerName"],
+        "bob · provider-config-display"
+    );
     assert_eq!(logs["data"][0]["model"], "gpt-6.1-sol");
 
     task.abort();

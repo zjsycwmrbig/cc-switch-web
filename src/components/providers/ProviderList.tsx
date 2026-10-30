@@ -14,7 +14,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { Provider } from "@/types";
+import type { Provider, UsageData } from "@/types";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { claudeDesktopApi } from "@/lib/api/claudeDesktop";
@@ -89,6 +89,38 @@ function budgetLabel(budget?: Budget) {
   if (budget.tokens != null) parts.push(`${budget.tokens} tokens`);
   if (budget.credits != null) parts.push(`${budget.credits} 点`);
   return parts.length ? parts.join(" / ") : "不限";
+}
+
+/** 与供应商卡片使用同一口径：优先按剩余额度 / 总额度计算百分比。 */
+export function getUsageRemainingPercent(data: UsageData): number | null {
+  if (data.remaining === -1) return null;
+
+  let value: number | null = null;
+  if (data.unit === "%") {
+    if (typeof data.remaining === "number") {
+      value = data.remaining;
+    } else if (
+      typeof data.used === "number" &&
+      typeof data.total === "number" &&
+      data.total > 0
+    ) {
+      value = ((data.total - data.used) / data.total) * 100;
+    }
+  } else if (
+    typeof data.total === "number" &&
+    data.total > 0 &&
+    typeof data.remaining === "number"
+  ) {
+    value = (data.remaining / data.total) * 100;
+  } else if (
+    typeof data.total === "number" &&
+    data.total > 0 &&
+    typeof data.used === "number"
+  ) {
+    value = ((data.total - data.used) / data.total) * 100;
+  }
+
+  return value == null ? null : Math.max(0, Math.min(100, value));
 }
 
 /** 供应商库条目：平台上一个已发布的供应商，以及它的归属信息。 */
@@ -1086,13 +1118,18 @@ export function ProviderList({
                           if (!data.length) return <div className="text-xs text-muted-foreground">可用</div>;
                           return data.map((d: any, i: number) => {
                             const n = typeof d.remaining === "number" ? d.remaining : typeof d.used === "number" ? d.used : null;
-                            const pct = d.unit === "%" ? Math.max(0, Math.min(100, n ?? 0)) : null;
+                            const pct = getUsageRemainingPercent(d);
                             return (
                               <div key={`${d.planName ?? "plan"}-${i}`} className="space-y-1">
                                 <div className="flex items-center justify-between gap-2 text-[11px]">
                                   <span className="truncate text-muted-foreground">{planLabel(d.planName) || "余额"}</span>
-                                  <span className="font-mono text-foreground">
+                                  <span className="shrink-0 font-mono text-foreground">
                                     {n == null ? "—" : `${n.toFixed(d.unit === "%" ? 1 : 2)}${d.unit === "%" ? "%" : " " + (d.unit ?? "")}`}
+                                    {pct != null && d.unit !== "%" && (
+                                      <span className="ml-1 text-muted-foreground">
+                                        ({pct.toFixed(1)}%)
+                                      </span>
+                                    )}
                                   </span>
                                 </div>
                                 {pct != null && (

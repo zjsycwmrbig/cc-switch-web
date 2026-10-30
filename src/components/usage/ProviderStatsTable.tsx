@@ -46,29 +46,31 @@ export function ProviderStatsTable({
 
   return (
     <div className="rounded-lg border border-border/50 bg-card/40 backdrop-blur-sm overflow-hidden">
-      <Table>
+      <Table className="min-w-[1040px] table-fixed">
         <TableHeader>
           <TableRow>
-            <TableHead>{t("usage.provider", "Provider")}</TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap">
+              {t("usage.provider", "Provider")}
+            </TableHead>
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.requests", "请求数")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.tokens", "Tokens")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.cost", "成本")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.successRate", "成功率")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.avgLatency", "平均延迟")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.outputSpeed", "输出速度")}
             </TableHead>
-            <TableHead className="text-right">
+            <TableHead className="w-[12.5%] whitespace-nowrap text-right">
               {t("usage.estimatedSpeed", "估算速度")}
             </TableHead>
           </TableRow>
@@ -87,7 +89,9 @@ export function ProviderStatsTable({
             pagination.pageRows.map((stat) => (
               <TableRow key={stat.providerId}>
                 <TableCell className="font-medium">
-                  {stat.providerName}
+                  <span className="block truncate" title={stat.providerName}>
+                    {stat.providerName}
+                  </span>
                 </TableCell>
                 <TableCell className="text-right">
                   {stat.requestCount.toLocaleString()}

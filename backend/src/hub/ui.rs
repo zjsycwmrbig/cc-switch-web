@@ -412,9 +412,11 @@ fn filtered(user: &Identity, q: &UsageFilter) -> Result<(String, Vec<rusqlite::t
         .filter(|value| !value.trim().is_empty())
     {
         sql.push_str(
-            " AND LOWER(COALESCE(owner.username,r.owner_name,r.provider_name,'')) LIKE LOWER(?)",
+            " AND (LOWER(COALESCE(owner.username,r.owner_name,'')) LIKE LOWER(?) OR LOWER(COALESCE(r.provider_name,'')) LIKE LOWER(?))",
         );
-        args.push(format!("%{}%", value.trim()).into());
+        let pattern = format!("%{}%", value.trim());
+        args.push(pattern.clone().into());
+        args.push(pattern.into());
     }
     if let Some(value) = q.model.as_ref().filter(|value| !value.trim().is_empty()) {
         sql.push_str(
@@ -444,6 +446,7 @@ fn query(
     api::query_json(&*conn(db)?, sql, &refs)
 }
 const USAGE_FROM: &str = "hub_requests r LEFT JOIN hub_users u ON u.id=r.user_id LEFT JOIN hub_users owner ON owner.id=r.owner_id";
+const PROVIDER_DISPLAY_NAME: &str = "CASE WHEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) IS NOT NULL AND COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) IS NOT NULL THEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) || ' · ' || COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) WHEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) IS NOT NULL THEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) WHEN COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) IS NOT NULL THEN COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) ELSE '未路由' END";
 const BILLING_MODEL: &str = "COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型')";
 const METRICS:&str="COUNT(*) AS totalRequests,printf('%.6f',COALESCE(SUM(r.cost_credits),0)/1000000.0) AS totalCost,COALESCE(SUM(r.input_tokens),0) AS totalInputTokens,COALESCE(SUM(r.output_tokens),0) AS totalOutputTokens,COALESCE(SUM(r.cache_read_tokens),0) AS totalCacheReadTokens,COALESCE(SUM(r.cache_creation_tokens),0) AS totalCacheCreationTokens,COALESCE(SUM(r.input_tokens+r.output_tokens+r.cache_read_tokens+r.cache_creation_tokens),0) AS totalTokens,COALESCE(AVG(CASE WHEN r.state='completed' THEN 100.0 ELSE 0.0 END),0) AS successRate,COALESCE(AVG(r.latency_ms),0) AS avgLatencyMs";
 async fn usage(
@@ -460,11 +463,11 @@ async fn usage(
         return Ok(Json(json!(query(&app.db,&format!("SELECT 'gateway' AS dataSource,COUNT(*) AS requestCount,printf('%.6f',COALESCE(SUM(r.cost_credits),0)/1000000.0) AS totalCostUsd FROM {USAGE_FROM} WHERE {filter}"),&args)?)));
     }
     let (extra,group)=match kind.as_str() {
-        "summary"=>("".to_string(),""),
-        "trends"=>("date(r.created_at,'unixepoch') AS date,".to_string(),"date(r.created_at,'unixepoch')"),
-        "provider-stats"=>("COALESCE(r.provider_id,'unrouted') AS providerId,COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,''),'未路由') AS providerName,".to_string(),"COALESCE(r.provider_id,'unrouted'),COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,''),'未路由')"),
-        "user-stats"=>("COALESCE(r.user_id,'unknown') AS userId,COALESCE(u.username,'未知用户') AS username,".to_string(),"r.user_id,u.username"),
-        "model-stats"=>("COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型') AS model,printf('%.6f',COALESCE(AVG(r.cost_credits),0)/1000000.0) AS avgCostPerRequest,".to_string(),BILLING_MODEL),
+        "summary"=>("".to_string(),"".to_string()),
+        "trends"=>("date(r.created_at,'unixepoch') AS date,".to_string(),"date(r.created_at,'unixepoch')".to_string()),
+        "provider-stats"=>(format!("COALESCE(r.provider_id,'unrouted') AS providerId,{PROVIDER_DISPLAY_NAME} AS providerName,"),format!("COALESCE(r.provider_id,'unrouted'),{PROVIDER_DISPLAY_NAME}")),
+        "user-stats"=>("COALESCE(r.user_id,'unknown') AS userId,COALESCE(u.username,'未知用户') AS username,".to_string(),"r.user_id,u.username".to_string()),
+        "model-stats"=>("COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型') AS model,printf('%.6f',COALESCE(AVG(r.cost_credits),0)/1000000.0) AS avgCostPerRequest,".to_string(),BILLING_MODEL.to_string()),
         _=>return Err(Error::bad("未知统计类型")),
     };
     let suffix = if group.is_empty() {
@@ -495,7 +498,7 @@ struct Logs {
     scope: Option<String>,
 }
 fn log_row(r: &Value) -> Value {
-    let provider_name = r["owner_username"]
+    let provider_name = r["provider_display_name"]
         .as_str()
         .filter(|value| !value.is_empty())
         .unwrap_or("未路由");
@@ -535,7 +538,7 @@ async fn request_logs(
     let size = q.page_size.clamp(1, 100);
     args.push(size.into());
     args.push((page * size).into());
-    let rows=query(&app.db,&format!("SELECT r.*,u.username,COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,'')) AS owner_username FROM {USAGE_FROM} WHERE {filter} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?"),&args)?.iter().map(log_row).collect::<Vec<_>>();
+    let rows=query(&app.db,&format!("SELECT r.*,u.username,{PROVIDER_DISPLAY_NAME} AS provider_display_name FROM {USAGE_FROM} WHERE {filter} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?"),&args)?.iter().map(log_row).collect::<Vec<_>>();
     Ok(Json(
         json!({"data":rows,"total":total,"page":page,"pageSize":size}),
     ))
@@ -545,6 +548,6 @@ async fn request_detail(
     Extension(user): Extension<Identity>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    let rows=query(&app.db,"SELECT r.*,u.username,COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,'')) AS owner_username FROM hub_requests r LEFT JOIN hub_users u ON u.id=r.user_id LEFT JOIN hub_users owner ON owner.id=r.owner_id WHERE r.id=? AND (r.user_id=? OR r.owner_id=? OR ?=1)",&[id.into(),user.id.clone().into(),user.id.clone().into(),user.admin().into()])?;
+    let rows=query(&app.db,&format!("SELECT r.*,u.username,{PROVIDER_DISPLAY_NAME} AS provider_display_name FROM {USAGE_FROM} WHERE r.id=? AND (r.user_id=? OR r.owner_id=? OR ?=1)"),&[id.into(),user.id.clone().into(),user.id.clone().into(),user.admin().into()])?;
     Ok(Json(log_row(rows.first().ok_or_else(Error::forbidden)?)))
 }
