@@ -1,4 +1,4 @@
-import { getWebApiBase } from "@/lib/runtime/client/web";
+import { getWebApiBase, webFetch } from "@/lib/runtime/client/web";
 
 export async function unit<T = unknown>(
   path: string,
@@ -6,7 +6,7 @@ export async function unit<T = unknown>(
   body?: unknown,
 ): Promise<T> {
   const csrf = sessionStorage.getItem("ccswitchuint-csrf");
-  const response = await fetch(`${getWebApiBase()}/api/unit${path}`, {
+  const response = await webFetch(`${getWebApiBase()}/api/unit${path}`, {
     method,
     credentials: "same-origin",
     headers: {

@@ -78,6 +78,7 @@ export const useSettingsQuery = (): UseQueryResult<Settings> => {
 export interface UseUsageQueryOptions {
   enabled?: boolean;
   autoQueryInterval?: number; // 自动查询间隔（分钟），0 表示禁用
+  resourceId?: string;
 }
 
 export const useUsageQuery = (
@@ -85,7 +86,11 @@ export const useUsageQuery = (
   appId: AppId,
   options?: UseUsageQueryOptions,
 ) => {
-  const { enabled = true, autoQueryInterval = 0 } = options || {};
+  const {
+    enabled = true,
+    autoQueryInterval = 0,
+    resourceId,
+  } = options || {};
 
   // 计算 staleTime：如果有自动刷新间隔，使用该间隔；否则默认 5 分钟
   // 这样可以避免切换 app 页面时重复触发查询
@@ -96,7 +101,7 @@ export const useUsageQuery = (
 
   const query = useQuery<UsageResult>({
     queryKey: ["usage", providerId, appId],
-    queryFn: async () => usageApi.query(providerId, appId),
+    queryFn: async () => usageApi.query(providerId, appId, resourceId),
     enabled: enabled && !!providerId,
     refetchInterval:
       autoQueryInterval > 0

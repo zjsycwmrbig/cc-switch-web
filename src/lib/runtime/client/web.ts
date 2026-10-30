@@ -101,6 +101,7 @@ import type {
   ProviderStats,
   RequestLog,
   SessionSyncResult,
+  UserStats,
   UsageSummary,
 } from "@/types/usage";
 import {
@@ -111,6 +112,11 @@ import {
   getDefaultProxyTakeoverStatus,
   getDefaultSettings,
 } from "./defaults";
+import {
+  assertWindowAwake,
+  WINDOW_ACTIVITY_CHANGE_EVENT,
+  type WindowActivityChangeDetail,
+} from "@/lib/windowActivity";
 
 interface ProvidersResponse {
   providers: Record<string, Provider>;
@@ -169,6 +175,78 @@ function handleUnauthorized(response: Response): void {
     new CustomEvent(
       hasUnit() ? "ccswitchuint-unauthorized" : WEB_AUTH_REQUIRED_EVENT,
     ),
+  );
+}
+
+const activeWebFetches = new Set<AbortController>();
+
+if (typeof window !== "undefined") {
+  window.addEventListener(WINDOW_ACTIVITY_CHANGE_EVENT, (event: Event) => {
+    const detail = (event as CustomEvent<WindowActivityChangeDetail>).detail;
+    if (!detail.sleeping) return;
+    for (const controller of activeWebFetches) controller.abort();
+    activeWebFetches.clear();
+  });
+}
+
+export function webFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  assertWindowAwake();
+  const controller = new AbortController();
+  const callerSignal = init?.signal;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  const cleanup = () => {
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+    activeWebFetches.delete(controller);
+  };
+
+  if (callerSignal?.aborted) {
+    abortFromCaller();
+  } else {
+    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  activeWebFetches.add(controller);
+
+  return fetch(input, { ...init, signal: controller.signal }).then(
+    (response) => {
+      if (!response.body) {
+        cleanup();
+        return response;
+      }
+
+      const reader = response.body.getReader();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(stream) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) {
+              cleanup();
+              stream.close();
+              return;
+            }
+            stream.enqueue(chunk.value);
+          } catch (error) {
+            cleanup();
+            stream.error(error);
+          }
+        },
+        async cancel(reason) {
+          cleanup();
+          await reader.cancel(reason);
+        },
+      });
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    },
+    (error) => {
+      cleanup();
+      throw error;
+    },
   );
 }
 
@@ -308,7 +386,7 @@ async function getErrorMessage(
 
 async function requestJson<T>(path: string): Promise<T> {
   logWebRequest("GET", path);
-  const response = await fetch(`${getWebApiBase()}${path}`, {
+  const response = await webFetch(`${getWebApiBase()}${path}`, {
     headers: webRequestHeaders("application/json"),
   });
 
@@ -328,7 +406,7 @@ async function requestWithBody<T>(
   body?: unknown,
 ): Promise<T> {
   logWebRequest(method, path, body);
-  const response = await fetch(`${getWebApiBase()}${path}`, {
+  const response = await webFetch(`${getWebApiBase()}${path}`, {
     method,
     headers: {
       ...webRequestHeaders("application/json"),
@@ -357,7 +435,7 @@ async function requestFormData<T>(
   formData: FormData,
 ): Promise<T> {
   logWebRequest("POST", path, formData);
-  const response = await fetch(`${getWebApiBase()}${path}`, {
+  const response = await webFetch(`${getWebApiBase()}${path}`, {
     method: "POST",
     headers: webRequestHeaders("application/json"),
     body: formData,
@@ -956,7 +1034,13 @@ export async function getWebLiveProviderSettings(
 export async function getWebProviderUsage(
   appId: AppId,
   providerId: string,
+  resourceId?: string,
 ): Promise<UsageResult> {
+  if (hasUnit() && resourceId) {
+    return requestJson<UsageResult>(
+      `/api/unit/ui/library/${appId}/${encodeURIComponent(resourceId)}/usage`,
+    );
+  }
   return requestJson<UsageResult>(
     `/api/providers/${appId}/${encodeURIComponent(providerId)}/usage`,
   );
@@ -998,7 +1082,7 @@ export async function fetchWebWindowsEnvPaths(): Promise<
 > {
   const path = "/api/settings/windows-env-paths";
   logWebRequest("GET", path, undefined);
-  const response = await fetch(`${getWebApiBase()}${path}`, {
+  const response = await webFetch(`${getWebApiBase()}${path}`, {
     method: "GET",
     headers: webRequestHeaders("application/json"),
   });
@@ -1023,7 +1107,15 @@ export async function testWebUsageScript(
     userId?: string;
     templateType?: string;
   },
+  resourceId?: string,
 ): Promise<UsageResult> {
+  if (hasUnit() && resourceId) {
+    return requestWithBody<UsageResult>(
+      `/api/unit/ui/library/${appId}/${encodeURIComponent(resourceId)}/usage`,
+      "POST",
+      payload,
+    );
+  }
   return requestWithBody<UsageResult>(
     `/api/providers/${appId}/${encodeURIComponent(providerId)}/usage/test`,
     "POST",
@@ -1576,7 +1668,7 @@ export async function fetchWebdavRemoteInfo(): Promise<
 export async function downloadWebConfigExport(
   defaultName: string,
 ): Promise<ConfigDownloadResult> {
-  const response = await fetch(
+  const response = await webFetch(
     `${getWebApiBase()}/api/config/export?filename=${encodeURIComponent(defaultName)}`,
     {
       headers: {
@@ -1602,7 +1694,7 @@ export async function downloadWebConfigExport(
 
 export async function downloadWebAggregationModels(): Promise<ConfigDownloadResult> {
   const path = "/api/model-catalog/codex/aggregation";
-  const response = await fetch(`${getWebApiBase()}${path}`, {
+  const response = await webFetch(`${getWebApiBase()}${path}`, {
     headers: webRequestHeaders("application/json"),
     cache: "no-store",
   });
@@ -1725,9 +1817,7 @@ function trimUnitResourceModels<T extends Provider>(provider: T): T {
   if (!unitResource?.models?.length && !unitResource?.visibleModels?.length) {
     return provider;
   }
-  const slim = (
-    models?: Array<{ slug: string; display_name?: string }>,
-  ) =>
+  const slim = (models?: Array<{ slug: string; display_name?: string }>) =>
     models?.map((model) => ({
       slug: model.slug,
       ...(model.display_name ? { display_name: model.display_name } : {}),
@@ -1736,7 +1826,9 @@ function trimUnitResourceModels<T extends Provider>(provider: T): T {
     ...provider,
     unitResource: {
       ...unitResource,
-      ...(unitResource.models?.length ? { models: slim(unitResource.models) } : {}),
+      ...(unitResource.models?.length
+        ? { models: slim(unitResource.models) }
+        : {}),
       ...(unitResource.visibleModels?.length
         ? { visibleModels: slim(unitResource.visibleModels) }
         : {}),
@@ -2611,6 +2703,22 @@ export async function getWebModelStats(
   );
 }
 
+export async function getWebUserStats(
+  startDate?: number,
+  endDate?: number,
+  appType?: string,
+): Promise<UserStats[]> {
+  if (!hasUnit()) return [];
+  const params = new URLSearchParams();
+  if (typeof startDate === "number") params.set("startDate", String(startDate));
+  if (typeof endDate === "number") params.set("endDate", String(endDate));
+  if (appType) params.set("appType", appType);
+  const query = params.toString();
+  return requestJson<UserStats[]>(
+    `/api/unit/ui/usage/user-stats?scope=${getUsageScope()}&${query}`,
+  );
+}
+
 export async function getWebRequestLogs(
   filters: LogFilters,
   page: number,
@@ -2842,7 +2950,7 @@ export async function streamWebSession(
   onChunk: (chunk: import("@/types").TranscriptChunk) => void,
 ): Promise<void> {
   const query = new URLSearchParams({ providerId, sourcePath });
-  const response = await fetch(
+  const response = await webFetch(
     `${getWebApiBase()}/api/sessions/stream?${query}`,
     { headers: webRequestHeaders("application/x-ndjson") },
   );
@@ -2884,7 +2992,7 @@ export async function streamWebSession(
 export async function getWebSessionImage(
   payload: unknown,
 ): Promise<ArrayBuffer> {
-  const response = await fetch(`${getWebApiBase()}/api/sessions/image`, {
+  const response = await webFetch(`${getWebApiBase()}/api/sessions/image`, {
     method: "POST",
     headers: {
       ...webRequestHeaders("application/octet-stream"),

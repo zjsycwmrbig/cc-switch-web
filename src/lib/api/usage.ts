@@ -4,6 +4,7 @@ import type {
   DailyStats,
   ProviderStats,
   ModelStats,
+  UserStats,
   RequestLog,
   LogFilters,
   ModelPricing,
@@ -20,8 +21,12 @@ import type { TemplateType } from "@/config/constants";
 
 export const usageApi = {
   // Provider usage script methods
-  query: async (providerId: string, appId: AppId): Promise<UsageResult> => {
-    return invoke("queryProviderUsage", { providerId, app: appId });
+  query: async (
+    providerId: string,
+    appId: AppId,
+    resourceId?: string,
+  ): Promise<UsageResult> => {
+    return invoke("queryProviderUsage", { providerId, app: appId, resourceId });
   },
 
   testScript: async (
@@ -34,6 +39,7 @@ export const usageApi = {
     accessToken?: string,
     userId?: string,
     templateType?: TemplateType,
+    resourceId?: string,
   ): Promise<UsageResult> => {
     return invoke("testUsageScript", {
       providerId,
@@ -45,6 +51,7 @@ export const usageApi = {
       accessToken,
       userId,
       templateType,
+      resourceId,
     });
   },
 
@@ -79,6 +86,14 @@ export const usageApi = {
     appType?: string,
   ): Promise<ModelStats[]> => {
     return invoke("get_model_stats", { startDate, endDate, appType });
+  },
+
+  getUserStats: async (
+    startDate?: number,
+    endDate?: number,
+    appType?: string,
+  ): Promise<UserStats[]> => {
+    return invoke("get_user_stats", { startDate, endDate, appType });
   },
 
   getRequestLogs: async (

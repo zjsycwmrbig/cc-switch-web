@@ -185,6 +185,123 @@ fn app(db: Arc<Database>) -> Arc<AppState> {
         mode_startup_errors: Arc::new(RwLock::new(Default::default())),
     })
 }
+#[tokio::test]
+async fn usage_views_group_by_user_and_show_owner_billing_names() {
+    let db = database();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'admin','admin-csrf',?2,?3)",
+            params![auth::hash("admin-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+    let c = conn(&db).unwrap();
+    for (request, user, cost, latency) in [
+        ("alice-request", "alice", 1_000_000, 1200),
+        ("bob-request", "bob", 2_000_000, 800),
+    ] {
+        c.execute(
+            "INSERT INTO hub_requests(
+                id,user_id,key_id,device,request_model,app_type,resource_id,
+                owner_id,provider_id,upstream_model,state,status,input_tokens,
+                output_tokens,cost_credits,created_at,latency_ms
+             ) VALUES(?1,?2,?2,'CLI','ccs-openai/gpt-6.1-sol','codex',NULL,
+                'bob','provider-config-display','gpt-6.1-sol','completed',200,10,
+                20,?3,?4,?5)",
+            params![request, user, cost, now(), latency],
+        )
+        .unwrap();
+    }
+    c.execute(
+        "INSERT INTO hub_requests(
+            id,user_id,key_id,device,request_model,app_type,resource_id,
+            owner_id,provider_id,upstream_model,state,status,input_tokens,
+            output_tokens,cost_credits,created_at,latency_ms
+         ) VALUES('failed-request','alice','alice','CLI',
+            'ccs-other/gpt-6.1-sol','codex',NULL,'bob',
+            'provider-config-display',NULL,'failed',500,10,0,0,?1,100)",
+        params![now()],
+    )
+    .unwrap();
+    drop(c);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, api::routes(app(db.clone()))).into_future());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let cookie = format!("{}={}", auth::COOKIE, "admin-session-token");
+    let range = format!("startDate=0&endDate={}", now() + 1);
+
+    let users: Value = client
+        .get(format!(
+            "{base}/api/unit/ui/usage/user-stats?scope=all&{range}"
+        ))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(users.as_array().unwrap().len(), 2);
+    assert_eq!(users[0]["username"], "alice");
+    assert_eq!(users[0]["requestCount"], 2);
+    assert_eq!(users[1]["username"], "bob");
+
+    let providers: Value = client
+        .get(format!(
+            "{base}/api/unit/ui/usage/provider-stats?scope=all&{range}"
+        ))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(providers.as_array().unwrap().len(), 1);
+    assert_eq!(providers[0]["providerId"], "provider-config-display");
+    assert_eq!(providers[0]["providerName"], "bob");
+    assert_eq!(providers[0]["requestCount"], 3);
+
+    let models: Value = client
+        .get(format!(
+            "{base}/api/unit/ui/usage/model-stats?scope=all&{range}"
+        ))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(models.as_array().unwrap().len(), 1);
+    assert_eq!(models[0]["model"], "gpt-6.1-sol");
+
+    let logs: Value = client
+        .post(format!("{base}/api/unit/ui/usage/request-logs"))
+        .header("Cookie", &cookie)
+        .header("Origin", &base)
+        .header("x-csrf-token", "admin-csrf")
+        .json(&json!({
+            "filters": {},
+            "page": 0,
+            "pageSize": 20,
+            "scope": "all"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(logs["total"], 3);
+    assert_eq!(logs["data"][0]["providerName"], "bob");
+    assert_eq!(logs["data"][0]["model"], "gpt-6.1-sol");
+
+    task.abort();
+}
 async fn batch_device_keys(
     client: &reqwest::Client,
     base: &str,
@@ -1046,8 +1163,7 @@ async fn library_usage_allows_private_owner_but_rejects_other_users() {
     );
     let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_base = format!("http://{}", upstream_listener.local_addr().unwrap());
-    let upstream_task =
-        tokio::spawn(axum::serve(upstream_listener, upstream).into_future());
+    let upstream_task = tokio::spawn(axum::serve(upstream_listener, upstream).into_future());
     resource(&db, "alice-private", "alice", &upstream_base, false);
     resource(&db, "bob-private", "bob", "https://example.com/v1", false);
     let mut provider = db
@@ -1064,12 +1180,12 @@ async fn library_usage_allows_private_owner_but_rejects_other_users() {
             return { remaining: response.balance, unit: "USD" };
         }
     })"#
-        .replace("__BALANCE_URL__", &format!("{upstream_base}/balance"));
+    .replace("__BALANCE_URL__", &format!("{upstream_base}/balance"));
     provider.meta = Some(crate::provider::ProviderMeta {
         usage_script: Some(crate::provider::UsageScript {
             enabled: true,
             language: "javascript".into(),
-            code: usage_code,
+            code: usage_code.clone(),
             timeout: Some(5),
             api_key: None,
             base_url: Some(upstream_base.clone()),
@@ -1097,6 +1213,14 @@ async fn library_usage_allows_private_owner_but_rejects_other_users() {
             params![auth::hash("alice-session-token"), now() + 3600, now()],
         )
         .unwrap();
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'bob','bob-csrf',?2,?3)",
+            params![auth::hash("bob-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
     let state = app(db.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1116,6 +1240,26 @@ async fn library_usage_allows_private_owner_but_rejects_other_users() {
     let own_private: Value = own_private.json().await.unwrap();
     assert_eq!(own_private["success"], true);
     assert_eq!(own_private["data"][0]["remaining"], 12.5);
+
+    let own_script_test = client
+        .post(format!(
+            "{base}/api/unit/ui/library/codex/alice-private/usage"
+        ))
+        .header("Cookie", &cookie)
+        .header("Origin", &base)
+        .header("x-csrf-token", "alice-csrf")
+        .json(&json!({
+            "scriptCode": usage_code,
+            "timeout": 5,
+            "templateType": "custom"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(own_script_test.status(), 200);
+    let own_script_test: Value = own_script_test.json().await.unwrap();
+    assert_eq!(own_script_test["success"], true);
+    assert_eq!(own_script_test["data"][0]["remaining"], 12.5);
 
     assert_eq!(
         client
@@ -1157,14 +1301,6 @@ async fn library_usage_allows_private_owner_but_rejects_other_users() {
             [],
         )
         .unwrap();
-    conn(&db)
-        .unwrap()
-        .execute(
-            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
-             VALUES(?1,'bob','bob-csrf',?2,?3)",
-            params![auth::hash("bob-session-token"), now() + 3600, now()],
-        )
-        .unwrap();
     assert_eq!(
         client
             .get(format!(
@@ -1179,6 +1315,28 @@ async fn library_usage_allows_private_owner_but_rejects_other_users() {
             .unwrap()
             .status(),
         200
+    );
+    assert_eq!(
+        client
+            .post(format!(
+                "{base}/api/unit/ui/library/codex/alice-private/usage"
+            ))
+            .header(
+                "Cookie",
+                format!("{}={}", auth::COOKIE, "bob-session-token")
+            )
+            .header("Origin", &base)
+            .header("x-csrf-token", "bob-csrf")
+            .json(&json!({
+                "scriptCode": usage_code,
+                "timeout": 5,
+                "templateType": "custom"
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
     );
     task.abort();
     upstream_task.abort();

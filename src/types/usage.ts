@@ -124,6 +124,16 @@ export interface ModelStats {
   avgCostPerRequest: string;
 }
 
+export interface UserStats {
+  userId: string;
+  username: string;
+  requestCount: number;
+  totalTokens: number;
+  totalCost: string;
+  successRate: number;
+  avgLatencyMs: number;
+}
+
 export interface LogFilters {
   appType?: string;
   username?: string;

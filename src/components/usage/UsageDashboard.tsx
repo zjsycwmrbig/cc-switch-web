@@ -9,6 +9,7 @@ import { UsageTrendChart } from "./UsageTrendChart";
 import { RequestLogTable } from "./RequestLogTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { ModelStatsTable } from "./ModelStatsTable";
+import { UserStatsTable } from "./UserStatsTable";
 import { DataSourceBar } from "./DataSourceBar";
 import type { AppTypeFilter, UsageRangeSelection } from "@/types/usage";
 import { motion } from "framer-motion";
@@ -20,6 +21,7 @@ import {
   Coins,
   Loader2,
   ScanSearch,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -280,7 +282,7 @@ export function UsageDashboard({
       <div className="space-y-4">
         <Tabs defaultValue="logs" className="w-full">
           <div className="flex items-center justify-between mb-4">
-            <TabsList className="bg-muted/50">
+            <TabsList className="w-full justify-start overflow-x-auto bg-muted/50 sm:w-auto">
               <TabsTrigger value="logs" className="gap-2">
                 <ListFilter className="h-4 w-4" />
                 {t("usage.requestLogs")}
@@ -289,6 +291,12 @@ export function UsageDashboard({
                 <Activity className="h-4 w-4" />
                 {t("usage.providerStats")}
               </TabsTrigger>
+              {session && (
+                <TabsTrigger value="users" className="gap-2">
+                  <Users className="h-4 w-4" />
+                  {t("usage.userStats")}
+                </TabsTrigger>
+              )}
               <TabsTrigger value="models" className="gap-2">
                 <BarChart3 className="h-4 w-4" />
                 {t("usage.modelStats")}
@@ -318,6 +326,16 @@ export function UsageDashboard({
                 refreshIntervalMs={refreshIntervalMs}
               />
             </TabsContent>
+
+            {session && (
+              <TabsContent value="users" className="mt-0">
+                <UserStatsTable
+                  range={range}
+                  appType={appType}
+                  refreshIntervalMs={refreshIntervalMs}
+                />
+              </TabsContent>
+            )}
 
             <TabsContent value="models" className="mt-0">
               <ModelStatsTable

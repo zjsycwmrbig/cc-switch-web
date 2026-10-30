@@ -377,6 +377,12 @@
     "launchOnStartup": "Launch on Startup",
     "launchOnStartupDescription": "Automatically run the CC Switch Web local service when the system starts",
     "autoLaunchFailed": "Failed to set auto-launch",
+    "idleSleep": {
+      "title": "Frontend Sleep",
+      "hint": "Control whether this browser page pauses backend interactions while idle",
+      "enabled": "Enable 1-minute idle sleep",
+      "enabledDescription": "Enter sleep after 1 minute without mouse, keyboard, or touch activity. Backend requests are paused until you interact with the page again."
+    },
     "claudeCode": "Claude Code",
     "claudeCodeHint": "Manage Claude Code extension sync and local first-run confirmation behavior",
     "enableClaudePluginIntegration": "Apply to Claude Code extension",
@@ -1702,6 +1708,7 @@
     "cacheTokens": "Cache Tokens",
     "requestLogs": "Request Logs",
     "providerStats": "Provider Stats",
+    "userStats": "User Stats",
     "modelStats": "Model Stats",
     "time": "Time",
     "user": "User",

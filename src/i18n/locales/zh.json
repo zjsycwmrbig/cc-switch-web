@@ -377,6 +377,12 @@
     "launchOnStartup": "开机自启",
     "launchOnStartupDescription": "随系统启动自动运行 CC Switch Web 本地服务",
     "autoLaunchFailed": "设置开机自启失败",
+    "idleSleep": {
+      "title": "前端休眠",
+      "hint": "控制当前浏览器页面在空闲时是否暂停后端交互",
+      "enabled": "启用 1 分钟空闲休眠",
+      "enabledDescription": "1 分钟内无鼠标、键盘或触摸操作时进入休眠；休眠期间不发起后端请求，任意操作即可唤醒。"
+    },
     "claudeCode": "Claude Code",
     "claudeCodeHint": "管理 Claude Code 插件同步与首次安装确认相关行为",
     "enableClaudePluginIntegration": "应用到 Claude Code 插件",
@@ -1702,6 +1708,7 @@
     "cacheTokens": "缓存 Token",
     "requestLogs": "请求日志",
     "providerStats": "Provider 统计",
+    "userStats": "按用户统计",
     "modelStats": "模型统计",
     "time": "时间",
     "user": "用户",

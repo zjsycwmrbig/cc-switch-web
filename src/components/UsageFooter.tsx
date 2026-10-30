@@ -124,6 +124,7 @@ const UsageFooter: React.FC<UsageFooterProps> = ({
   } = useUsageQuery(providerId, appId, {
     enabled: usageEnabled,
     autoQueryInterval,
+    resourceId: provider.unitResource?.id,
   });
   const refresh = () => refetch();
 

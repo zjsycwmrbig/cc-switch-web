@@ -21,7 +21,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/unit/ui/usage/request-logs", post(request_logs))
         .route("/api/unit/ui/usage/request-logs/:id", get(request_detail))
         .route("/api/unit/ui/usage/:kind", get(usage))
-        .route("/api/unit/ui/library/:app/:id/usage", get(library_usage))
+        .route(
+            "/api/unit/ui/library/:app/:id/usage",
+            get(library_usage).post(test_library_usage_script),
+        )
         .route("/api/unit/ui/accounts/:id/models", get(account_models))
 }
 fn visible(db: &crate::database::Database, user: &Identity, r: &resources::Resource) -> bool {
@@ -105,6 +108,55 @@ async fn library_usage(
         &app.copilot_auth_state,
         app_type,
         &r.provider_id,
+    )
+    .await
+    {
+        Ok(result) => Ok(Json(serde_json::to_value(result).unwrap_or_else(
+            |_| json!({"success": false, "error": "用量结果序列化失败"}),
+        ))),
+        Err(error) => Ok(Json(json!({"success": false, "error": format!("{error}")}))),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestLibraryUsageScript {
+    script_code: String,
+    timeout: Option<u64>,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    access_token: Option<String>,
+    user_id: Option<String>,
+    template_type: Option<String>,
+}
+
+/// 脚本测试只允许资源的提供者或管理员执行。
+///
+/// 请求体里可以携带任意脚本，不能把该能力开放给供应商市场的普通访问者。
+async fn test_library_usage_script(
+    State(app): State<Arc<AppState>>,
+    Extension(user): Extension<Identity>,
+    Path((kind, resource)): Path<(String, String)>,
+    Json(payload): Json<TestLibraryUsageScript>,
+) -> Result<Json<Value>> {
+    use std::str::FromStr;
+    let r = resources::get(&app.db, &resource)?;
+    if r.app_type != kind || (r.owner_id != user.id && !user.admin()) {
+        return Err(Error::forbidden());
+    }
+    let app_type =
+        crate::app_config::AppType::from_str(&kind).map_err(|_| Error::bad("未知应用类型"))?;
+    match crate::commands::test_usage_script_internal(
+        &app,
+        app_type,
+        &r.provider_id,
+        &payload.script_code,
+        payload.timeout,
+        payload.api_key.as_deref(),
+        payload.base_url.as_deref(),
+        payload.access_token.as_deref(),
+        payload.user_id.as_deref(),
+        payload.template_type.as_deref(),
     )
     .await
     {
@@ -346,24 +398,36 @@ fn filtered(user: &Identity, q: &UsageFilter) -> Result<(String, Vec<rusqlite::t
         "all" if user.admin() => {}
         _ => return Err(Error::forbidden()),
     }
-    for (col, value) in [
-        ("r.app_type", &q.app_type),
-        ("r.provider_name", &q.provider_name),
-        ("r.request_model", &q.model),
-    ] {
-        if let Some(v) = value.as_ref().filter(|v| !v.is_empty() && *v != "all") {
-            sql.push_str(&format!(" AND {col}=?"));
-            args.push(v.clone().into());
-        }
+    if let Some(value) = q
+        .app_type
+        .as_ref()
+        .filter(|value| !value.is_empty() && *value != "all")
+    {
+        sql.push_str(" AND r.app_type=?");
+        args.push(value.clone().into());
+    }
+    if let Some(value) = q
+        .provider_name
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        sql.push_str(
+            " AND LOWER(COALESCE(owner.username,r.owner_name,r.provider_name,'')) LIKE LOWER(?)",
+        );
+        args.push(format!("%{}%", value.trim()).into());
+    }
+    if let Some(value) = q.model.as_ref().filter(|value| !value.trim().is_empty()) {
+        sql.push_str(
+            " AND LOWER(COALESCE(NULLIF(r.upstream_model,''),r.request_model,'')) LIKE LOWER(?)",
+        );
+        args.push(format!("%{}%", value.trim()).into());
     }
     if let Some(status) = q.status_code {
         sql.push_str(" AND r.status=?");
         args.push(status.into());
     }
     if let Some(username) = q.username.as_ref().filter(|value| !value.trim().is_empty()) {
-        sql.push_str(
-            " AND r.user_id IN (SELECT id FROM hub_users WHERE LOWER(username) LIKE LOWER(?))",
-        );
+        sql.push_str(" AND LOWER(u.username) LIKE LOWER(?)");
         args.push(format!("%{}%", username.trim()).into());
     }
     Ok((sql, args))
@@ -379,6 +443,8 @@ fn query(
         .collect::<Vec<_>>();
     api::query_json(&*conn(db)?, sql, &refs)
 }
+const USAGE_FROM: &str = "hub_requests r LEFT JOIN hub_users u ON u.id=r.user_id LEFT JOIN hub_users owner ON owner.id=r.owner_id";
+const BILLING_MODEL: &str = "COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型')";
 const METRICS:&str="COUNT(*) AS totalRequests,printf('%.6f',COALESCE(SUM(r.cost_credits),0)/1000000.0) AS totalCost,COALESCE(SUM(r.input_tokens),0) AS totalInputTokens,COALESCE(SUM(r.output_tokens),0) AS totalOutputTokens,COALESCE(SUM(r.cache_read_tokens),0) AS totalCacheReadTokens,COALESCE(SUM(r.cache_creation_tokens),0) AS totalCacheCreationTokens,COALESCE(SUM(r.input_tokens+r.output_tokens+r.cache_read_tokens+r.cache_creation_tokens),0) AS totalTokens,COALESCE(AVG(CASE WHEN r.state='completed' THEN 100.0 ELSE 0.0 END),0) AS successRate,COALESCE(AVG(r.latency_ms),0) AS avgLatencyMs";
 async fn usage(
     State(app): State<Arc<AppState>>,
@@ -391,13 +457,14 @@ async fn usage(
         return Ok(Json(Value::Null));
     }
     if kind == "data-sources" {
-        return Ok(Json(json!(query(&app.db,&format!("SELECT 'gateway' AS dataSource,COUNT(*) AS requestCount,printf('%.6f',COALESCE(SUM(r.cost_credits),0)/1000000.0) AS totalCostUsd FROM hub_requests r WHERE {filter}"),&args)?)));
+        return Ok(Json(json!(query(&app.db,&format!("SELECT 'gateway' AS dataSource,COUNT(*) AS requestCount,printf('%.6f',COALESCE(SUM(r.cost_credits),0)/1000000.0) AS totalCostUsd FROM {USAGE_FROM} WHERE {filter}"),&args)?)));
     }
     let (extra,group)=match kind.as_str() {
         "summary"=>("".to_string(),""),
         "trends"=>("date(r.created_at,'unixepoch') AS date,".to_string(),"date(r.created_at,'unixepoch')"),
-        "provider-stats"=>("COALESCE(r.provider_id,'unrouted') AS providerId,COALESCE(r.provider_name,'未路由') AS providerName,".to_string(),"r.provider_id"),
-        "model-stats"=>("r.request_model AS model,printf('%.6f',COALESCE(AVG(r.cost_credits),0)/1000000.0) AS avgCostPerRequest,".to_string(),"r.request_model"),
+        "provider-stats"=>("COALESCE(r.provider_id,'unrouted') AS providerId,COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,''),'未路由') AS providerName,".to_string(),"COALESCE(r.provider_id,'unrouted'),COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,''),'未路由')"),
+        "user-stats"=>("COALESCE(r.user_id,'unknown') AS userId,COALESCE(u.username,'未知用户') AS username,".to_string(),"r.user_id,u.username"),
+        "model-stats"=>("COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型') AS model,printf('%.6f',COALESCE(AVG(r.cost_credits),0)/1000000.0) AS avgCostPerRequest,".to_string(),BILLING_MODEL),
         _=>return Err(Error::bad("未知统计类型")),
     };
     let suffix = if group.is_empty() {
@@ -407,7 +474,7 @@ async fn usage(
     };
     let mut rows = query(
         &app.db,
-        &format!("SELECT {extra}{METRICS} FROM hub_requests r WHERE {filter}{suffix}"),
+        &format!("SELECT {extra}{METRICS} FROM {USAGE_FROM} WHERE {filter}{suffix}"),
         &args,
     )?;
     for row in &mut rows {
@@ -428,7 +495,26 @@ struct Logs {
     scope: Option<String>,
 }
 fn log_row(r: &Value) -> Value {
-    json!({"requestId":r["id"],"providerId":r["provider_id"].as_str().unwrap_or("unrouted"),"providerName":r["provider_name"],"appType":r["app_type"],"model":r["upstream_model"].as_str().unwrap_or_else(||r["request_model"].as_str().unwrap_or("")),"requestModel":r["request_model"],"costMultiplier":"1","inputTokens":r["input_tokens"],"outputTokens":r["output_tokens"],"cacheReadTokens":r["cache_read_tokens"],"cacheCreationTokens":r["cache_creation_tokens"],"inputCostUsd":"0","outputCostUsd":"0","cacheReadCostUsd":"0","cacheCreationCostUsd":"0","totalCostUsd":format!("{:.6}",r["cost_credits"].as_i64().unwrap_or(0) as f64/1_000_000.0),"costUnknown":r["cost_credits"].is_null(),"isStreaming":r["stream"].as_i64()==Some(1),"latencyMs":r["latency_ms"],"firstTokenMs":r["first_token_ms"],"durationMs":r["latency_ms"],"statusCode":r["status"],"errorMessage":r["error_code"],"createdAt":r["created_at"],"dataSource":"gateway","username":r["username"],"device":r["device"],"state":r["state"]})
+    let provider_name = r["owner_username"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("未路由");
+    let model = r["upstream_model"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            r["request_model"].as_str().map(|value| {
+                value
+                    .split_once('/')
+                    .map(|(_, model)| model)
+                    .filter(|model| !model.is_empty())
+                    .unwrap_or(value)
+                    .to_owned()
+            })
+        })
+        .unwrap_or_default();
+    json!({"requestId":r["id"],"providerId":r["owner_id"],"providerName":provider_name,"appType":r["app_type"],"model":model,"requestModel":r["request_model"],"costMultiplier":"1","inputTokens":r["input_tokens"],"outputTokens":r["output_tokens"],"cacheReadTokens":r["cache_read_tokens"],"cacheCreationTokens":r["cache_creation_tokens"],"inputCostUsd":"0","outputCostUsd":"0","cacheReadCostUsd":"0","cacheCreationCostUsd":"0","totalCostUsd":format!("{:.6}",r["cost_credits"].as_i64().unwrap_or(0) as f64/1_000_000.0),"costUnknown":r["cost_credits"].is_null(),"isStreaming":r["stream"].as_i64()==Some(1),"latencyMs":r["latency_ms"],"firstTokenMs":r["first_token_ms"],"durationMs":r["latency_ms"],"statusCode":r["status"],"errorMessage":r["error_code"],"createdAt":r["created_at"],"dataSource":"gateway","username":r["username"],"device":r["device"],"state":r["state"]})
 }
 async fn request_logs(
     State(app): State<Arc<AppState>>,
@@ -439,7 +525,7 @@ async fn request_logs(
     let (filter, mut args) = filtered(&user, &q.filters)?;
     let total = query(
         &app.db,
-        &format!("SELECT COUNT(*) AS total FROM hub_requests r WHERE {filter}"),
+        &format!("SELECT COUNT(*) AS total FROM {USAGE_FROM} WHERE {filter}"),
         &args,
     )?
     .first()
@@ -449,7 +535,7 @@ async fn request_logs(
     let size = q.page_size.clamp(1, 100);
     args.push(size.into());
     args.push((page * size).into());
-    let rows=query(&app.db,&format!("SELECT r.*,u.username FROM hub_requests r JOIN hub_users u ON u.id=r.user_id WHERE {filter} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?"),&args)?.iter().map(log_row).collect::<Vec<_>>();
+    let rows=query(&app.db,&format!("SELECT r.*,u.username,COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,'')) AS owner_username FROM {USAGE_FROM} WHERE {filter} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?"),&args)?.iter().map(log_row).collect::<Vec<_>>();
     Ok(Json(
         json!({"data":rows,"total":total,"page":page,"pageSize":size}),
     ))
@@ -459,6 +545,6 @@ async fn request_detail(
     Extension(user): Extension<Identity>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    let rows=query(&app.db,"SELECT r.*,u.username FROM hub_requests r JOIN hub_users u ON u.id=r.user_id WHERE r.id=? AND (r.user_id=? OR r.owner_id=? OR ?=1)",&[id.into(),user.id.clone().into(),user.id.clone().into(),user.admin().into()])?;
+    let rows=query(&app.db,"SELECT r.*,u.username,COALESCE(owner.username,NULLIF(r.owner_name,''),NULLIF(r.provider_name,'')) AS owner_username FROM hub_requests r LEFT JOIN hub_users u ON u.id=r.user_id LEFT JOIN hub_users owner ON owner.id=r.owner_id WHERE r.id=? AND (r.user_id=? OR r.owner_id=? OR ?=1)",&[id.into(),user.id.clone().into(),user.id.clone().into(),user.admin().into()])?;
     Ok(Json(log_row(rows.first().ok_or_else(Error::forbidden)?)))
 }

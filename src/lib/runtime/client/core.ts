@@ -186,6 +186,7 @@ import {
   getWebModelStats,
   getWebProviderLimits,
   getWebProviderStats,
+  getWebUserStats,
   getWebRequestDetail,
   getWebRequestLogs,
   getWebUsageDataSources,
@@ -351,6 +352,7 @@ export async function invoke<T>(
       return (await getWebProviderUsage(
         args?.app as AppId,
         args?.providerId as string,
+        args?.resourceId as string | undefined,
       )) as T;
     case "get_managed_tool_versions":
       return manageWebTools<T>("versions", args ?? {});
@@ -394,6 +396,7 @@ export async function invoke<T>(
           userId: args?.userId as string | undefined,
           templateType: args?.templateType as string | undefined,
         },
+        args?.resourceId as string | undefined,
       )) as T;
     case "read_live_provider_settings":
       return (await getWebLiveProviderSettings(args?.app as AppId)) as T;
@@ -915,6 +918,12 @@ export async function invoke<T>(
       )) as T;
     case "get_model_stats":
       return (await getWebModelStats(
+        args?.startDate as number | undefined,
+        args?.endDate as number | undefined,
+        args?.appType as string | undefined,
+      )) as T;
+    case "get_user_stats":
+      return (await getWebUserStats(
         args?.startDate as number | undefined,
         args?.endDate as number | undefined,
         args?.appType as string | undefined,

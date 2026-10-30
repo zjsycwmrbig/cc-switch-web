@@ -238,6 +238,7 @@ export function ProviderCard({
   const { data: usage } = useUsageQuery(provider.id, appId, {
     enabled: scriptUsageActive && canManageProviderUsage,
     autoQueryInterval,
+    resourceId: provider.unitResource?.id,
   });
 
   const isTokenPlan =

@@ -84,6 +84,21 @@ export const usageKeys = {
       customEndDate ?? 0,
       appType ?? "all",
     ] as const,
+  userStats: (
+    preset: UsageRangeSelection["preset"],
+    customStartDate: number | undefined,
+    customEndDate: number | undefined,
+    appType?: string,
+  ) =>
+    [
+      ...usageKeys.all,
+      getUsageScope(),
+      "user-stats",
+      preset,
+      customStartDate ?? 0,
+      customEndDate ?? 0,
+      appType ?? "all",
+    ] as const,
   modelStats: (
     preset: UsageRangeSelection["preset"],
     customStartDate: number | undefined,
@@ -208,6 +223,29 @@ export function useModelStats(
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
       return usageApi.getModelStats(startDate, endDate, effectiveAppType);
+    },
+    placeholderData: keepPreviousData,
+    refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
+  });
+}
+
+export function useUserStats(
+  range: UsageRangeSelection,
+  appType?: string,
+  options?: UsageQueryOptions,
+) {
+  const effectiveAppType = appType === "all" ? undefined : appType;
+  return useQuery({
+    queryKey: usageKeys.userStats(
+      range.preset,
+      range.customStartDate,
+      range.liveEndTime ? undefined : range.customEndDate,
+      appType,
+    ),
+    queryFn: () => {
+      const { startDate, endDate } = resolveUsageRange(range);
+      return usageApi.getUserStats(startDate, endDate, effectiveAppType);
     },
     placeholderData: keepPreviousData,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
