@@ -716,6 +716,15 @@ async fn require_access_key(
         if matches!(path, "/api/health" | "/api/auth/status") {
             return next.run(request).await;
         }
+        // The systemd unit uses the access key to start the local routing proxy
+        // after a restart. In multi-user mode that key has no web session, so
+        // allow only this idempotent bootstrap operation through the key gate.
+        if path == "/api/proxy/start"
+            && request.method() == axum::http::Method::POST
+            && state.access_key.verify(bearer_token(request.headers()))
+        {
+            return next.run(request).await;
+        }
         let user =
             match crate::hub::auth::authenticate(&state.app_state.db, request.headers(), true) {
                 Ok(u) => u,
