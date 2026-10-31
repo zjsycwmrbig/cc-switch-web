@@ -33,7 +33,6 @@ const directGlm: SelectableModelRoute = {
   model: "GLM 5",
   targets: ["provider-a"],
 };
-const routes = [autoDeepSeek, directDeepSeek, directKimi, directGlm];
 const slug = (route: SelectableModelRoute) => routeSlug(route, resources);
 
 describe("model selection helpers", () => {
@@ -59,23 +58,18 @@ describe("model selection helpers", () => {
     const selected = new Set([slug(directGlm)]);
 
     expect(
-      selectFilteredRoutes(
-        routes,
-        [directDeepSeek, directKimi],
-        resources,
-        selected,
-      ),
+      selectFilteredRoutes([directDeepSeek, directKimi], resources, selected),
     ).toEqual(
       new Set([slug(directGlm), slug(directDeepSeek), slug(directKimi)]),
     );
   });
 
-  it("筛选结果中的自动路由会折叠筛选外同模型的直连路由", () => {
+  it("自动路由和同模型的直连路由可以同时加入同步", () => {
     const selected = new Set([slug(directDeepSeek), slug(directGlm)]);
 
-    expect(
-      selectFilteredRoutes(routes, [autoDeepSeek], resources, selected),
-    ).toEqual(new Set([slug(autoDeepSeek), slug(directGlm)]));
+    expect(selectFilteredRoutes([autoDeepSeek], resources, selected)).toEqual(
+      new Set([slug(directDeepSeek), slug(autoDeepSeek), slug(directGlm)]),
+    );
   });
 
   it("清空只移除当前筛选结果，并保留筛选外的选择", () => {

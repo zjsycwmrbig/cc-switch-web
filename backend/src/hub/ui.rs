@@ -446,7 +446,10 @@ fn query(
     api::query_json(&*conn(db)?, sql, &refs)
 }
 const USAGE_FROM: &str = "hub_requests r LEFT JOIN hub_users u ON u.id=r.user_id LEFT JOIN hub_users owner ON owner.id=r.owner_id";
-const PROVIDER_DISPLAY_NAME: &str = "CASE WHEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) IS NOT NULL AND COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) IS NOT NULL THEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) || ' · ' || COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) WHEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) IS NOT NULL THEN COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,'')) WHEN COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) IS NOT NULL THEN COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,'')) ELSE '未路由' END";
+const PROVIDER_NAME: &str =
+    "COALESCE(NULLIF(r.provider_name,''),NULLIF(r.provider_id,''),'未路由')";
+const OWNER_DISPLAY_NAME: &str =
+    "COALESCE(NULLIF(owner.username,''),NULLIF(r.owner_name,''),'未知用户')";
 const BILLING_MODEL: &str = "COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型')";
 const METRICS:&str="COUNT(*) AS totalRequests,printf('%.6f',COALESCE(SUM(r.cost_credits),0)/1000000.0) AS totalCost,COALESCE(SUM(r.input_tokens),0) AS totalInputTokens,COALESCE(SUM(r.output_tokens),0) AS totalOutputTokens,COALESCE(SUM(r.cache_read_tokens),0) AS totalCacheReadTokens,COALESCE(SUM(r.cache_creation_tokens),0) AS totalCacheCreationTokens,COALESCE(SUM(r.input_tokens+r.output_tokens+r.cache_read_tokens+r.cache_creation_tokens),0) AS totalTokens,COALESCE(AVG(CASE WHEN r.state='completed' THEN 100.0 ELSE 0.0 END),0) AS successRate,COALESCE(AVG(r.latency_ms),0) AS avgLatencyMs";
 async fn usage(
@@ -465,7 +468,7 @@ async fn usage(
     let (extra,group)=match kind.as_str() {
         "summary"=>("".to_string(),"".to_string()),
         "trends"=>("date(r.created_at,'unixepoch') AS date,".to_string(),"date(r.created_at,'unixepoch')".to_string()),
-        "provider-stats"=>(format!("COALESCE(r.provider_id,'unrouted') AS providerId,{PROVIDER_DISPLAY_NAME} AS providerName,"),format!("COALESCE(r.provider_id,'unrouted'),{PROVIDER_DISPLAY_NAME}")),
+        "provider-stats"=>(format!("COALESCE(r.provider_id,'unrouted') AS providerId,{PROVIDER_NAME} AS providerName,{OWNER_DISPLAY_NAME} AS ownerName,"),format!("COALESCE(r.provider_id,'unrouted'),{PROVIDER_NAME},{OWNER_DISPLAY_NAME}")),
         "user-stats"=>("COALESCE(r.user_id,'unknown') AS userId,COALESCE(u.username,'未知用户') AS username,".to_string(),"r.user_id,u.username".to_string()),
         "model-stats"=>("COALESCE(NULLIF(r.upstream_model,''),CASE WHEN instr(r.request_model,'/')>0 THEN substr(r.request_model,instr(r.request_model,'/')+1) ELSE NULLIF(r.request_model,'') END,'未知模型') AS model,printf('%.6f',COALESCE(AVG(r.cost_credits),0)/1000000.0) AS avgCostPerRequest,".to_string(),BILLING_MODEL.to_string()),
         _=>return Err(Error::bad("未知统计类型")),
@@ -498,10 +501,15 @@ struct Logs {
     scope: Option<String>,
 }
 fn log_row(r: &Value) -> Value {
-    let provider_name = r["provider_display_name"]
+    let provider_name = r["provider_name"]
         .as_str()
         .filter(|value| !value.is_empty())
+        .or_else(|| r["provider_id"].as_str().filter(|value| !value.is_empty()))
         .unwrap_or("未路由");
+    let owner_name = r["owner_display_name"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("未知用户");
     let model = r["upstream_model"]
         .as_str()
         .filter(|value| !value.is_empty())
@@ -517,7 +525,7 @@ fn log_row(r: &Value) -> Value {
             })
         })
         .unwrap_or_default();
-    json!({"requestId":r["id"],"providerId":r["owner_id"],"providerName":provider_name,"appType":r["app_type"],"model":model,"requestModel":r["request_model"],"costMultiplier":"1","inputTokens":r["input_tokens"],"outputTokens":r["output_tokens"],"cacheReadTokens":r["cache_read_tokens"],"cacheCreationTokens":r["cache_creation_tokens"],"inputCostUsd":"0","outputCostUsd":"0","cacheReadCostUsd":"0","cacheCreationCostUsd":"0","totalCostUsd":format!("{:.6}",r["cost_credits"].as_i64().unwrap_or(0) as f64/1_000_000.0),"costUnknown":r["cost_credits"].is_null(),"isStreaming":r["stream"].as_i64()==Some(1),"latencyMs":r["latency_ms"],"firstTokenMs":r["first_token_ms"],"durationMs":r["latency_ms"],"statusCode":r["status"],"errorMessage":r["error_code"],"createdAt":r["created_at"],"dataSource":"gateway","username":r["username"],"device":r["device"],"state":r["state"]})
+    json!({"requestId":r["id"],"providerId":r["owner_id"],"providerName":provider_name,"ownerName":owner_name,"appType":r["app_type"],"model":model,"requestModel":r["request_model"],"costMultiplier":"1","inputTokens":r["input_tokens"],"outputTokens":r["output_tokens"],"cacheReadTokens":r["cache_read_tokens"],"cacheCreationTokens":r["cache_creation_tokens"],"inputCostUsd":"0","outputCostUsd":"0","cacheReadCostUsd":"0","cacheCreationCostUsd":"0","totalCostUsd":format!("{:.6}",r["cost_credits"].as_i64().unwrap_or(0) as f64/1_000_000.0),"costUnknown":r["cost_credits"].is_null(),"isStreaming":r["stream"].as_i64()==Some(1),"latencyMs":r["latency_ms"],"firstTokenMs":r["first_token_ms"],"durationMs":r["latency_ms"],"statusCode":r["status"],"errorMessage":r["error_code"],"createdAt":r["created_at"],"dataSource":"gateway","username":r["username"],"device":r["device"],"state":r["state"]})
 }
 async fn request_logs(
     State(app): State<Arc<AppState>>,
@@ -538,7 +546,7 @@ async fn request_logs(
     let size = q.page_size.clamp(1, 100);
     args.push(size.into());
     args.push((page * size).into());
-    let rows=query(&app.db,&format!("SELECT r.*,u.username,{PROVIDER_DISPLAY_NAME} AS provider_display_name FROM {USAGE_FROM} WHERE {filter} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?"),&args)?.iter().map(log_row).collect::<Vec<_>>();
+    let rows=query(&app.db,&format!("SELECT r.*,u.username,{OWNER_DISPLAY_NAME} AS owner_display_name FROM {USAGE_FROM} WHERE {filter} ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?"),&args)?.iter().map(log_row).collect::<Vec<_>>();
     Ok(Json(
         json!({"data":rows,"total":total,"page":page,"pageSize":size}),
     ))
@@ -548,6 +556,6 @@ async fn request_detail(
     Extension(user): Extension<Identity>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
-    let rows=query(&app.db,&format!("SELECT r.*,u.username,{PROVIDER_DISPLAY_NAME} AS provider_display_name FROM {USAGE_FROM} WHERE r.id=? AND (r.user_id=? OR r.owner_id=? OR ?=1)"),&[id.into(),user.id.clone().into(),user.id.clone().into(),user.admin().into()])?;
+    let rows=query(&app.db,&format!("SELECT r.*,u.username,{OWNER_DISPLAY_NAME} AS owner_display_name FROM {USAGE_FROM} WHERE r.id=? AND (r.user_id=? OR r.owner_id=? OR ?=1)"),&[id.into(),user.id.clone().into(),user.id.clone().into(),user.admin().into()])?;
     Ok(Json(log_row(rows.first().ok_or_else(Error::forbidden)?)))
 }

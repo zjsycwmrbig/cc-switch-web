@@ -34,8 +34,10 @@ export function ProviderStatsTable({
   });
 
   const pagination = useClientPagination(
-    [...(stats ?? [])].sort((a, b) =>
-      compareProviderNames(a.providerName, b.providerName),
+    [...(stats ?? [])].sort(
+      (a, b) =>
+        compareProviderNames(a.providerName, b.providerName) ||
+        compareProviderNames(a.ownerName, b.ownerName),
     ),
     JSON.stringify([range, appType]),
   );
@@ -88,9 +90,18 @@ export function ProviderStatsTable({
           ) : (
             pagination.pageRows.map((stat) => (
               <TableRow key={stat.providerId}>
-                <TableCell className="font-medium">
-                  <span className="block truncate" title={stat.providerName}>
+                <TableCell className="max-w-0">
+                  <span
+                    className="block truncate font-medium"
+                    title={stat.providerName}
+                  >
                     {stat.providerName}
+                  </span>
+                  <span
+                    className="block truncate text-xs text-muted-foreground"
+                    title={stat.ownerName}
+                  >
+                    {stat.ownerName}
                   </span>
                 </TableCell>
                 <TableCell className="text-right">

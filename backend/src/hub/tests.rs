@@ -165,6 +165,28 @@ fn grant_access(db: &Database, resource: &str, user: &str, budget: &str, models:
         )
         .unwrap();
 }
+fn auto_model_route(db: &Database, user: &str, model: &str, targets: &[&str]) {
+    conn(db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_model_routes(
+                id,user_id,display_name,model,targets,enabled,auto,created_at,updated_at
+             ) VALUES(?1,?2,?3,?3,?4,1,1,?5,?5)",
+            params![id(), user, model, json_text(&targets), now()],
+        )
+        .unwrap();
+}
+fn direct_model_route(db: &Database, user: &str, model: &str, target: &str) {
+    conn(db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_model_routes(
+                id,user_id,display_name,model,targets,enabled,auto,created_at,updated_at
+             ) VALUES(?1,?2,?3,?3,?4,1,0,?5,?5)",
+            params![id(), user, model, json_text(&[target]), now()],
+        )
+        .unwrap();
+}
 fn app(db: Arc<Database>) -> Arc<AppState> {
     let dir = tempfile::tempdir().unwrap().keep();
     let cop = Arc::new(RwLock::new(CopilotAuthManager::new(dir.join("copilot"))));
@@ -262,10 +284,8 @@ async fn usage_views_group_by_user_and_show_owner_billing_names() {
         .unwrap();
     assert_eq!(providers.as_array().unwrap().len(), 1);
     assert_eq!(providers[0]["providerId"], "provider-config-display");
-    assert_eq!(
-        providers[0]["providerName"],
-        "bob · provider-config-display"
-    );
+    assert_eq!(providers[0]["providerName"], "provider-config-display");
+    assert_eq!(providers[0]["ownerName"], "bob");
     assert_eq!(providers[0]["requestCount"], 3);
 
     let models: Value = client
@@ -300,10 +320,8 @@ async fn usage_views_group_by_user_and_show_owner_billing_names() {
         .await
         .unwrap();
     assert_eq!(logs["total"], 3);
-    assert_eq!(
-        logs["data"][0]["providerName"],
-        "bob · provider-config-display"
-    );
+    assert_eq!(logs["data"][0]["providerName"], "provider-config-display");
+    assert_eq!(logs["data"][0]["ownerName"], "bob");
     assert_eq!(logs["data"][0]["model"], "gpt-6.1-sol");
 
     task.abort();
@@ -473,6 +491,37 @@ fn catalog_selection_does_not_change_request_routes() {
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0]["targets"], json!(["mine"]));
     assert_eq!(routes[0]["enabled"], json!(true));
+}
+
+#[test]
+fn catalog_can_show_auto_and_direct_routes_for_the_same_model() {
+    let db = database();
+    resource(&db, "a", "bob", "https://example.com/a/v1", false);
+    resource(&db, "b", "bob", "https://example.com/b/v1", false);
+    grant_access(&db, "a", "alice", "{}", "[]");
+    grant_access(&db, "b", "alice", "{}", "[]");
+    auto_model_route(&db, "alice", "test-model", &["a", "b"]);
+    direct_model_route(&db, "alice", "test-model", "a");
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_preferences(user_id,value) VALUES('alice',?1)",
+            [json_text(&json!({
+                "models":["ccs-auto/test-model","ccs-a/test-model"]
+            }))],
+        )
+        .unwrap();
+
+    let export = catalog::export(&db, &identity("alice"), true).unwrap();
+    let slugs = export["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["slug"].as_str())
+        .collect::<HashSet<_>>();
+
+    assert!(slugs.contains("ccs-auto/test-model"));
+    assert!(slugs.contains("ccs-a/test-model"));
 }
 
 #[test]
@@ -1677,4 +1726,176 @@ async fn official_pool_rotates_only_among_authorized_candidates() {
     proxy.stop().await.unwrap();
     t1.abort();
     t2.abort();
+}
+
+#[tokio::test]
+async fn auto_route_skips_a_target_without_local_request_quota() {
+    use std::future::IntoFuture;
+    let accepted = axum::Router::new().route(
+        "/v1/responses",
+        axum::routing::post(|| async {
+            Json(json!({
+                "id":"resp-auto-quota",
+                "model":"test-model",
+                "output":[],
+                "usage":{"input_tokens":3,"output_tokens":2}
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, accepted).into_future());
+    let db = database();
+    resource(&db, "a", "admin", "http://127.0.0.1:9/v1", false);
+    resource(&db, "b", "bob", &base, true);
+    grant_access(&db, "a", "alice", r#"{"requests":0}"#, "[]");
+    grant_access(&db, "b", "alice", "{}", "[]");
+    auto_model_route(&db, "alice", "test-model", &["a", "b"]);
+    let proxy = proxy(db.clone()).await;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/responses",
+            proxy.get_status().await.port
+        ))
+        .bearer_auth("test-alice")
+        .json(&json!({"model":"ccs-auto/test-model","input":"hello","stream":false}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+
+    assert_eq!(status, 200, "{text}");
+    let provider: String = conn(&db)
+        .unwrap()
+        .query_row("SELECT provider_name FROM hub_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(provider, "b");
+    proxy.stop().await.unwrap();
+    task.abort();
+}
+
+#[tokio::test]
+async fn auto_route_fails_over_when_first_target_reports_no_balance() {
+    use std::future::IntoFuture;
+    let rejected = axum::Router::new().route(
+        "/v1/responses",
+        axum::routing::post(|| async {
+            (
+                StatusCode::PAYMENT_REQUIRED,
+                Json(json!({"error":{"message":"insufficient balance"}})),
+            )
+        }),
+    );
+    let accepted = axum::Router::new().route(
+        "/v1/responses",
+        axum::routing::post(|| async {
+            Json(json!({
+                "id":"resp-auto-balance",
+                "model":"test-model",
+                "output":[],
+                "usage":{"input_tokens":3,"output_tokens":2}
+            }))
+        }),
+    );
+    let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_base = format!("http://{}/v1", first.local_addr().unwrap());
+    let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_base = format!("http://{}/v1", second.local_addr().unwrap());
+    let first_task = tokio::spawn(axum::serve(first, rejected).into_future());
+    let second_task = tokio::spawn(axum::serve(second, accepted).into_future());
+    let db = database();
+    resource(&db, "a", "admin", &first_base, true);
+    resource(&db, "b", "bob", &second_base, true);
+    grant_access(&db, "a", "alice", "{}", "[]");
+    grant_access(&db, "b", "alice", "{}", "[]");
+    auto_model_route(&db, "alice", "test-model", &["a", "b"]);
+    let proxy = proxy(db.clone()).await;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/responses",
+            proxy.get_status().await.port
+        ))
+        .bearer_auth("test-alice")
+        .json(&json!({"model":"ccs-auto/test-model","input":"hello","stream":false}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+
+    assert_eq!(status, 200, "{text}");
+    let (provider, attempts): (String, i64) = conn(&db)
+        .unwrap()
+        .query_row(
+            "SELECT provider_name,(SELECT COUNT(*) FROM hub_attempts) FROM hub_requests",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(provider, "b");
+    assert_eq!(attempts, 2);
+    proxy.stop().await.unwrap();
+    first_task.abort();
+    second_task.abort();
+}
+
+#[tokio::test]
+async fn auto_route_fails_over_when_first_target_connection_fails() {
+    use std::future::IntoFuture;
+    let accepted = axum::Router::new().route(
+        "/v1/responses",
+        axum::routing::post(|| async {
+            Json(json!({
+                "id":"resp-auto-connection",
+                "model":"test-model",
+                "output":[],
+                "usage":{"input_tokens":3,"output_tokens":2}
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, accepted).into_future());
+    let db = database();
+    resource(&db, "a", "admin", "http://127.0.0.1:9/v1", true);
+    resource(&db, "b", "bob", &base, true);
+    grant_access(&db, "a", "alice", "{}", "[]");
+    grant_access(&db, "b", "alice", "{}", "[]");
+    auto_model_route(&db, "alice", "test-model", &["a", "b"]);
+    let proxy = proxy(db.clone()).await;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{}/v1/responses",
+            proxy.get_status().await.port
+        ))
+        .bearer_auth("test-alice")
+        .json(&json!({"model":"ccs-auto/test-model","input":"hello","stream":false}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+
+    assert_eq!(status, 200, "{text}");
+    let (provider, attempts): (String, i64) = conn(&db)
+        .unwrap()
+        .query_row(
+            "SELECT provider_name,(SELECT COUNT(*) FROM hub_attempts) FROM hub_requests",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(provider, "b");
+    assert_eq!(attempts, 2);
+    proxy.stop().await.unwrap();
+    task.abort();
 }

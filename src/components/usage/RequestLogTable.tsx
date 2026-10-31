@@ -352,11 +352,19 @@ export function RequestLogTable({
                       </TableCell>
                       <TableCell className="w-[18%] max-w-0 text-center">
                         <span
-                          className="block truncate"
+                          className="block truncate font-medium"
                           title={log.providerName}
                         >
                           {log.providerName || t("usage.unknownProvider")}
                         </span>
+                        {log.ownerName && (
+                          <span
+                            className="block truncate text-xs text-muted-foreground"
+                            title={log.ownerName}
+                          >
+                            {log.ownerName}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="w-[22%] max-w-0 text-center font-mono text-xs">
                         <div className="truncate" title={log.model}>

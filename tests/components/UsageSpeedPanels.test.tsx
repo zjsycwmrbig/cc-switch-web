@@ -46,8 +46,8 @@ describe("用量详情与供应商速度", () => {
     mocks.stats.mockReturnValue({
       isLoading: false,
       data: [
-        { ...base, providerId: "z", providerName: "Zulu" },
-        { ...base, providerId: "a", providerName: "alpha" },
+        { ...base, providerId: "z", providerName: "Zulu", ownerName: "Bob" },
+        { ...base, providerId: "a", providerName: "alpha", ownerName: "alice" },
       ],
     });
     render(
@@ -55,7 +55,9 @@ describe("用量详情与供应商速度", () => {
     );
     const rows = screen.getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("alpha");
+    expect(rows[0]).toHaveTextContent("alice");
     expect(rows[1]).toHaveTextContent("Zulu");
+    expect(rows[1]).toHaveTextContent("Bob");
     expect(rows[0]).toHaveTextContent("100 tps");
     expect(rows[0]).toHaveTextContent("40 tps");
   });
@@ -92,6 +94,7 @@ describe("用量详情与供应商速度", () => {
             requestId: "request",
             providerId: "bob",
             providerName: "Bob",
+            ownerName: "bob",
             appType: "codex",
             requestModel: "ccs-openai/gpt-6.1-sol",
             model: "gpt-6.1-sol",

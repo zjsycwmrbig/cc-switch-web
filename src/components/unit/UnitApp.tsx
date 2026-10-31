@@ -79,7 +79,6 @@ import "./unit.css";
 import { LimitField } from "./LimitField";
 import {
   clearFilteredRoutes,
-  collapseSelectedRoutes,
   modelGroupKey,
   routeSlug,
   selectFilteredRoutes,
@@ -579,13 +578,7 @@ function Models({ generation }: { me: Me; generation: number }) {
     setResources(allowed);
     setPrefs(p);
     setSelected(
-      collapseSelectedRoutes(
-        routeRows,
-        allowed,
-        new Set(
-          p.models ?? routeRows.map((route) => routeSlug(route, allowed)),
-        ),
-      ),
+      new Set(p.models ?? routeRows.map((route) => routeSlug(route, allowed))),
     );
   }, []);
 
@@ -626,9 +619,7 @@ function Models({ generation }: { me: Me; generation: number }) {
   ) => {
     setSaving(true);
     try {
-      const ids = [
-        ...collapseSelectedRoutes(routes, resources, selection),
-      ].filter((id) =>
+      const ids = [...selection].filter((id) =>
         routes.some((route) => routeSlug(route, resources) === id),
       );
       const next = {
@@ -658,7 +649,7 @@ function Models({ generation }: { me: Me; generation: number }) {
     const next = new Set(selected);
     next.add(routeSlug(route, resources));
     return persistSelection(
-      collapseSelectedRoutes(routes, resources, next),
+      next,
       `已将“${route.displayName}”加入 Codex 同步展示`,
     );
   };
@@ -925,7 +916,7 @@ function Models({ generation }: { me: Me; generation: number }) {
               type="button"
               onClick={() =>
                 setSelected((current) =>
-                  selectFilteredRoutes(routes, filtered, resources, current),
+                  selectFilteredRoutes(filtered, resources, current),
                 )
               }
             >

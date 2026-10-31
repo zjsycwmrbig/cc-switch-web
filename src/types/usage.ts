@@ -15,6 +15,7 @@ export interface RequestLog {
   requestId: string;
   providerId: string;
   providerName?: string;
+  ownerName?: string;
   appType: string;
   model: string;
   requestModel?: string;
@@ -105,6 +106,7 @@ export interface DailyStats {
 export interface ProviderStats {
   providerId: string;
   providerName: string;
+  ownerName: string;
   requestCount: number;
   totalTokens: number;
   totalCost: string;

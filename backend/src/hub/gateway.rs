@@ -285,6 +285,7 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
     } else {
         None
     };
+    let can_failover = pooled || auto_targets.is_some();
     let mut candidates: Vec<resources::Resource> = Vec::new();
     let mut reasons: Vec<Error> = Vec::new();
     let mut matched = 0usize;
@@ -449,7 +450,7 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         ) {
             Ok(a) => a,
             Err(e) => {
-                if !pooled {
+                if !can_failover {
                     finish.status = e.0.as_u16();
                     finish.complete(true);
                     return Err(e);
@@ -553,23 +554,9 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                     )?;
                 }
             }
-            if pooled
-                && previous.is_none()
-                && matches!(status, 401 | 403 | 429)
-                && !error_usage.known
-            {
-                metering::retry(&state.db, &request_id, &attempt, status, code)?;
-                finish.attempt = None;
-                last_error = Some(Error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    code,
-                    "官方账号暂不可用，已尝试其他获授权账号".into(),
-                ));
-                continue;
-            }
-            finish.usage = error_usage;
-            finish.complete(status < 500);
-            return Err(Error(
+            let retryable = matches!(status, 401 | 402 | 403 | 404 | 408 | 409 | 429 | 500..=599)
+                || code == "official_model_not_supported";
+            let error = Error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                 code,
                 upstream_failure_message(
@@ -581,7 +568,16 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                     retry_seconds,
                     &request_id,
                 ),
-            ));
+            );
+            if can_failover && retryable && !error_usage.known {
+                metering::retry(&state.db, &request_id, &attempt, status, code)?;
+                finish.attempt = None;
+                last_error = Some(error);
+                continue;
+            }
+            finish.usage = error_usage;
+            finish.complete(status < 500);
+            return Err(error);
         }
         conn(&state.db)?.execute(
             "UPDATE hub_resources SET health='ready',cooldown_until=0 WHERE id=?1",
@@ -643,15 +639,16 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
             Body::from_stream(observed),
         ));
     }
-    finish.status = 503;
-    finish.complete(true);
-    Err(last_error.unwrap_or_else(|| {
+    let error = last_error.unwrap_or_else(|| {
         Error(
             StatusCode::SERVICE_UNAVAILABLE,
             "no_eligible_account",
             "没有可用账号或分配额度".into(),
         )
-    }))
+    });
+    finish.status = error.0.as_u16();
+    finish.complete(finish.status < 500);
+    Err(error)
 }
 struct Finalizer {
     db: Arc<Database>,

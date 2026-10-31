@@ -117,6 +117,11 @@ export function RequestDetailPanel({
                   <span className="font-medium">
                     {request.providerName || t("usage.unknownProvider", "未知")}
                   </span>
+                  {request.ownerName && (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {request.ownerName}
+                    </span>
+                  )}
                   <span className="ml-2 font-mono text-xs text-muted-foreground">
                     {request.providerId}
                   </span>

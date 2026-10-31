@@ -42,27 +42,7 @@ export function modelGroupKey(value: string) {
     .replace(/[^a-z0-9]/g, "");
 }
 
-export function collapseSelectedRoutes(
-  routes: SelectableModelRoute[],
-  resources: SelectableRouteResource[],
-  selected: Set<string>,
-) {
-  const next = new Set(selected);
-  const autoGroups = new Set(
-    routes
-      .filter((route) => route.auto && next.has(routeSlug(route, resources)))
-      .map((route) => modelGroupKey(route.model)),
-  );
-  for (const route of routes) {
-    if (!route.auto && autoGroups.has(modelGroupKey(route.model))) {
-      next.delete(routeSlug(route, resources));
-    }
-  }
-  return next;
-}
-
 export function selectFilteredRoutes(
-  allRoutes: SelectableModelRoute[],
   filteredRoutes: SelectableModelRoute[],
   resources: SelectableRouteResource[],
   selected: Set<string>,
@@ -71,7 +51,7 @@ export function selectFilteredRoutes(
   for (const route of filteredRoutes) {
     next.add(routeSlug(route, resources));
   }
-  return collapseSelectedRoutes(allRoutes, resources, next);
+  return next;
 }
 
 export function clearFilteredRoutes(
