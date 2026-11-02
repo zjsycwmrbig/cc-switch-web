@@ -1825,15 +1825,8 @@ impl RequestForwarder {
 
         // 解析上游代理 URL（强制直连 > 供应商单独代理 > 全局代理 > 无）
         let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
-        let upstream_proxy_url: Option<String> =
-            if proxy_config.is_some_and(crate::provider::ProviderProxyConfig::uses_direct) {
-                None
-            } else {
-                proxy_config
-                    .filter(|c| c.uses_custom())
-                    .and_then(super::http_client::build_proxy_url_from_config)
-                    .or_else(super::http_client::get_current_proxy_url)
-            };
+        let upstream_proxy_url =
+            provider_proxy_url(proxy_config, super::http_client::get_current_proxy_url());
 
         // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
         let is_socks_proxy = upstream_proxy_url
@@ -2067,6 +2060,19 @@ impl RequestForwarder {
             _ => ErrorCategory::NonRetryable,
         }
     }
+}
+
+fn provider_proxy_url(
+    proxy_config: Option<&crate::provider::ProviderProxyConfig>,
+    global_proxy: Option<String>,
+) -> Option<String> {
+    if proxy_config.is_some_and(crate::provider::ProviderProxyConfig::uses_direct) {
+        return None;
+    }
+    proxy_config
+        .filter(|config| config.uses_custom())
+        .and_then(super::http_client::build_proxy_url_from_config)
+        .or(global_proxy)
 }
 
 /// 从 ProxyError 中提取错误消息
@@ -2775,6 +2781,24 @@ mod tests {
     use axum::http::header::{HeaderValue, ACCEPT};
     use axum::http::HeaderMap;
     use serde_json::json;
+
+    #[test]
+    fn provider_proxy_url_direct_bypasses_global_proxy() {
+        let direct = crate::provider::ProviderProxyConfig {
+            enabled: false,
+            mode: Some("direct".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            provider_proxy_url(Some(&direct), Some("http://127.0.0.1:7890".into())),
+            None
+        );
+
+        assert_eq!(
+            provider_proxy_url(None, Some("http://127.0.0.1:7890".into())),
+            Some("http://127.0.0.1:7890".into())
+        );
+    }
 
     #[tokio::test]
     #[serial_test::serial]
