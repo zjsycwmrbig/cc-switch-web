@@ -926,7 +926,9 @@ async fn streamed_usage_settles_and_disconnected_stream_keeps_its_reservation() 
                 yield Ok::<_,std::convert::Infallible>("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream\",\"model\":\"test-model\",\"output\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}}\n\n");
             }
         };
-        ([("content-type","text/event-stream")],axum::body::Body::from_stream(stream))
+        // Some official Responses upstreams omit Content-Type on SSE bodies.
+        // The gateway must use the request's stream flag as the fallback.
+        axum::response::Response::new(axum::body::Body::from_stream(stream))
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -981,6 +983,17 @@ async fn streamed_usage_settles_and_disconnected_stream_keeps_its_reservation() 
     assert_eq!(alice["usage"]["tokens"], 18);
     assert_eq!(alice["usage"]["reservedRequests"], 0);
     assert_eq!(bob["usage"]["reservedRequests"], 1);
+    let (state, input, output): (String, i64, i64) = conn(&db)
+        .unwrap()
+        .query_row(
+            "SELECT state,input_tokens,output_tokens FROM hub_requests
+             WHERE user_id='alice' AND status=200
+             ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), input, output), ("completed", 11, 7));
     let pending: i64 = conn(&db)
         .unwrap()
         .query_row(

@@ -487,30 +487,11 @@ pub(crate) fn create_usage_collector(
                     .await;
                 });
             } else {
-                let model = model_extractor(&events, &request_model);
-                let latency_ms = start_time.elapsed().as_millis() as u64;
-                let state = state.clone();
-                let provider_id = provider_id.clone();
-                let session_id = session_id.clone();
-                let request_model = request_model.clone();
-
-                tokio::spawn(async move {
-                    log_usage_internal(
-                        &state,
-                        &provider_id,
-                        app_type_str,
-                        &model,
-                        &request_model,
-                        TokenUsage::default(),
-                        latency_ms,
-                        first_token_ms,
-                        true, // is_streaming
-                        status_code,
-                        Some(session_id),
-                    )
-                    .await;
-                });
-                log::debug!("[{tag}] 流式响应缺少 usage 统计，跳过消费记录");
+                // A successful request with unknown usage is not the same as
+                // one that consumed zero tokens. Writing a synthetic all-zero
+                // row makes the usage dashboard look authoritative while the
+                // real count is missing, and also creates fake request rows.
+                log::debug!("[{tag}] 流式响应缺少可解析 usage，忽略未知用量记录");
             }
         },
     )

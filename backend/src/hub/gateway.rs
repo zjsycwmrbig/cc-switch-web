@@ -16,6 +16,51 @@ use std::{
 
 static REQUEST_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
 
+fn observe_sse_block(block: &str, finish: &mut Finalizer) -> bool {
+    let event_name = block
+        .lines()
+        .find_map(|line| crate::proxy::sse::strip_sse_field(line, "event"));
+    let mut terminal = false;
+    for line in block.lines() {
+        let Some(data) = crate::proxy::sse::strip_sse_field(line, "data") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            terminal = true;
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .or(event_name)
+            .unwrap_or("");
+        if matches!(
+            kind,
+            "response.completed"
+                | "response.incomplete"
+                | "response.failed"
+                | "message_stop"
+                | "error"
+        ) {
+            terminal = true;
+        }
+        if finish.first.is_none()
+            && !matches!(
+                kind,
+                "response.created" | "response.in_progress" | "ping" | "keepalive"
+            )
+        {
+            finish.first = Some(finish.start.elapsed().as_millis() as i64);
+        }
+        finish.usage.observe(&value);
+    }
+    terminal
+}
+
 /// Extensions are created after authentication, never accepted from HTTP headers.
 #[derive(Clone)]
 pub struct Authenticated {
@@ -598,37 +643,57 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
         response_parts
             .headers
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        let sse = response_parts
+        let content_type = response_parts
             .headers
             .get(header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok())
-            .is_some_and(|s| s.contains("text/event-stream"));
+            .and_then(|h| h.to_str().ok());
+        // Official Responses upstreams do not always send a Content-Type even
+        // when the request explicitly asked for a stream. Match the proxy's
+        // protocol detection so those responses are still parsed as SSE.
+        let sse = content_type
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(stream);
         let observed = async_stream::stream! {
-            let mut chunks=response_body.into_data_stream();let mut buffer=Vec::new();let mut terminal=false;let mut readable=true;
+            let mut chunks=response_body.into_data_stream();
+            let mut raw_buffer=Vec::new();
+            let mut sse_buffer=String::new();
+            let mut utf8_remainder=Vec::new();
+            let mut terminal=false;
+            let mut readable=true;
             loop {
                 match tokio::time::timeout(Duration::from_secs(180),chunks.next()).await {
                     Ok(Some(Ok(chunk)))=>{
-                        if buffer.len()+chunk.len()<16*1024*1024 {buffer.extend_from_slice(&chunk);}else{readable=false;buffer.clear();}
                         if sse && readable {
-                            while let Some(newline)=buffer.iter().position(|b|*b==b'\n') {
-                                let line=buffer.drain(..=newline).collect::<Vec<_>>();
-                                let line=String::from_utf8_lossy(&line);
-                                if let Some(data)=line.trim().strip_prefix("data:") {
-                                    if data.trim()=="[DONE]" {terminal=true;continue;}
-                                    if let Ok(v)=serde_json::from_str::<Value>(data.trim()) {
-                                        let kind=v["type"].as_str().unwrap_or("");
-                                        if matches!(kind,"response.completed"|"response.failed"|"message_stop"){terminal=true;}
-                                        if finish.first.is_none() && !matches!(kind,"response.created"|"response.in_progress"|"ping") {finish.first=Some(finish.start.elapsed().as_millis() as i64);}
-                                        finish.usage.observe(&v);
-                                    }
-                                }
+                            crate::proxy::sse::append_utf8_safe(&mut sse_buffer,&mut utf8_remainder,&chunk);
+                            while let Some(block)=crate::proxy::sse::take_sse_block(&mut sse_buffer) {
+                                terminal |= observe_sse_block(&block,&mut finish);
+                            }
+                            if sse_buffer.len()>16*1024*1024 {
+                                readable=false;
+                                sse_buffer.clear();
+                            }
+                        } else if readable {
+                            if raw_buffer.len()+chunk.len()<16*1024*1024 {
+                                raw_buffer.extend_from_slice(&chunk);
+                            } else {
+                                readable=false;
+                                raw_buffer.clear();
                             }
                         }
                         yield Ok::<_,std::io::Error>(chunk);
                     }
                     Ok(Some(Err(_)))|Err(_)=>{yield Err(std::io::Error::other("上游流中断或超时"));break;}
                     Ok(None)=>{
-                        if !sse && readable {if let Ok(v)=serde_json::from_slice::<Value>(&buffer){finish.usage.observe(&v);terminal=true;}}
+                        if readable {
+                            if sse {
+                                if !sse_buffer.trim().is_empty() {
+                                    terminal |= observe_sse_block(&sse_buffer,&mut finish);
+                                }
+                            } else if let Ok(v)=serde_json::from_slice::<Value>(&raw_buffer) {
+                                finish.usage.observe(&v);
+                                terminal=true;
+                            }
+                        }
                         finish.complete(terminal && readable);break;
                     }
                 }
