@@ -1734,6 +1734,7 @@
     "stream": "流",
     "nonStream": "非流",
     "source": "来源",
+    "pendingUsage": "计量待核",
     "dataSources": "数据来源",
     "appFilter": {
       "all": "全部",

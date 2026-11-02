@@ -1734,6 +1734,7 @@
     "stream": "Stream",
     "nonStream": "Non-stream",
     "source": "Source",
+    "pendingUsage": "Usage pending",
     "dataSources": "Data Sources",
     "appFilter": {
       "all": "All",

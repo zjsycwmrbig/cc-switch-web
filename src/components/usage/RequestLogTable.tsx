@@ -373,26 +373,32 @@ export function RequestLogTable({
                       </TableCell>
                       <TableCell className="text-center px-1.5">
                         <div className="tabular-nums">
-                          {fmtInt(log.inputTokens, locale)}
+                          {log.state === "pending_usage"
+                            ? "—"
+                            : fmtInt(log.inputTokens, locale)}
                         </div>
-                        {(log.cacheReadTokens > 0 ||
-                          log.cacheCreationTokens > 0) && (
-                          <div className="text-[10px] text-muted-foreground whitespace-nowrap">
-                            {[
-                              log.cacheReadTokens > 0 &&
-                                `R${fmtInt(log.cacheReadTokens, locale)}`,
-                              log.cacheCreationTokens > 0 &&
-                                `W${fmtInt(log.cacheCreationTokens, locale)}`,
-                            ]
-                              .filter(Boolean)
-                              .join("·")}
-                          </div>
-                        )}
+                        {log.state !== "pending_usage" &&
+                          (log.cacheReadTokens > 0 ||
+                            log.cacheCreationTokens > 0) && (
+                            <div className="text-[10px] text-muted-foreground whitespace-nowrap">
+                              {[
+                                log.cacheReadTokens > 0 &&
+                                  `R${fmtInt(log.cacheReadTokens, locale)}`,
+                                log.cacheCreationTokens > 0 &&
+                                  `W${fmtInt(log.cacheCreationTokens, locale)}`,
+                              ]
+                                .filter(Boolean)
+                                .join("·")}
+                            </div>
+                          )}
                       </TableCell>
                       <TableCell className="text-center px-1.5">
                         <div className="tabular-nums">
-                          {fmtInt(log.outputTokens, locale)}
+                          {log.state === "pending_usage"
+                            ? "—"
+                            : fmtInt(log.outputTokens, locale)}
                           {(() => {
+                            if (log.state === "pending_usage") return null;
                             const exact = formatOutputTokensPerSecond(log);
                             const estimated =
                               formatEstimatedTokensPerSecond(log);
@@ -410,9 +416,11 @@ export function RequestLogTable({
                       </TableCell>
                       <TableCell className="text-center px-1.5">
                         <div className="font-medium tabular-nums">
-                          {log.costUnknown
-                            ? "未定价"
-                            : fmtUsd(log.totalCostUsd, 4)}
+                          {log.state === "pending_usage"
+                            ? "—"
+                            : log.costUnknown
+                              ? "未定价"
+                              : fmtUsd(log.totalCostUsd, 4)}
                         </div>
                         {parseFiniteNumber(log.costMultiplier) != null &&
                           parseFiniteNumber(log.costMultiplier) !== 1 && (
@@ -442,6 +450,16 @@ export function RequestLogTable({
                         >
                           {log.statusCode}
                         </span>
+                        {log.state === "pending_usage" && (
+                          <span
+                            className="block text-[10px] text-amber-600"
+                            title={log.errorMessage || "usage_unavailable"}
+                          >
+                            {t("usage.pendingUsage", {
+                              defaultValue: "计量待核",
+                            })}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-center text-xs text-muted-foreground">
                         {log.dataSource || "proxy"}

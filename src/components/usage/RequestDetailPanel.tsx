@@ -76,8 +76,10 @@ export function RequestDetailPanel({
 
   const exactTps = formatOutputTokensPerSecond(request);
   const estimatedTps = formatEstimatedTokensPerSecond(request);
-  const outputTps =
-    exactTps ?? (estimatedTps == null ? null : `≈${estimatedTps}`);
+  const usagePending = request.state === "pending_usage";
+  const outputTps = usagePending
+    ? null
+    : (exactTps ?? (estimatedTps == null ? null : `≈${estimatedTps}`));
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -153,6 +155,11 @@ export function RequestDetailPanel({
                   >
                     {request.statusCode}
                   </span>
+                  {usagePending && (
+                    <span className="ml-2 rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800">
+                      {t("usage.pendingUsage", "计量待核")}
+                    </span>
+                  )}
                 </dd>
               </div>
             </dl>
@@ -169,7 +176,7 @@ export function RequestDetailPanel({
                   {t("usage.inputTokens", "输入 Tokens")}
                 </dt>
                 <dd className="font-mono">
-                  {request.inputTokens.toLocaleString()}
+                  {usagePending ? "—" : request.inputTokens.toLocaleString()}
                 </dd>
               </div>
               <div>
@@ -177,7 +184,7 @@ export function RequestDetailPanel({
                   {t("usage.outputTokens", "输出 Tokens")}
                 </dt>
                 <dd className="font-mono">
-                  {request.outputTokens.toLocaleString()}
+                  {usagePending ? "—" : request.outputTokens.toLocaleString()}
                   {outputTps != null && (
                     <span className="ml-2 text-xs text-muted-foreground font-normal">
                       ({outputTps} tps)
@@ -190,7 +197,9 @@ export function RequestDetailPanel({
                   {t("usage.cacheReadTokens", "缓存读取")}
                 </dt>
                 <dd className="font-mono">
-                  {request.cacheReadTokens.toLocaleString()}
+                  {usagePending
+                    ? "—"
+                    : request.cacheReadTokens.toLocaleString()}
                 </dd>
               </div>
               <div>
@@ -198,7 +207,9 @@ export function RequestDetailPanel({
                   {t("usage.cacheCreationTokens", "缓存写入")}
                 </dt>
                 <dd className="font-mono">
-                  {request.cacheCreationTokens.toLocaleString()}
+                  {usagePending
+                    ? "—"
+                    : request.cacheCreationTokens.toLocaleString()}
                 </dd>
               </div>
               <div className="col-span-2">
@@ -206,9 +217,11 @@ export function RequestDetailPanel({
                   {t("usage.totalTokens", "总计")}
                 </dt>
                 <dd className="text-lg font-semibold">
-                  {(
-                    request.inputTokens + request.outputTokens
-                  ).toLocaleString()}
+                  {usagePending
+                    ? "—"
+                    : (
+                        request.inputTokens + request.outputTokens
+                      ).toLocaleString()}
                 </dd>
               </div>
             </dl>
@@ -228,7 +241,9 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.inputCostUsd).toFixed(6)}
+                  {usagePending
+                    ? "—"
+                    : `$${parseFloat(request.inputCostUsd).toFixed(6)}`}
                 </dd>
               </div>
               <div>
@@ -239,7 +254,9 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.outputCostUsd).toFixed(6)}
+                  {usagePending
+                    ? "—"
+                    : `$${parseFloat(request.outputCostUsd).toFixed(6)}`}
                 </dd>
               </div>
               <div>
@@ -250,7 +267,9 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.cacheReadCostUsd).toFixed(6)}
+                  {usagePending
+                    ? "—"
+                    : `$${parseFloat(request.cacheReadCostUsd).toFixed(6)}`}
                 </dd>
               </div>
               <div>
@@ -261,7 +280,9 @@ export function RequestDetailPanel({
                   </span>
                 </dt>
                 <dd className="font-mono">
-                  ${parseFloat(request.cacheCreationCostUsd).toFixed(6)}
+                  {usagePending
+                    ? "—"
+                    : `$${parseFloat(request.cacheCreationCostUsd).toFixed(6)}`}
                 </dd>
               </div>
               {/* 显示成本倍率（如果不等于1） */}
@@ -287,7 +308,9 @@ export function RequestDetailPanel({
                     )}
                 </dt>
                 <dd className="text-lg font-semibold text-primary">
-                  ${parseFloat(request.totalCostUsd).toFixed(6)}
+                  {usagePending
+                    ? "—"
+                    : `$${parseFloat(request.totalCostUsd).toFixed(6)}`}
                 </dd>
               </div>
             </dl>

@@ -1734,6 +1734,7 @@
     "stream": "ストリーム",
     "nonStream": "非ストリーム",
     "source": "ソース",
+    "pendingUsage": "使用量確認待ち",
     "dataSources": "データソース",
     "appFilter": {
       "all": "すべて",

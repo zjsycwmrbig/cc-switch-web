@@ -134,4 +134,55 @@ describe("用量详情与供应商速度", () => {
       screen.queryByText("ccs-openai/gpt-6.1-sol"),
     ).not.toBeInTheDocument();
   });
+  it("待核用量的零值显示为未知而不是真实零消耗", () => {
+    mocks.logs.mockReturnValue({
+      isLoading: false,
+      data: {
+        data: [
+          {
+            requestId: "pending",
+            providerId: "openai",
+            providerName: "OpenAI Official",
+            ownerName: "zhangjinsheng",
+            appType: "codex",
+            requestModel: "ccs-openai/gpt-6-astra",
+            model: "gpt-6-astra",
+            username: "zhangjinsheng",
+            costMultiplier: "1",
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            inputCostUsd: "0",
+            outputCostUsd: "0",
+            cacheReadCostUsd: "0",
+            cacheCreationCostUsd: "0",
+            totalCostUsd: "0",
+            costUnknown: true,
+            isStreaming: true,
+            latencyMs: 29_300,
+            statusCode: 200,
+            errorMessage: "usage_unavailable",
+            createdAt: 1_750_000_000,
+            state: "pending_usage",
+          },
+        ],
+        total: 1,
+        page: 0,
+        pageSize: 20,
+      },
+    });
+
+    render(
+      <RequestLogTable
+        range={{ preset: "today" }}
+        rangeLabel="today"
+        refreshIntervalMs={0}
+      />,
+    );
+
+    expect(screen.getByText("计量待核")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(3);
+    expect(screen.queryByText("$0.0000")).not.toBeInTheDocument();
+  });
 });
