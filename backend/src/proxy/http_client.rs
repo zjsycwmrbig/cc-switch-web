@@ -7,12 +7,16 @@ use crate::provider::ProviderProxyConfig;
 use once_cell::sync::OnceCell;
 use reqwest::Client;
 use std::env;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::RwLock;
 use std::time::Duration;
 
 /// 全局 HTTP 客户端实例
 static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+
+/// Explicit direct client: unlike `GLOBAL_CLIENT`, this never follows system
+/// proxy variables and is used by providers that opt into direct routing.
+static DIRECT_CLIENT: OnceCell<Client> = OnceCell::new();
 
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
@@ -153,6 +157,21 @@ pub fn get() -> Client {
         })
 }
 
+/// Return a client that never uses a proxy.
+pub fn get_direct() -> Client {
+    DIRECT_CLIENT
+        .get_or_init(|| {
+            build_client_builder()
+                .no_proxy()
+                .build()
+                .unwrap_or_else(|error| {
+                    log::error!("[GlobalProxy] Failed to build direct client: {error}");
+                    Client::new()
+                })
+        })
+        .clone()
+}
+
 /// 获取当前代理 URL
 ///
 /// 返回当前配置的代理 URL，None 表示直连。
@@ -165,16 +184,7 @@ pub fn get_current_proxy_url() -> Option<String> {
 
 /// 构建 HTTP 客户端
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
-    let mut builder = Client::builder()
-        .timeout(Duration::from_secs(600))
-        .connect_timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(10)
-        .tcp_keepalive(Duration::from_secs(60))
-        // 禁用 reqwest 自动解压：防止 reqwest 覆盖客户端原始 accept-encoding header。
-        // 响应解压由 response_processor 根据 content-encoding 手动处理。
-        .no_gzip()
-        .no_brotli()
-        .no_deflate();
+    let mut builder = build_client_builder();
 
     // 有代理地址则使用代理，否则跟随系统代理
     if let Some(url) = proxy_url {
@@ -211,6 +221,59 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
     builder
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+fn build_client_builder() -> reqwest::ClientBuilder {
+    Client::builder()
+        .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(10)
+        .tcp_keepalive(Duration::from_secs(60))
+        // 禁用 reqwest 自动解压：防止 reqwest 覆盖客户端原始 accept-encoding header。
+        // 响应解压由 response_processor 根据 content-encoding 手动处理。
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+}
+
+/// Build a one-off client for the raw HTTP transport fallback.
+///
+/// Keeping this independent from the global client guarantees that a fallback
+/// uses the exact proxy that the original request used. For direct requests,
+/// `pinned` preserves the gateway's SSRF check by resolving the hostname to the
+/// already-validated addresses.
+pub(crate) fn build_transport_fallback_client(
+    proxy_url: Option<&str>,
+    pinned: Option<(&str, &[SocketAddr])>,
+) -> Result<Client, String> {
+    let mut builder = build_client_builder();
+
+    if let Some(url) = proxy_url {
+        let parsed = url::Url::parse(url)
+            .map_err(|e| format!("Invalid proxy URL '{}': {}", mask_url(url), e))?;
+        if !["http", "https", "socks5", "socks5h"].contains(&parsed.scheme()) {
+            return Err(format!(
+                "Invalid proxy scheme '{}' in URL '{}'",
+                parsed.scheme(),
+                mask_url(url)
+            ));
+        }
+        builder = builder.proxy(
+            reqwest::Proxy::all(url)
+                .map_err(|e| format!("Invalid proxy URL '{}': {}", mask_url(url), e))?,
+        );
+    } else if let Some((host, addresses)) = pinned {
+        if addresses.is_empty() {
+            return Err(format!("No validated address available for {host}"));
+        }
+        builder = builder.no_proxy().resolve_to_addrs(host, addresses);
+    } else {
+        builder = builder.no_proxy();
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to build transport fallback client: {e}"))
 }
 
 fn system_proxy_points_to_loopback() -> bool {
@@ -320,7 +383,7 @@ pub fn build_proxy_url_from_config(config: &ProviderProxyConfig) -> Option<Strin
 /// # Returns
 /// 如果配置有效则返回 Some(Client)，否则返回 None
 pub fn build_client_for_provider(proxy_config: Option<&ProviderProxyConfig>) -> Option<Client> {
-    let config = proxy_config.filter(|c| c.enabled)?;
+    let config = proxy_config.filter(|c| c.uses_custom())?;
 
     let proxy_url = build_proxy_url_from_config(config)?;
 
@@ -377,6 +440,9 @@ pub fn build_client_for_provider(proxy_config: Option<&ProviderProxyConfig>) -> 
 /// # Returns
 /// 返回适合该供应商的 HTTP 客户端
 pub fn get_for_provider(proxy_config: Option<&ProviderProxyConfig>) -> Client {
+    if proxy_config.is_some_and(ProviderProxyConfig::uses_direct) {
+        return get_direct();
+    }
     // 优先使用供应商单独代理
     if let Some(client) = build_client_for_provider(proxy_config) {
         return client;
@@ -443,6 +509,13 @@ mod tests {
     #[test]
     fn test_build_client_with_socks5_proxy() {
         let result = build_client(Some("socks5://127.0.0.1:1080"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_transport_fallback_client_with_pinned_address() {
+        let address = "127.0.0.1:443".parse::<SocketAddr>().unwrap();
+        let result = build_transport_fallback_client(None, Some(("upstream.example", &[address])));
         assert!(result.is_ok());
     }
 

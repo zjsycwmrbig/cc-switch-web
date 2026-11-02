@@ -350,9 +350,13 @@ pub struct ProviderTestConfig {
 /// 供应商单独的代理配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderProxyConfig {
-    /// 是否启用单独配置（false 时使用全局/系统代理）
+    /// 兼容字段。自定义代理时为 true；旧数据没有 mode 时用它推断模式。
     #[serde(default)]
     pub enabled: bool,
+    /// 出站模式：global（跟随全局/系统）、direct（强制直连）、custom（供应商独立代理）。
+    /// 缺失时按 enabled 兼容旧数据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     /// 代理类型：http, https, socks5
     #[serde(rename = "proxyType", skip_serializing_if = "Option::is_none")]
     pub proxy_type: Option<String>,
@@ -368,6 +372,20 @@ pub struct ProviderProxyConfig {
     /// 代理密码（可选）
     #[serde(rename = "proxyPassword", skip_serializing_if = "Option::is_none")]
     pub proxy_password: Option<String>,
+}
+
+impl ProviderProxyConfig {
+    pub fn uses_direct(&self) -> bool {
+        self.mode.as_deref() == Some("direct")
+    }
+
+    pub fn uses_custom(&self) -> bool {
+        if let Some(mode) = self.mode.as_deref() {
+            mode == "custom" && self.enabled
+        } else {
+            self.enabled
+        }
+    }
 }
 
 /// 认证绑定来源
@@ -1009,7 +1027,8 @@ pub struct OpenCodeModelLimit {
 mod tests {
     use super::{
         ClaudeModelConfig, CodexModelConfig, GeminiModelConfig, LocalProxyRequestOverrides,
-        OpenCodeProviderConfig, Provider, ProviderManager, ProviderMeta, UniversalProvider,
+        OpenCodeProviderConfig, Provider, ProviderManager, ProviderMeta, ProviderProxyConfig,
+        UniversalProvider,
     };
     use serde_json::json;
     use std::collections::HashMap;
@@ -1460,6 +1479,28 @@ mod tests {
         assert!(config.options.api_key.is_none());
         assert!(config.options.headers.is_none());
         assert!(config.options.extra.is_empty());
+    }
+
+    #[test]
+    fn provider_proxy_modes_preserve_legacy_and_explicit_routing() {
+        let legacy_custom = ProviderProxyConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(legacy_custom.uses_custom());
+        assert!(!legacy_custom.uses_direct());
+
+        let legacy_global = ProviderProxyConfig::default();
+        assert!(!legacy_global.uses_custom());
+        assert!(!legacy_global.uses_direct());
+
+        let explicit_direct = ProviderProxyConfig {
+            enabled: false,
+            mode: Some("direct".into()),
+            ..Default::default()
+        };
+        assert!(explicit_direct.uses_direct());
+        assert!(!explicit_direct.uses_custom());
     }
 
     #[test]

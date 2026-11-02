@@ -132,13 +132,14 @@ fn upstream_error_code(status: u16, text: &str) -> &'static str {
     }
 }
 
-fn upstream_failure_message(
+pub(super) fn upstream_failure_message(
     provider: &str,
     model: &str,
     status: u16,
     code: &str,
     detail: Option<&str>,
     retry_seconds: i64,
+    request_bytes: usize,
     request_id: &str,
 ) -> String {
     let suffix = detail
@@ -164,7 +165,8 @@ fn upstream_failure_message(
             "供应商 {provider} 响应超时（HTTP {status}）；请求编号：{request_id}{suffix}"
         ),
         "upstream_payload_too_large" => format!(
-            "供应商 {provider} 拒绝过大的请求体（HTTP 413）；请压缩上下文；请求编号：{request_id}{suffix}"
+            "供应商 {provider} 拒绝约 {:.1} MiB 的请求体（HTTP 413）；请压缩上下文、移除内嵌图片或附件，或开启新会话后重试；请求编号：{request_id}{suffix}",
+            request_bytes as f64 / 1024.0 / 1024.0
         ),
         "upstream_invalid_parameters" => format!(
             "供应商 {provider} 认为请求参数无效（HTTP 422）；请求编号：{request_id}{suffix}"
@@ -600,7 +602,11 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                 }
             }
             let retryable = matches!(status, 401 | 402 | 403 | 404 | 408 | 409 | 429 | 500..=599)
-                || code == "official_model_not_supported";
+                || code == "official_model_not_supported"
+                // A different route may enforce a different payload limit.
+                // Pooled requests share the same upstream account, so retrying
+                // 413 there would only repeat the oversized body.
+                || (status == 413 && auto_targets.is_some());
             let error = Error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                 code,
@@ -611,6 +617,7 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                     code,
                     detail.as_deref(),
                     retry_seconds,
+                    bytes.len(),
                     &request_id,
                 ),
             );

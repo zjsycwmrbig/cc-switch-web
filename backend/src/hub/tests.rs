@@ -1,4 +1,5 @@
 use super::*;
+use crate::hub::gateway::upstream_failure_message;
 use crate::{
     database::Database,
     proxy::{
@@ -892,6 +893,24 @@ fn usage_parser_merges_anthropic_and_responses_without_double_counting() {
     }
     assert_eq!(usage.tokens("codex"), 15);
     assert_eq!(usage.read, 3);
+}
+
+#[test]
+fn payload_too_large_error_reports_size_and_remediation() {
+    let message = upstream_failure_message(
+        "OpenAI Official",
+        "gpt-6-astra",
+        413,
+        "upstream_payload_too_large",
+        Some("request body too large"),
+        60,
+        3 * 1024 * 1024,
+        "req-413",
+    );
+    assert!(message.contains("3.0 MiB"));
+    assert!(message.contains("压缩上下文"));
+    assert!(message.contains("内嵌图片或附件"));
+    assert!(message.contains("req-413"));
 }
 
 #[tokio::test]

@@ -110,7 +110,9 @@ export interface ProviderTestConfig {
 
 // 供应商单独的代理配置
 export interface ProviderProxyConfig {
-  // 是否启用单独配置（false 时使用全局/系统代理）
+  // 出站模式：global 跟随全局/系统，direct 强制直连，custom 使用供应商独立代理
+  mode?: "global" | "direct" | "custom";
+  // 兼容字段：custom 时为 true，旧数据没有 mode 时用于推断模式
   enabled: boolean;
   // 代理类型：http, https, socks5
   proxyType?: "http" | "https" | "socks5";

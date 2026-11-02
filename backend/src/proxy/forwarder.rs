@@ -1823,12 +1823,17 @@ impl RequestForwarder {
             self.non_streaming_timeout
         };
 
-        // 解析上游代理 URL（供应商单独代理 > 全局代理 > 无）
+        // 解析上游代理 URL（强制直连 > 供应商单独代理 > 全局代理 > 无）
         let proxy_config = provider.meta.as_ref().and_then(|m| m.proxy_config.as_ref());
-        let upstream_proxy_url: Option<String> = proxy_config
-            .filter(|c| c.enabled)
-            .and_then(super::http_client::build_proxy_url_from_config)
-            .or_else(super::http_client::get_current_proxy_url);
+        let upstream_proxy_url: Option<String> =
+            if proxy_config.is_some_and(crate::provider::ProviderProxyConfig::uses_direct) {
+                None
+            } else {
+                proxy_config
+                    .filter(|c| c.uses_custom())
+                    .and_then(super::http_client::build_proxy_url_from_config)
+                    .or_else(super::http_client::get_current_proxy_url)
+            };
 
         // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
         let is_socks_proxy = upstream_proxy_url

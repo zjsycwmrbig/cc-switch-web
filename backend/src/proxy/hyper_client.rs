@@ -10,6 +10,7 @@ use futures::stream::Stream;
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use std::net::SocketAddr;
 use std::sync::OnceLock;
 
 /// Our own header case map: maps lowercase header name → original wire-casing bytes.
@@ -291,8 +292,24 @@ pub async fn send_request(
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 if proxy_url.is_some() || pinned.is_some() {
-                    // Don't bypass configured proxy with direct connect fallback
-                    return Err(e);
+                    log::warn!(
+                        "[HyperClient] Raw write transport failed, trying reqwest fallback: {e}"
+                    );
+                    return send_reqwest_transport_fallback(
+                        &uri,
+                        &method,
+                        &headers,
+                        &body,
+                        timeout,
+                        proxy_url,
+                        pinned.as_deref(),
+                    )
+                    .await
+                    .map_err(|fallback| {
+                        ProxyError::ForwardFailed(format!(
+                            "Raw transport failed: {e}; reqwest fallback failed: {fallback}"
+                        ))
+                    });
                 }
                 log::warn!("[HyperClient] Raw write failed, falling back to hyper-util: {e}");
                 // Fall through to hyper-util Client
@@ -317,6 +334,42 @@ pub async fn send_request(
         .map_err(|e| ProxyError::ForwardFailed(format!("上游请求失败: {e}")))?;
 
     Ok(ProxyResponse::Hyper(resp))
+}
+
+/// Retry the same request with reqwest when the raw HTTP/1 transport fails
+/// before response headers arrive. This is especially important for long-lived
+/// CONNECT tunnels through local proxies, which occasionally close the first
+/// stream while accepting the identical request over reqwest's pooled transport.
+async fn send_reqwest_transport_fallback(
+    uri: &http::Uri,
+    method: &http::Method,
+    headers: &http::HeaderMap,
+    body: &[u8],
+    timeout: std::time::Duration,
+    proxy_url: Option<&str>,
+    pinned: Option<&[SocketAddr]>,
+) -> Result<ProxyResponse, ProxyError> {
+    let host = uri
+        .host()
+        .ok_or_else(|| ProxyError::ForwardFailed("URI has no host".into()))?;
+    let pinned_host = pinned.map(|addresses| (host, addresses));
+    let client = super::http_client::build_transport_fallback_client(proxy_url, pinned_host)
+        .map_err(ProxyError::ForwardFailed)?;
+    let request = client
+        .request(method.clone(), uri.to_string())
+        .headers(headers.clone())
+        .timeout(timeout)
+        .body(body.to_vec());
+    let response = request.send().await.map_err(|error| {
+        if error.is_timeout() {
+            ProxyError::Timeout(format!("请求超时: {error}"))
+        } else if error.is_connect() {
+            ProxyError::ForwardFailed(format!("连接失败: {error}"))
+        } else {
+            ProxyError::ForwardFailed(error.to_string())
+        }
+    })?;
+    Ok(ProxyResponse::Reqwest(response))
 }
 
 /// TCP or TLS stream returned by `connect_via_proxy`.
@@ -766,6 +819,7 @@ impl<S: Unpin> tokio::io::AsyncWrite for WriteFilter<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::IntoFuture;
 
     #[tokio::test]
     async fn bytes_with_limit_rejects_oversized_buffered_response() {
@@ -778,5 +832,114 @@ mod tests {
             response.bytes_with_limit(4).await,
             Err(ProxyError::ResponseBodyTooLarge(5))
         ));
+    }
+
+    #[tokio::test]
+    async fn transport_fallback_connects_to_the_validated_address() {
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(|headers: http::HeaderMap, body: Bytes| async move {
+                axum::Json(serde_json::json!({
+                    "host": headers.get(http::header::HOST).and_then(|v| v.to_str().ok()),
+                    "body": String::from_utf8_lossy(&body),
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(axum::serve(listener, app).into_future());
+        let uri = format!("http://pinned.example:{}/", address.port())
+            .parse::<http::Uri>()
+            .unwrap();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+        let response = send_reqwest_transport_fallback(
+            &uri,
+            &http::Method::POST,
+            &headers,
+            br#"{"ok":true}"#,
+            std::time::Duration::from_secs(5),
+            None,
+            Some(&[address]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let body = response
+            .bytes_with_limit(4096)
+            .await
+            .expect("read fallback response");
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["host"], format!("pinned.example:{}", address.port()));
+        assert_eq!(body["body"], r#"{"ok":true}"#);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn raw_transport_failure_retries_with_reqwest_fallback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 8192];
+                let read = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    socket.read(&mut request),
+                )
+                .await;
+                if attempt == 0 {
+                    // Simulate the local proxy closing its first CONNECT stream.
+                    let read = read.unwrap().unwrap();
+                    assert!(String::from_utf8_lossy(&request[..read]).starts_with("CONNECT "));
+                    continue;
+                }
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 50\r\nConnection: close\r\n\r\n{\"id\":\"resp-fallback\",\"usage\":{\"input_tokens\":2}}\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let uri = "http://upstream.example/v1/responses"
+            .parse::<http::Uri>()
+            .unwrap();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::HOST,
+            http::HeaderValue::from_static("upstream.example"),
+        );
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/json"),
+        );
+        let mut extensions = http::Extensions::new();
+        extensions.insert(OriginalHeaderCases {
+            cases: vec![("content-type".into(), b"Content-Type".to_vec())],
+        });
+        let proxy_url = format!("http://{address}");
+
+        let response = send_request(
+            uri,
+            http::Method::POST,
+            headers,
+            extensions,
+            br#"{"model":"test"}"#.to_vec(),
+            std::time::Duration::from_secs(5),
+            Some(&proxy_url),
+        )
+        .await
+        .expect("fallback response");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let body = response.bytes_with_limit(4096).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("resp-fallback"));
+        server.await.unwrap();
     }
 }

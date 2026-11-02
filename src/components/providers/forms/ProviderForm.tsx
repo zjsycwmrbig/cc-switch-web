@@ -1481,7 +1481,12 @@ function ProviderFormFull({
         ? overridesResult.overrides
         : undefined,
       testConfig: testConfig.enabled ? testConfig : undefined,
-      proxyConfig: proxyConfig.enabled ? proxyConfig : undefined,
+      proxyConfig:
+        proxyConfig.enabled ||
+        proxyConfig.mode === "direct" ||
+        proxyConfig.mode === "custom"
+          ? proxyConfig
+          : undefined,
       apiFormat:
         appId === "claude" && category !== "official"
           ? isXaiOauthProvider
@@ -2474,7 +2479,6 @@ function ProviderFormFull({
           )}
         </form>
       </Form>
-
     </>
   );
 }
