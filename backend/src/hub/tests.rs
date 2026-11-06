@@ -394,6 +394,146 @@ fn share_code(
         )
         .unwrap();
 }
+
+#[tokio::test]
+async fn share_code_url_follows_the_current_request_host() {
+    let db = database();
+    resource(&db, "test", "admin", "https://example.com/v1", false);
+    conn(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'admin','admin-csrf',?2,?3)",
+            params![auth::hash("admin-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, api::routes(app(db.clone()))).into_future());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let response = client
+        .post(format!("{base}/api/unit/resources/test/share-codes"))
+        .header(
+            "Cookie",
+            format!("{}={}", auth::COOKIE, "admin-session-token"),
+        )
+        .header("Origin", "http://192.168.1.20:8890")
+        .header("x-csrf-token", "admin-csrf")
+        .header("x-forwarded-host", "192.168.1.20:8890")
+        .json(&json!({
+            "budget": {"requests": 5},
+            "models": ["test-model"],
+            "maxClaims": 1
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let response: Value = serde_json::from_str(&body).unwrap();
+
+    assert!(response["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("http://192.168.1.20:8890/?claim="));
+    task.abort();
+}
+
+#[tokio::test]
+async fn resource_permission_and_usage_views_include_owner() {
+    let db = database();
+    resource(&db, "test", "admin", "https://example.com/v1", false);
+    grant_access(
+        &db,
+        "test",
+        "alice",
+        r#"{"requests":5}"#,
+        r#"["test-model"]"#,
+    );
+    {
+        let c = conn(&db).unwrap();
+        for (request, user) in [
+            ("owner-request", "admin"),
+            ("granted-request", "alice"),
+            ("historical-request", "bob"),
+        ] {
+            c.execute(
+                "INSERT INTO hub_requests(
+                    id,user_id,key_id,device,request_model,app_type,resource_id,
+                    owner_id,state,status,input_tokens,output_tokens,cost_credits,created_at
+                 ) VALUES(?1,?2,?2,'CLI','ccs-test/test-model','codex','test',
+                    'admin','completed',200,10,5,1000,?3)",
+                params![request, user, now()],
+            )
+            .unwrap();
+        }
+        c.execute(
+            "INSERT INTO hub_buckets(id,used_requests,used_tokens,used_credits)
+             VALUES('grant:test:alice:lifetime',2,30,2000)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO hub_sessions(token_hash,user_id,csrf,expires_at,created_at)
+             VALUES(?1,'admin','admin-csrf',?2,?3)",
+            params![auth::hash("admin-session-token"), now() + 3600, now()],
+        )
+        .unwrap();
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, api::routes(app(db.clone()))).into_future());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let rows: Vec<Value> = client
+        .get(format!("{base}/api/unit/resources/test/user-usage"))
+        .header(
+            "Cookie",
+            format!("{}={}", auth::COOKIE, "admin-session-token"),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let row = |username: &str| rows.iter().find(|row| row["username"] == username).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(row("admin")["isOwner"], 1);
+    assert_eq!(row("admin")["requests"], 1);
+    assert_eq!(row("alice")["hasGrant"], 1);
+    assert_eq!(row("alice")["usedRequests"], 2);
+    assert_eq!(row("bob")["hasGrant"], 0);
+    assert_eq!(row("bob")["requests"], 1);
+    let total_requests = rows
+        .iter()
+        .map(|row| row["requests"].as_i64().unwrap_or(0))
+        .sum::<i64>();
+    assert_eq!(total_requests, 3);
+
+    let grants: Vec<Value> = client
+        .get(format!("{base}/api/unit/resources/test/grants"))
+        .header(
+            "Cookie",
+            format!("{}={}", auth::COOKIE, "admin-session-token"),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(grants.len(), 2);
+    let owner = grants.iter().find(|row| row["userId"] == "admin").unwrap();
+    assert_eq!(owner["isOwner"], 1);
+    assert_eq!(owner["allowed"], 1);
+    assert!(grants.iter().all(|row| row["userId"] != "bob"));
+    task.abort();
+}
+
 #[test]
 fn public_private_and_model_specific_grants_are_enforced() {
     let db = database();
@@ -933,16 +1073,20 @@ async fn ordinary_upstreams_cannot_resolve_private_or_mapped_private_addresses()
 }
 
 #[tokio::test]
-async fn streamed_usage_settles_and_disconnected_stream_keeps_its_reservation() {
+async fn terminal_stream_event_ends_and_settles_without_upstream_eof() {
     use futures::StreamExt;
     let upstream=axum::Router::new().route("/v1/responses",axum::routing::post(|Json(body):Json<Value>|async move {
         let cut=body["input"]=="cut";
+        let keep_open=body["input"]=="complete-open";
         let stream=async_stream::stream! {
             if cut {
                 yield Ok::<_,std::convert::Infallible>("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n");
                 std::future::pending::<()>().await;
             }else{
                 yield Ok::<_,std::convert::Infallible>("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-stream\",\"model\":\"test-model\",\"output\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}}\n\n");
+                if keep_open {
+                    std::future::pending::<()>().await;
+                }
             }
         };
         // Some official Responses upstreams omit Content-Type on SSE bodies.
@@ -965,12 +1109,15 @@ async fn streamed_usage_settles_and_disconnected_stream_keeps_its_reservation() 
     let response = client
         .post(&endpoint)
         .bearer_auth("test-alice")
-        .json(&json!({"model":"ccs-test/test-model","input":"complete","stream":true}))
+        .json(&json!({"model":"ccs-test/test-model","input":"complete-open","stream":true}))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let text = response.text().await.unwrap();
+    let text = tokio::time::timeout(std::time::Duration::from_secs(2), response.text())
+        .await
+        .expect("gateway must end after response.completed without waiting for upstream EOF")
+        .unwrap();
     assert!(text.contains("response.completed"));
     let response = client
         .post(&endpoint)

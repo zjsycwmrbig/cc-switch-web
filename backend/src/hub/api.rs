@@ -995,10 +995,44 @@ async fn grants(
 ) -> Result<Json<Value>> {
     let r = resources::get(&app.db, &resource)?;
     resources::own(&user, &r)?;
-    let values=query_json(&*conn(&app.db)?,"SELECT g.user_id,u.username,g.allowed,g.budget,g.models,g.expires_at FROM hub_grants g JOIN hub_users u ON u.id=g.user_id WHERE g.resource_id=?1",&[&resource])?;
+    let values = query_json(
+        &*conn(&app.db)?,
+        "WITH recent AS (
+             SELECT user_id, COUNT(*) AS requests,
+                    SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens) AS tokens,
+                    SUM(cost_credits) AS cost_credits
+             FROM hub_requests
+             WHERE resource_id=?1 AND created_at>=?2
+             GROUP BY user_id
+         ), participants AS (
+             SELECT user_id FROM hub_grants WHERE resource_id=?1
+             UNION
+             SELECT owner_id FROM hub_resources WHERE id=?1
+         )
+         SELECT p.user_id AS userId, u.username,
+                CASE WHEN p.user_id=r.owner_id THEN 1 ELSE 0 END AS isOwner,
+                COALESCE(g.allowed,1) AS allowed,
+                COALESCE(g.budget,'{}') AS budget,
+                COALESCE(g.models,'[]') AS models,
+                g.expires_at,
+                COALESCE(x.requests,0) AS requests,
+                COALESCE(x.tokens,0) AS tokens,
+                COALESCE(x.cost_credits,0) AS costCredits
+         FROM participants p
+         JOIN hub_users u ON u.id=p.user_id
+         JOIN hub_resources r ON r.id=?1
+         LEFT JOIN hub_grants g ON g.resource_id=?1 AND g.user_id=p.user_id
+         LEFT JOIN recent x ON x.user_id=p.user_id
+         ORDER BY isOwner DESC, requests DESC, u.username",
+        &[&resource, &(now() - 30 * 86400)],
+    )?;
     Ok(Json(json!(values)))
 }
-/// 某个供应商下所有用户的权限 + 近 30 天用量（按请求次数排行）。
+/// 某个供应商下的参与者及其近 30 天用量。
+///
+/// 授权表只描述当前可获得权限的用户，不能作为用量统计的主表：资源所有者
+/// 没有单独授权，撤销授权的用户也可能仍有历史调用。这里合并当前授权、近 30
+/// 天调用者和资源所有者，确保汇总能覆盖该供应商的全部实际使用者。
 async fn resource_user_usage(
     State(app): State<Arc<AppState>>,
     Extension(user): Extension<Identity>,
@@ -1008,21 +1042,40 @@ async fn resource_user_usage(
     resources::own(&user, &r)?;
     let rows = query_json(
         &*conn(&app.db)?,
-        "SELECT g.user_id, u.username, g.allowed, g.budget, g.models, g.expires_at,
-                COALESCE(x.requests,0) AS requests,
-                COALESCE(x.tokens,0) AS tokens,
-                COALESCE(x.cost_credits,0) AS costCredits
-         FROM hub_grants g
-         JOIN hub_users u ON u.id=g.user_id
-         LEFT JOIN (
+        "WITH recent AS (
              SELECT user_id, COUNT(*) AS requests,
                     SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens) AS tokens,
                     SUM(cost_credits) AS cost_credits
              FROM hub_requests
              WHERE resource_id=?1 AND created_at>=?2
              GROUP BY user_id
-         ) x ON x.user_id=g.user_id
-         WHERE g.resource_id=?1
+         ), participants AS (
+             SELECT user_id FROM hub_grants WHERE resource_id=?1
+             UNION
+             SELECT user_id FROM recent
+             UNION
+             SELECT owner_id FROM hub_resources WHERE id=?1
+         )
+         SELECT p.user_id AS userId, u.username,
+                CASE WHEN p.user_id=r.owner_id THEN 1 ELSE 0 END AS isOwner,
+                CASE WHEN g.user_id IS NULL THEN 0 ELSE 1 END AS hasGrant,
+                COALESCE(g.allowed,0) AS allowed,
+                COALESCE(g.budget,'{}') AS budget,
+                COALESCE(g.models,'[]') AS models,
+                g.expires_at,
+                COALESCE(x.requests,0) AS requests,
+                COALESCE(x.tokens,0) AS tokens,
+                COALESCE(x.cost_credits,0) AS costCredits,
+                COALESCE(b.used_requests,0) AS usedRequests,
+                COALESCE(b.used_tokens,0) AS usedTokens,
+                COALESCE(b.used_credits,0) AS usedCredits
+         FROM participants p
+         JOIN hub_users u ON u.id=p.user_id
+         JOIN hub_resources r ON r.id=?1
+         LEFT JOIN hub_grants g ON g.resource_id=?1 AND g.user_id=p.user_id
+         LEFT JOIN recent x ON x.user_id=p.user_id
+         LEFT JOIN hub_buckets b
+           ON b.id='grant:' || ?1 || ':' || p.user_id || ':lifetime'
          ORDER BY requests DESC, u.username",
         &[&resource, &(now() - 30 * 86400)],
     )?;
@@ -2122,6 +2175,7 @@ async fn share_codes(
 
 async fn create_share_code(
     State(app): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(user): Extension<Identity>,
     Path(resource): Path<String>,
     Json(v): Json<ShareCodeInput>,
@@ -2181,7 +2235,8 @@ async fn create_share_code(
         "resourceId": r.id,
         "resourceName": r.name,
         "token": token,
-        "url": format!("{}/?claim={}", public_url(&app.db), token),
+        // 与设备接入命令保持一致：使用当前页面访问的 Host，而不是固定的公开 URL。
+        "url": format!("{}/?claim={}", request_origin(&app.db, &headers), token),
         "budget": v.budget,
         "models": v.models,
         "expiresAt": v.expires_at,

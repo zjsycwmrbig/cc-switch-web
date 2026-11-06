@@ -687,6 +687,16 @@ async fn run(state: ProxyState, request: Request, next: Next) -> Result<Response
                                 raw_buffer.clear();
                             }
                         }
+                        // A terminal SSE event is authoritative even if the upstream
+                        // keeps the HTTP connection open. Settle and end downstream
+                        // immediately so clients do not wait for an EOF that may never
+                        // arrive, and so a subsequent client cancellation cannot turn
+                        // an otherwise complete request into pending_usage.
+                        if terminal {
+                            finish.complete(true);
+                            yield Ok::<_,std::io::Error>(chunk);
+                            break;
+                        }
                         yield Ok::<_,std::io::Error>(chunk);
                     }
                     Ok(Some(Err(_)))|Err(_)=>{yield Err(std::io::Error::other("上游流中断或超时"));break;}

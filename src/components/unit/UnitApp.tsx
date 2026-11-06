@@ -1220,10 +1220,28 @@ function Models({ generation }: { me: Me; generation: number }) {
 type GrantRow = {
   userId: string;
   username: string;
+  isOwner: boolean | number;
   allowed: boolean | number;
   budget: string;
   models: string;
   expires_at?: number | null;
+  requests?: number;
+  tokens?: number;
+  costCredits?: number;
+};
+
+type UserUsageRow = {
+  userId: string;
+  username: string;
+  isOwner: boolean | number;
+  hasGrant: boolean | number;
+  budget: string;
+  requests?: number;
+  tokens?: number;
+  costCredits?: number;
+  usedRequests?: number;
+  usedTokens?: number;
+  usedCredits?: number;
 };
 
 type ModelRoute = {
@@ -1255,7 +1273,7 @@ function Allocations({ generation }: { generation: number }) {
   );
   const [usageSearch, setUsageSearch] = useState("");
   const [grants, setGrants] = useState<GrantRow[]>([]);
-  const [userUsage, setUserUsage] = useState<any[]>([]);
+  const [userUsage, setUserUsage] = useState<UserUsageRow[]>([]);
   const [codes, setCodes] = useState<ShareCode[]>([]);
   const [applications, setApplications] = useState<{
     mine: ApplicationRow[];
@@ -1356,7 +1374,7 @@ function Allocations({ generation }: { generation: number }) {
     }
     const [grantRows, usageRows] = await Promise.all([
       unit<GrantRow[]>(`/resources/${selectedId}/grants`),
-      unit<any[]>(`/resources/${selectedId}/user-usage`),
+      unit<UserUsageRow[]>(`/resources/${selectedId}/user-usage`),
     ]);
     setGrants(grantRows);
     setUserUsage(usageRows);
@@ -2080,9 +2098,9 @@ function Allocations({ generation }: { generation: number }) {
                                     <th>排名</th>
                                     <th>用户</th>
                                     <th>请求次数</th>
-                                    <th>请求使用率</th>
+                                    <th>额度请求使用率</th>
                                     <th>Token</th>
-                                    <th>Token 使用率</th>
+                                    <th>额度 Token 使用率</th>
                                     <th>成本</th>
                                     <th />
                                   </tr>
@@ -2102,22 +2120,48 @@ function Allocations({ generation }: { generation: number }) {
                                       tokenLimit = null;
                                       requestLimit = null;
                                     }
+                                    const isOwner = !!row.isOwner;
+                                    const hasGrant = !!row.hasGrant;
                                     const requestPct =
-                                      requestLimit && requestLimit > 0
-                                        ? ((row.requests ?? 0) / requestLimit) *
+                                      hasGrant &&
+                                      requestLimit &&
+                                      requestLimit > 0
+                                        ? ((row.usedRequests ?? 0) /
+                                            requestLimit) *
                                           100
                                         : null;
                                     const quotaPct =
-                                      tokenLimit && tokenLimit > 0
-                                        ? ((row.tokens ?? 0) / tokenLimit) * 100
+                                      hasGrant && tokenLimit && tokenLimit > 0
+                                        ? ((row.usedTokens ?? 0) / tokenLimit) *
+                                          100
                                         : null;
                                     return (
-                                      <tr key={row.user_id}>
+                                      <tr key={row.userId}>
                                         <td>{index + 1}</td>
-                                        <td>{row.username}</td>
+                                        <td>
+                                          <span>{row.username}</span>
+                                          {isOwner && (
+                                            <span className="u-tag u-green ml-2">
+                                              提供者本人
+                                            </span>
+                                          )}
+                                          {!isOwner && !hasGrant && (
+                                            <span className="u-tag ml-2">
+                                              历史调用
+                                            </span>
+                                          )}
+                                        </td>
                                         <td>{num(row.requests ?? 0)}</td>
                                         <td>
-                                          {requestPct == null ? (
+                                          {isOwner ? (
+                                            <span className="u-unlimited">
+                                              不限
+                                            </span>
+                                          ) : !hasGrant ? (
+                                            <span className="u-unlimited">
+                                              无当前授权
+                                            </span>
+                                          ) : requestPct == null ? (
                                             <span className="u-unlimited">
                                               UNLIMITED
                                             </span>
@@ -2141,7 +2185,15 @@ function Allocations({ generation }: { generation: number }) {
                                           {compactTokens(row.tokens ?? 0)}
                                         </td>
                                         <td>
-                                          {quotaPct == null ? (
+                                          {isOwner ? (
+                                            <span className="u-unlimited">
+                                              不限
+                                            </span>
+                                          ) : !hasGrant ? (
+                                            <span className="u-unlimited">
+                                              无当前授权
+                                            </span>
+                                          ) : quotaPct == null ? (
                                             <span className="u-unlimited">
                                               UNLIMITED
                                             </span>
@@ -2222,7 +2274,7 @@ function Allocations({ generation }: { generation: number }) {
                                             .slice(0, 8)
                                             .map((row, index) => (
                                               <li
-                                                key={row.user_id}
+                                                key={row.userId}
                                                 className="flex items-center gap-2"
                                               >
                                                 <span
@@ -2267,7 +2319,10 @@ function Allocations({ generation }: { generation: number }) {
                       <div className="u-panel-title">
                         <UserPlus size={17} />
                         用户权限
-                        <small>{grants.length} 个单独分配</small>
+                        <small>
+                          {grants.filter((row) => !row.isOwner).length}{" "}
+                          个单独分配
+                        </small>
                       </div>
                       <div className="u-table-wrap">
                         <table>
@@ -2285,11 +2340,18 @@ function Allocations({ generation }: { generation: number }) {
                             </tr>
                           </thead>
                           <tbody>
-                            {userUsage.map((row) => {
+                            {grants.map((row) => {
                               const rowModels = parseModels(row.models);
                               return (
                                 <tr key={row.userId}>
-                                  <td>{row.username}</td>
+                                  <td>
+                                    <span>{row.username}</span>
+                                    {!!row.isOwner && (
+                                      <span className="u-tag u-green ml-2">
+                                        提供者本人
+                                      </span>
+                                    )}
+                                  </td>
                                   <td>
                                     <span
                                       className={`u-tag ${
@@ -2299,45 +2361,63 @@ function Allocations({ generation }: { generation: number }) {
                                       {row.allowed ? "允许" : "禁用"}
                                     </span>
                                   </td>
-                                  <td>{budgetText(parseBudget(row.budget))}</td>
                                   <td>
-                                    {rowModels.length
-                                      ? rowModels.join(", ")
-                                      : "全部已发布模型"}
+                                    {row.isOwner
+                                      ? "不限"
+                                      : budgetText(parseBudget(row.budget))}
                                   </td>
-                                  <td>{date(row.expires_at || undefined)}</td>
+                                  <td>
+                                    {row.isOwner
+                                      ? "全部模型"
+                                      : rowModels.length
+                                        ? rowModels.join(", ")
+                                        : "全部已发布模型"}
+                                  </td>
+                                  <td>
+                                    {row.isOwner
+                                      ? "—"
+                                      : date(row.expires_at || undefined)}
+                                  </td>
                                   <td>{num(row.requests ?? 0)}</td>
                                   <td>{num(row.tokens ?? 0)}</td>
                                   <td>{dollars(row.costCredits ?? 0)}</td>
                                   <td>
-                                    <button
-                                      type="button"
-                                      className="u-quiet"
-                                      onClick={() => {
-                                        setEditingUser(row.userId);
-                                        setUsername(row.username);
-                                        setAllowed(!!row.allowed);
-                                        setGrantBudget(parseBudget(row.budget));
-                                        setGrantModels(rowModels);
-                                        setExpires(
-                                          row.expires_at
-                                            ? new Date(row.expires_at * 1000)
-                                                .toISOString()
-                                                .slice(0, 16)
-                                            : "",
-                                        );
-                                      }}
-                                    >
-                                      编辑
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="u-quiet u-danger"
-                                      onClick={() => void removeGrant(row)}
-                                    >
-                                      <Trash2 size={13} />
-                                      移除
-                                    </button>
+                                    {!row.isOwner && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className="u-quiet"
+                                          onClick={() => {
+                                            setEditingUser(row.userId);
+                                            setUsername(row.username);
+                                            setAllowed(!!row.allowed);
+                                            setGrantBudget(
+                                              parseBudget(row.budget),
+                                            );
+                                            setGrantModels(rowModels);
+                                            setExpires(
+                                              row.expires_at
+                                                ? new Date(
+                                                    row.expires_at * 1000,
+                                                  )
+                                                    .toISOString()
+                                                    .slice(0, 16)
+                                                : "",
+                                            );
+                                          }}
+                                        >
+                                          编辑
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="u-quiet u-danger"
+                                          onClick={() => void removeGrant(row)}
+                                        >
+                                          <Trash2 size={13} />
+                                          移除
+                                        </button>
+                                      </>
+                                    )}
                                   </td>
                                 </tr>
                               );
@@ -2345,7 +2425,7 @@ function Allocations({ generation }: { generation: number }) {
                           </tbody>
                         </table>
                       </div>
-                      {!userUsage.length && (
+                      {!grants.length && (
                         <Empty>
                           还没有单独分配。公开或指定用户模式可先使用共享规则。
                         </Empty>
